@@ -168,6 +168,9 @@ class SimpleACC:
             # Stanley控制律
             crosstrack_term = math.atan2(k * lateral_error, speed)
             steer = heading_error + crosstrack_term
+            #打印heading_error和crosstrack_term
+            print(f"横向偏差: {lateral_error:.2f}, 航向偏差: {heading_error:.2f}, 侧向控制: {crosstrack_term:.2f}")
+
 
             # 限制转向角
             return max(-1.0, min(1.0, steer))
@@ -277,8 +280,8 @@ class SimpleACC:
         # 获取前方车道路点
         waypoints = self.get_waypoints_ahead()
 
-        # 使用Pure Pursuit或Stanley控制器计算横向控制
-        steer = self.stanley_control(waypoints)  # 或self.pure_pursuit_control(waypoints)
+        # 使用Stanley控制器计算横向控制
+        steer = self.stanley_control(waypoints)
 
         # 纵向控制（保持你现有的PID控制器）
         actual_distance = self.get_vehicle_distance()

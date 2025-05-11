@@ -7,7 +7,7 @@ import kalman_filter
 import radar_cluster
 import pygame
 import threading
-
+from acc_planning_control import ACCPlanningControl
 class acc:
     def __init__(self):
         self.tracker = kalman_filter.RadarTracker()
@@ -36,13 +36,13 @@ class acc:
         self.client = carla.Client('localhost', 2000)
         self.client.set_timeout(30.0)
         self.world = self.client.get_world()
-        # Load layered map for Town 01 with minimum layout plus buildings and parked vehicles
+        # Load layered map for Town 04 with minimum layout plus buildings and parked vehicles
         self.world = self.client.load_world('Town04', carla.MapLayer.Buildings | carla.MapLayer.ParkedVehicles)
 
         # Toggle all buildings off
         self.world.unload_map_layer(carla.MapLayer.Buildings)
 
-        # Toggle all buildings on   
+        # Toggle all buildings on
         self.world.load_map_layer(carla.MapLayer.Buildings)
 
         # Get the blueprint library and map
@@ -61,12 +61,12 @@ class acc:
         vehicle_bp = blueprint_library.filter('vehicle.tesla.model3')[0]
         ego_vehicle_bp = blueprint_library.filter('vehicle.audi.etron')[0]
 
-        # Get all valid spawn points on the road
+        # Get a valid spawn point on the road
         spawn_points = map.get_spawn_points()[0]
 
-
+        # Get waypoint for the spawn point
         waypoint = map.get_waypoint(spawn_points.location)
-        lanes  = []
+        lanes = []
         current_waypoint = waypoint
         for _ in range(3):
             lanes.append(current_waypoint)
@@ -74,54 +74,59 @@ class acc:
             if current_waypoint is None:
                 break
 
+        # Initialize vehicle list
         vehicles = []
         locations = []
-        for lane in lanes:
-            if lane is not None:
-                transform = lane.transform
-                transform.location.z += 0.5
-                locations.append(transform.location)
-                vehicle = self.world.spawn_actor(vehicle_bp, transform)
-                vehicles.append(vehicle)
 
-        # Spawn the ego vehicle
+        # Spawn only one target vehicle in the middle lane
+        if len(lanes) > 1:  # Ensure middle lane exists
+            target_lane = lanes[1]  # Middle lane
+            transform = target_lane.transform
+            transform.location.z += 0.5  # Adjust height to avoid ground collision
+            locations.append(transform.location)
+            target_vehicle = self.world.spawn_actor(vehicle_bp, transform)
+            vehicles.append(target_vehicle)
+            self.target_vehicle = target_vehicle
+        else:
+            raise ValueError("无法找到中间车道，无法生成目标车辆")
+
+        # Spawn the ego vehicle in the same lane, 20 meters behind
         ego_spawn_point = spawn_points
-        # ego_spawn_point.location = vehicles[1].location
-        ego_spawn_point.location = locations[1]
-        self.target_vehicle = vehicles[1]
-        ego_spawn_point.location.x -= 20
+        ego_spawn_point.location = locations[0]  # Same lane as target
+        ego_spawn_point.location.x -= 20  # 20 meters behind
         self.ego_vehicle = self.world.spawn_actor(ego_vehicle_bp, ego_spawn_point)
-
-        left_ego_spawn_point = ego_spawn_point
-        left_ego_spawn_point.location = locations[0]
-        left_ego_spawn_point.location.x -= 5
-        vehicle = self.world.spawn_actor(vehicle_bp, left_ego_spawn_point)
-        vehicles.append(vehicle)
-
-        right_ego_spawn_point = ego_spawn_point
-        right_ego_spawn_point.location = locations[2]
-        right_ego_spawn_point.location.x -= 5
-        vehicle = self.world.spawn_actor(vehicle_bp, right_ego_spawn_point)
-        vehicles.append(vehicle)
-
-
-
         vehicles.append(self.ego_vehicle)
-        # print(f"Ego Vehicle spawned at: {ego_spawn_point.location}")
 
-        # Enable autopilot for all vehicles
+
+
+        # # 生成左侧车道车辆
+        # left_ego_spawn_point = ego_spawn_point
+        # left_ego_spawn_point.location = locations[0]
+        # left_ego_spawn_point.location.x -= 5
+        # vehicle = self.world.spawn_actor(vehicle_bp, left_ego_spawn_point)
+        # vehicles.append(vehicle)
+        #
+        # # 生成右侧车道车辆
+        # right_ego_spawn_point = ego_spawn_point
+        # right_ego_spawn_point.location = locations[2]
+        # right_ego_spawn_point.location.x -= 5
+        # vehicle = self.world.spawn_actor(vehicle_bp, right_ego_spawn_point)
+        # vehicles.append(vehicle)
+
+
+        # Enable autopilot for the target vehicle
         tm = self.client.get_trafficmanager(8000)
         tm.set_global_distance_to_leading_vehicle(2.0)
         tm.set_synchronous_mode(True)
         tm_port = tm.get_port()
-        
-        for vehicle in vehicles[:-1]:
+
+        for vehicle in vehicles[:-1]:  # Only target vehicle
             vehicle.set_autopilot(True, tm_port)
             tm.auto_lane_change(vehicle, False)
+            tm.vehicle_percentage_speed_difference(vehicle, 40.0)  # 设置为道路限速的60%
         if not self.manual_mode:
-            vehicles[-1].set_autopilot(True, tm_port)
+            vehicles[-1].set_autopilot(True, tm_port)  # Ego vehicle
             tm.auto_lane_change(vehicles[-1], False)
-
 
         # Set up radar sensor on the ego vehicle
         radar_bp = blueprint_library.find('sensor.other.radar')
@@ -150,6 +155,123 @@ class acc:
         lidar_transform = carla.Transform(carla.Location(x=0.0, z=2.0))
         self.lidar = self.world.spawn_actor(lidar_bp, lidar_transform, attach_to=self.ego_vehicle)
 
+
+    # def init_carla(self):
+    #     # Connect to the CARLA server
+    #     self.client = carla.Client('localhost', 2000)
+    #     self.client.set_timeout(30.0)
+    #     self.world = self.client.get_world()
+    #     # Load layered map for Town 01 with minimum layout plus buildings and parked vehicles
+    #     self.world = self.client.load_world('Town04', carla.MapLayer.Buildings | carla.MapLayer.ParkedVehicles)
+    #
+    #     # Toggle all buildings off
+    #     self.world.unload_map_layer(carla.MapLayer.Buildings)
+    #
+    #     # Toggle all buildings on
+    #     self.world.load_map_layer(carla.MapLayer.Buildings)
+    #
+    #     # Get the blueprint library and map
+    #     blueprint_library = self.world.get_blueprint_library()
+    #     map = self.world.get_map()
+    #
+    #     self.manual_mode = False
+    #     self.manual_control = carla.VehicleControl(throttle=0.0, steer=0.0, brake=0.0)
+    #     # Initialize Pygame for manual control
+    #     if self.manual_mode:
+    #         pygame.init()
+    #         pygame.display.set_mode((200, 200))  # Small window for Pygame events
+    #         pygame.key.set_repeat(50, 50)  # Enable key repeat for smooth control
+    #
+    #     # Select vehicle blueprints
+    #     vehicle_bp = blueprint_library.filter('vehicle.tesla.model3')[0]
+    #     ego_vehicle_bp = blueprint_library.filter('vehicle.audi.etron')[0]
+    #
+    #     # Get all valid spawn points on the road
+    #     spawn_points = map.get_spawn_points()[0]
+    #
+    #     waypoint = map.get_waypoint(spawn_points.location)
+    #     lanes = []
+    #     current_waypoint = waypoint
+    #     for _ in range(3):
+    #         lanes.append(current_waypoint)
+    #         current_waypoint = current_waypoint.get_left_lane()
+    #         if current_waypoint is None:
+    #             break
+    #
+    #     vehicles = []
+    #     locations = []
+    #     for lane in lanes:
+    #         if lane is not None:
+    #             transform = lane.transform
+    #             transform.location.z += 0.5
+    #             locations.append(transform.location)
+    #             vehicle = self.world.spawn_actor(vehicle_bp, transform)
+    #             vehicles.append(vehicle)
+    #
+    #     # Spawn the ego vehicle
+    #     ego_spawn_point = spawn_points
+    #     # ego_spawn_point.location = vehicles[1].location
+    #     ego_spawn_point.location = locations[1]
+    #     self.target_vehicle = vehicles[1]
+    #     ego_spawn_point.location.x -= 15
+    #     self.ego_vehicle = self.world.spawn_actor(ego_vehicle_bp, ego_spawn_point)
+    #
+    #     left_ego_spawn_point = ego_spawn_point
+    #     left_ego_spawn_point.location = locations[0]
+    #     left_ego_spawn_point.location.x -= 5
+    #     vehicle = self.world.spawn_actor(vehicle_bp, left_ego_spawn_point)
+    #     vehicles.append(vehicle)
+    #
+    #     right_ego_spawn_point = ego_spawn_point
+    #     right_ego_spawn_point.location = locations[2]
+    #     right_ego_spawn_point.location.x -= 5
+    #     vehicle = self.world.spawn_actor(vehicle_bp, right_ego_spawn_point)
+    #     vehicles.append(vehicle)
+    #
+    #     vehicles.append(self.ego_vehicle)
+    #
+    #     # Enable autopilot for all vehicles
+    #     tm = self.client.get_trafficmanager(8000)
+    #     tm.set_global_distance_to_leading_vehicle(2.0)
+    #     tm.set_synchronous_mode(True)
+    #     tm_port = tm.get_port()
+    #
+    #     for vehicle in vehicles[:-1]:
+    #         vehicle.set_autopilot(True, tm_port)
+    #         tm.auto_lane_change(vehicle, False)
+    #         tm.vehicle_percentage_speed_difference(vehicle, 40.0)  # 设置为道路限速的60%
+    #     if not self.manual_mode:
+    #         vehicles[-1].set_autopilot(True, tm_port)
+    #         tm.auto_lane_change(vehicles[-1], False)
+    #
+    #     # Set up radar sensor on the ego vehicle
+    #     radar_bp = blueprint_library.find('sensor.other.radar')
+    #     radar_bp.set_attribute('range', '100.0')
+    #     radar_bp.set_attribute('horizontal_fov', '120.0')
+    #     radar_bp.set_attribute('vertical_fov', '30.0')
+    #     radar_bp.set_attribute('points_per_second', '10000')
+    #     radar_transform = carla.Transform(carla.Location(x=2.0, z=1.0))
+    #     self.radar = self.world.spawn_actor(radar_bp, radar_transform, attach_to=self.ego_vehicle)
+    #
+    #     # Set up camera sensor on the ego vehicle
+    #     camera_bp = blueprint_library.find('sensor.camera.rgb')
+    #     camera_bp.set_attribute('image_size_x', '1280')
+    #     camera_bp.set_attribute('image_size_y', '720')
+    #     camera_bp.set_attribute('fov', '90')
+    #     camera_transform = carla.Transform(carla.Location(x=1.5, z=1.5))
+    #     self.camera = self.world.spawn_actor(camera_bp, camera_transform, attach_to=self.ego_vehicle)
+    #
+    #     # Set up LIDAR sensor on the ego vehicle
+    #     lidar_bp = blueprint_library.find('sensor.lidar.ray_cast')
+    #     lidar_bp.set_attribute('range', '100.0')
+    #     lidar_bp.set_attribute('points_per_second', '1000')
+    #     lidar_bp.set_attribute('rotation_frequency', '10')
+    #     lidar_bp.set_attribute('upper_fov', '10')
+    #     lidar_bp.set_attribute('lower_fov', '-10')
+    #     lidar_transform = carla.Transform(carla.Location(x=0.0, z=2.0))
+    #     self.lidar = self.world.spawn_actor(lidar_bp, lidar_transform, attach_to=self.ego_vehicle)
+
+
     def get_ego_speed(self, vehicle):
         velocity = vehicle.get_velocity()  # carla.Vector3D
         speed_m_s = math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2)
@@ -157,13 +279,49 @@ class acc:
         return speed_m_s
 
         # Radar callback
+    # def radar_callback(self, radar_data):
+    #     # print(f"Radar callback triggered, frame: {radar_data.frame}, detections: {len(radar_data)}")
+    #     self.radar_points = []
+    #     self.filted_points = []
+    #     ego_velocity = self.get_ego_speed(self.ego_vehicle)
+    #     velocity_tolerance = 1.0  # m/s tolerance for static points
+    #
+    #     for detection in radar_data:
+    #         try:
+    #             distance = detection.depth
+    #             azimuth = math.degrees(detection.azimuth)
+    #             altitude = math.degrees(detection.altitude)
+    #             velocity = detection.velocity
+    #             x = distance * math.cos(math.radians(altitude)) * math.cos(math.radians(azimuth))
+    #             y = -distance * math.cos(math.radians(altitude)) * math.sin(math.radians(azimuth))
+    #             z = distance * math.sin(math.radians(altitude))
+    #             vx = velocity * math.cos(math.radians(altitude)) * math.cos(math.radians(azimuth))
+    #             vy = velocity * math.cos(math.radians(altitude)) * math.sin(math.radians(azimuth))
+    #             vz = velocity * math.sin(math.radians(altitude))
+    #             expected_static_velocity = -ego_velocity * math.cos(math.radians(azimuth)) * math.cos(math.radians(altitude))
+    #             if z > -0.5:
+    #                 self.radar_points.append([x, y, z, vx, vy, vz, velocity])
+    #                 if abs(velocity - expected_static_velocity) > velocity_tolerance:
+    #                     self.filted_points.append([x, y, z, vx, vy, vz, velocity])
+    #         except AttributeError as e:
+    #             print(f"AttributeError: {e}. Raw detection: {detection}")
+    #             break
+    #
+    #     if self.filted_points:
+    #         # if cluster_points:
+    #         self.cluster = self.radar_point_cluster.radar_cluster(self.filted_points)
+    #         if self.cluster:
+    #             # track_id = tracker.update(np.concatenate((np.array(cluster)[:, 0:2], np.array(cluster)[:, 6:8]), axis=1))
+    #             self.track_id = self.tracker.update(self.cluster)
+    #         else:
+    #             self.track_id = []
+
+    # Camera callback
     def radar_callback(self, radar_data):
-        # print(f"Radar callback triggered, frame: {radar_data.frame}, detections: {len(radar_data)}")
         self.radar_points = []
         self.filted_points = []
         ego_velocity = self.get_ego_speed(self.ego_vehicle)
-        velocity_tolerance = 1.0  # m/s tolerance for static points
-        
+        velocity_tolerance = 1.0
         for detection in radar_data:
             try:
                 distance = detection.depth
@@ -176,25 +334,30 @@ class acc:
                 vx = velocity * math.cos(math.radians(altitude)) * math.cos(math.radians(azimuth))
                 vy = velocity * math.cos(math.radians(altitude)) * math.sin(math.radians(azimuth))
                 vz = velocity * math.sin(math.radians(altitude))
-                expected_static_velocity = -ego_velocity * math.cos(math.radians(azimuth)) * math.cos(math.radians(altitude))
+                expected_static_velocity = -ego_velocity * math.cos(math.radians(azimuth)) * math.cos(
+                    math.radians(altitude))
                 if z > -0.5:
                     self.radar_points.append([x, y, z, vx, vy, vz, velocity])
                     if abs(velocity - expected_static_velocity) > velocity_tolerance:
                         self.filted_points.append([x, y, z, vx, vy, vz, velocity])
             except AttributeError as e:
                 print(f"AttributeError: {e}. Raw detection: {detection}")
-                break
-
         if self.filted_points:
-            # if cluster_points:
             self.cluster = self.radar_point_cluster.radar_cluster(self.filted_points)
             if self.cluster:
-                # track_id = tracker.update(np.concatenate((np.array(cluster)[:, 0:2], np.array(cluster)[:, 6:8]), axis=1))
                 self.track_id = self.tracker.update(self.cluster)
+                #print(f"Track ID: {self.track_id}")
+                for track in self.track_id:
+                    if not all(np.isfinite(track)):
+                        print(f"Invalid track data: {track}")
+                        self.track_id = []
+                        break
             else:
                 self.track_id = []
-
-    # Camera callback
+                print("No clusters found")
+        else:
+            self.track_id = []
+            print("No filtered points")
     def camera_callback(self, image):
         array = np.frombuffer(image.raw_data, dtype=np.uint8)
         array = array.reshape((image.height, image.width, 4))
@@ -314,70 +477,123 @@ class acc:
             self.ego_vehicle.apply_control(self.manual_control)
             print(f"Manual: Throttle={self.manual_control.throttle:.2f}, Steer={self.manual_control.steer:.2f}, Brake={self.manual_control.brake:.2f}")
         
+    # def generate_target(self):
+    #     try:
+    #         print("Starting radar, camera, LIDAR, and object detection ROS publishing (press Ctrl+C to stop)...")
+    #         self.get_extrinsic_params(self.radar, self.camera)
+    #
+    #
+    #         self.count = 0
+    #         while True:
+    #             self.world.tick()
+    #
+    #             if self.manual_mode:
+    #                 self.handle_manual_control()
+    #
+    #
+    #
+    #             # select target
+    #             if self.latest_camera_image is not None:
+    #                 image_with_radar = self.latest_camera_image.copy()
+    #                 # lane_windows, lane_image = self.lane_detector.lane_detect(image_with_radar)
+    #                 track_id = self.track_id.copy()
+    #                 if track_id is not None:
+    #                     projected_points = self.project_radar_to_camera(track_id)
+    #                     current_target_idx = -1
+    #                     # print(projected_points)
+    #
+    #                     for idx in range(len(track_id)):
+    #                         u, v, ipm_u, ipm_v = projected_points[idx]
+    #                         color = (255, 0, 0)# if self.track_id[idx][0] < 10 else (0, 255, 0)
+    #                         cv2.circle(image_with_radar, (u, v), 5, color, -1)
+    #                         # if (idx < len(track_id)):
+    #
+    #                         if ipm_v < 0:
+    #                             ipm_v = 0
+    #
+    #
+    #                         curve_left_dis = 0
+    #                         curve_right_dis = 0
+    #
+    #                         # # emergency stop
+    #                         if ((-1.5 + curve_left_dis) < track_id[idx][1] < (1.5 + curve_right_dis)) and track_id[idx][6] > -1 : #and (track_id[idx][0] < 20):
+    #                             if ((current_target_idx != -1) and (track_id[idx][0] < track_id[current_target_idx][0])) or (current_target_idx == -1):
+    #                                 # #select target in lane windows
+    #                                 out_lane = 0
+    #
+    #                                 if not out_lane:
+    #                                     current_target_idx = idx
+    #
+    #                     if current_target_idx >= 0:
+    #                         cv2.circle(image_with_radar, (projected_points[current_target_idx][0], projected_points[current_target_idx][1]), 10, (255, 255, 255), -1)
+    #
+    #                         cv2.putText(image_with_radar, "id=" + str(track_id[current_target_idx][-1]), (projected_points[current_target_idx][0] + 5, projected_points[current_target_idx][1]), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (150,225,100), 2)
+    #                         print("current target info (x, y, z, w, l, h, vx, vy, vz, track_id): ", track_id[current_target_idx])
+    #                         self.target_vehicle = track_id[current_target_idx]
+    #
+    #
+    #                 cv2.imshow("Radar and Objects on Camera", image_with_radar)
+    #                 cv2.waitKey(1)
+    #
+    #
+    #     except KeyboardInterrupt:
+    #         print("\nStopped by user.")
+    #     finally:
+    #         cv2.destroyAllWindows()
     def generate_target(self):
+        acc_controller = ACCPlanningControl(self.ego_vehicle, target_speed_kmh=60.0, time_gap=2.0,
+                                            max_follow_distance=self.max_follow_distance)
         try:
-            print("Starting radar, camera, LIDAR, and object detection ROS publishing (press Ctrl+C to stop)...")
+            print("Starting radar, camera, LIDAR, and ACC control...")
             self.get_extrinsic_params(self.radar, self.camera)
-
-
             self.count = 0
             while True:
                 self.world.tick()
-
                 if self.manual_mode:
                     self.handle_manual_control()
-
-
-
-                # select target
-                if self.latest_camera_image is not None:
-                    image_with_radar = self.latest_camera_image.copy()
-                    # lane_windows, lane_image = self.lane_detector.lane_detect(image_with_radar)
-                    track_id = self.track_id.copy()
-                    if track_id is not None:
-                        projected_points = self.project_radar_to_camera(track_id)
-                        current_target_idx = -1
-                        # print(projected_points)
-
-                        for idx in range(len(track_id)):
-                            u, v, ipm_u, ipm_v = projected_points[idx]
-                            color = (255, 0, 0)# if self.track_id[idx][0] < 10 else (0, 255, 0)
-                            cv2.circle(image_with_radar, (u, v), 5, color, -1)
-                            # if (idx < len(track_id)):
-
-                            if ipm_v < 0:
-                                ipm_v = 0
-
-
-                            curve_left_dis = 0
-                            curve_right_dis = 0
-
-                            # # emergency stop
-                            if ((-1.5 + curve_left_dis) < track_id[idx][1] < (1.5 + curve_right_dis)) and track_id[idx][6] > -1 : #and (track_id[idx][0] < 20):
-                                if ((current_target_idx != -1) and (track_id[idx][0] < track_id[current_target_idx][0])) or (current_target_idx == -1):
-                                    # #select target in lane windows
-                                    out_lane = 0
-
-                                    if not out_lane:
+                else:
+                    if self.latest_camera_image is not None:
+                        image_with_radar = self.latest_camera_image.copy()
+                        track_id = self.track_id.copy() if self.track_id is not None else []
+                        target_info = None
+                        if track_id:
+                            projected_points = self.project_radar_to_camera(track_id)
+                            current_target_idx = -1
+                            for idx in range(len(track_id)):
+                                u, v, ipm_u, ipm_v = projected_points[idx]
+                                color = (255, 0, 0)
+                                cv2.circle(image_with_radar, (u, v), 5, color, -1)
+                                if ipm_v < 0:
+                                    ipm_v = 0
+                                curve_left_dis = 0
+                                curve_right_dis = 0
+                                if ((-1.5 + curve_left_dis) < track_id[idx][1] < (1.5 + curve_right_dis)) and \
+                                        track_id[idx][6] > -1:
+                                    if ((current_target_idx != -1) and (
+                                            track_id[idx][0] < track_id[current_target_idx][0])) or (
+                                            current_target_idx == -1):
                                         current_target_idx = idx
-
-                        if current_target_idx >= 0:
-                            cv2.circle(image_with_radar, (projected_points[current_target_idx][0], projected_points[current_target_idx][1]), 10, (255, 255, 255), -1)
-
-                            cv2.putText(image_with_radar, "id=" + str(track_id[current_target_idx][-1]), (projected_points[current_target_idx][0] + 5, projected_points[current_target_idx][1]), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (150,225,100), 2)
-                            print("current target info (x, y, z, w, l, h, vx, vy, vz, track_id): ", track_id[current_target_idx])
-                            self.target_vehicle = track_id[current_target_idx]
-
-
-                    cv2.imshow("Radar and Objects on Camera", image_with_radar)
-                    cv2.waitKey(1)
-
-
+                            if current_target_idx >= 0:
+                                cv2.circle(image_with_radar, (
+                                projected_points[current_target_idx][0], projected_points[current_target_idx][1]), 10,
+                                           (255, 255, 255), -1)
+                                cv2.putText(image_with_radar, "id=" + str(track_id[current_target_idx][-1]),
+                                            (projected_points[current_target_idx][0] + 5,
+                                             projected_points[current_target_idx][1]),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (150, 225, 100), 2)
+                                target_info = track_id[current_target_idx]
+                                print(f"Selected target info: {target_info}")
+                                if not all(np.isfinite(target_info)):
+                                    print("Invalid target info, skipping control")
+                                    target_info = None
+                        control = acc_controller.update(target_info)
+                        self.ego_vehicle.apply_control(control)
+                        cv2.imshow("Radar and Objects on Camera", image_with_radar)
+                        cv2.waitKey(1)
         except KeyboardInterrupt:
             print("\nStopped by user.")
         finally:
             cv2.destroyAllWindows()
-
     def destroy(self):
         # Cleanup
         self.radar.stop()
