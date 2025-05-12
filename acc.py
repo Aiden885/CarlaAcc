@@ -123,7 +123,7 @@ class acc:
         for vehicle in vehicles[:-1]:  # Only target vehicle
             vehicle.set_autopilot(True, tm_port)
             tm.auto_lane_change(vehicle, False)
-            tm.vehicle_percentage_speed_difference(vehicle, 40.0)  # 设置为道路限速的60%
+            tm.vehicle_percentage_speed_difference(vehicle, 60.0)
         if not self.manual_mode:
             vehicles[-1].set_autopilot(True, tm_port)  # Ego vehicle
             tm.auto_lane_change(vehicles[-1], False)

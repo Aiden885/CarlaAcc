@@ -25,14 +25,14 @@ class ACCPlanningControl:
         self.prev_accel = 0.0
         self.prev_steer = 0.0
         self.smooth_alpha = 0.7  # 平滑因子
-        self.horizon = 10  # MPC 预测时域
+        self.horizon = 3  # MPC 预测时域
         # MPC 权重
         self.Q_dist = 1.0  # 纵向距离权重
-        self.Q_vel = 0.5  # 速度权重
-        self.R_accel = 0.2  # 加速度控制权重
-        self.Q_y = 2.0  # 横向偏移权重
+        self.Q_vel = 1.0  # 速度权重
+        self.R_accel = 1.0  # 加速度控制权重
+        self.Q_y = 0.5  # 横向偏移权重
         self.Q_yvel = 0.5  # 横向速度权重
-        self.R_steer = 0.1  # 转向控制权重
+        self.R_steer = 1.0  # 转向控制权重
         self.max_steer_angle = 0.5  # 最大转向角（弧度）
         self.mode = ACCMode.CRUISE
         if not hasattr(self, 'prev_control'):
@@ -91,43 +91,34 @@ class ACCPlanningControl:
         return ref_speed, ref_dist, ref_y_offset, ref_y_vel
 
     def mpc_control(self, ref_speed, ref_dist, ref_y_offset, ref_y_vel, dist, rel_vel, ego_speed, y_offset, y_vel):
-        # 检查输入是否有效
         if not all(
                 np.isfinite([dist, rel_vel, ego_speed, y_offset, y_vel, ref_speed, ref_dist, ref_y_offset, ref_y_vel])):
             print("Invalid MPC inputs, using previous controls")
             return self.prev_accel, self.prev_steer
 
-        # 初始状态向量 [dist, rel_vel, ego_speed, y_offset, y_vel]
         x = np.array([dist, rel_vel, ego_speed, y_offset, y_vel], dtype=np.float64)
-
-        # 定义控制变量 [加速度, 转向角]
         u = cp.Variable((self.horizon, 2))
         states = [x]
 
-        # 定义状态转移矩阵 A（固定部分）
         A = np.array([[1, self.control_dt, 0, 0, 0],
                       [0, 1, -self.control_dt, 0, 0],
                       [0, 0, 1, 0, 0],
                       [0, 0, 0, 1, self.control_dt],
                       [0, 0, 0, 0, 1]], dtype=np.float64)
-
-        # 定义固定的 B 矩阵（仅包含常数项）
-        B_fixed = np.array([[0, 0],
-                            [0, 0],
-                            [self.control_dt, 0],
-                            [0, 0],
-                            [0, 0]], dtype=np.float64)
+        B = np.array([[0, 0],
+                      [0, 0],
+                      [self.control_dt, 0],
+                      [0, 0],
+                      [0, self.control_dt]], dtype=np.float64)
 
         cost = 0
         constraints = []
 
-        # 遍历预测horizon
         for t in range(self.horizon):
             state = states[-1]
             dist_t, rel_vel_t, ego_speed_t, y_offset_t, y_vel_t = state
             a_t, delta_t = u[t, 0], u[t, 1]
 
-            # 定义成本函数
             if self.mode == "CRUISE":
                 cost += self.Q_vel * cp.square(ego_speed_t - ref_speed)
             elif self.mode == "STOP":
@@ -138,22 +129,19 @@ class ACCPlanningControl:
             cost += self.Q_y * cp.square(y_offset_t - ref_y_offset) + self.Q_yvel * cp.square(y_vel_t - ref_y_vel)
             cost += self.R_accel * cp.square(a_t) + self.R_steer * cp.square(delta_t)
 
-            # 状态更新（直接使用 cvxpy 表达式）
+            # 状态更新，使用初始 ego_speed 线性化
             dist_next = dist_t + self.control_dt * rel_vel_t
             rel_vel_next = rel_vel_t - self.control_dt * a_t
             ego_speed_next = ego_speed_t + self.control_dt * a_t
             y_offset_next = y_offset_t + self.control_dt * y_vel_t
-            y_vel_next = y_vel_t + self.control_dt * (ego_speed_t * delta_t)  # 动态部分
+            y_vel_next = y_vel_t + self.control_dt * (ego_speed * delta_t)  # 使用初始 ego_speed
 
-            # 组合下一状态
             next_state = cp.vstack([dist_next, rel_vel_next, ego_speed_next, y_offset_next, y_vel_next])
             states.append(next_state)
 
-        # 添加控制约束
         constraints += [u[:, 0] >= self.max_decel, u[:, 0] <= self.max_accel,
                         u[:, 1] >= -self.max_steer_angle, u[:, 1] <= self.max_steer_angle]
 
-        # 求解优化问题
         try:
             prob = cp.Problem(cp.Minimize(cost), constraints)
             prob.solve(solver=cp.ECOS)
