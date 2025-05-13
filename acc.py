@@ -551,6 +551,8 @@ class acc:
                 else:
                     if self.latest_camera_image is not None:
                         image_with_radar = self.latest_camera_image.copy()
+
+                        lane_windows, lane_image = self.lane_detector.lane_detect(image_with_radar)
                         track_id = self.track_id.copy() if self.track_id is not None else []
                         target_info = None
                         if track_id:
@@ -586,7 +588,8 @@ class acc:
                         control = acc_controller.update(target_info)
                         self.ego_vehicle.apply_control(control)
                         cv2.imshow("Radar and Objects on Camera", image_with_radar)
-                        cv2.waitKey(1)
+                        # cv2.imwrite("D:\Apps\carla\CARLA_0.9.14\WindowsNoEditor\image_with_radar.png", image_with_radar)
+                        # cv2.waitKey(1)
         except KeyboardInterrupt:
             print("\nStopped by user.")
         finally:
