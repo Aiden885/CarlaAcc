@@ -77,21 +77,6 @@
                           </GrepCompositeModel>
                         </option>
                       </Pin>
-                      <Pin>
-                        <option name="consoleUUID" value="ca07d793-c514-4ba1-9bbe-3966fa96abff" />
-                        <option name="contentType" value="ConsoleContent" />
-                        <option name="grepCompositeModel">
-                          <GrepCompositeModel>
-                            <option name="models">
-                              <list>
-                                <GrepModel>
-                                  <option name="expression" value="steer" />
-                                </GrepModel>
-                              </list>
-                            </option>
-                          </GrepCompositeModel>
-                        </option>
-                      </Pin>
                     </list>
                   </option>
                 </Pins>

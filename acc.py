@@ -8,6 +8,8 @@ import radar_cluster
 import pygame
 import threading
 from acc_planning_control import ACCPlanningControl
+
+
 class acc:
     def __init__(self):
         self.tracker = kalman_filter.RadarTracker()
@@ -29,7 +31,6 @@ class acc:
         self.target_vehicle = None
 
         self.init_carla()
-
 
     def init_carla(self):
         # Connect to the CARLA server
@@ -97,8 +98,6 @@ class acc:
         self.ego_vehicle = self.world.spawn_actor(ego_vehicle_bp, ego_spawn_point)
         vehicles.append(self.ego_vehicle)
 
-
-
         # # 生成左侧车道车辆
         # left_ego_spawn_point = ego_spawn_point
         # left_ego_spawn_point.location = locations[0]
@@ -112,7 +111,6 @@ class acc:
         # right_ego_spawn_point.location.x -= 5
         # vehicle = self.world.spawn_actor(vehicle_bp, right_ego_spawn_point)
         # vehicles.append(vehicle)
-
 
         # Enable autopilot for the target vehicle
         tm = self.client.get_trafficmanager(8000)
@@ -154,7 +152,6 @@ class acc:
         lidar_bp.set_attribute('lower_fov', '-10')
         lidar_transform = carla.Transform(carla.Location(x=0.0, z=2.0))
         self.lidar = self.world.spawn_actor(lidar_bp, lidar_transform, attach_to=self.ego_vehicle)
-
 
     # def init_carla(self):
     #     # Connect to the CARLA server
@@ -271,14 +268,14 @@ class acc:
     #     lidar_transform = carla.Transform(carla.Location(x=0.0, z=2.0))
     #     self.lidar = self.world.spawn_actor(lidar_bp, lidar_transform, attach_to=self.ego_vehicle)
 
-
     def get_ego_speed(self, vehicle):
         velocity = vehicle.get_velocity()  # carla.Vector3D
-        speed_m_s = math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2)
+        speed_m_s = math.sqrt(velocity.x ** 2 + velocity.y ** 2 + velocity.z ** 2)
         speed_kmh = speed_m_s * 3.6  # Convert m/s to km/h
         return speed_m_s
 
         # Radar callback
+
     # def radar_callback(self, radar_data):
     #     # print(f"Radar callback triggered, frame: {radar_data.frame}, detections: {len(radar_data)}")
     #     self.radar_points = []
@@ -346,7 +343,7 @@ class acc:
             self.cluster = self.radar_point_cluster.radar_cluster(self.filted_points)
             if self.cluster:
                 self.track_id = self.tracker.update(self.cluster)
-                #print(f"Track ID: {self.track_id}")
+                # print(f"Track ID: {self.track_id}")
                 for track in self.track_id:
                     if not all(np.isfinite(track)):
                         print(f"Invalid track data: {track}")
@@ -358,6 +355,7 @@ class acc:
         else:
             self.track_id = []
             print("No filtered points")
+
     def camera_callback(self, image):
         array = np.frombuffer(image.raw_data, dtype=np.uint8)
         array = array.reshape((image.height, image.width, 4))
@@ -394,23 +392,22 @@ class acc:
             world_point = np.dot(self.radar_2_world, radar_point)
             camera_point = np.dot(self.world_2_camera, world_point)
             point_in_camera_coords = np.array([
-                    camera_point[1],
-                    camera_point[2] * -1,
-                    camera_point[0]])
+                camera_point[1],
+                camera_point[2] * -1,
+                camera_point[0]])
             # if point_in_camera_coords[2] > 0:
             u = cx + (fx * point_in_camera_coords[0] / point_in_camera_coords[2])
             v = cy + (fy * point_in_camera_coords[1] / point_in_camera_coords[2])
 
-            
             # if 0 <= u < image_width and 300 <= v < image_height:
             ipm_point = np.dot(self.lane_detector.M, np.array([u, v - 300, 1]))
             ipm_point[0] = ipm_point[0] / ipm_point[2]
             ipm_point[1] = ipm_point[1] / ipm_point[2]
 
             projected_points.append([int(u), int(v), int(ipm_point[0]), int(ipm_point[1])])
-        
-        return projected_points#, track_id
-    
+
+        return projected_points  # , track_id
+
     # Function to compute IPM transformation matrix
     def get_ipm_transform_matrix(self, camera_sensor, K, image_width=1280, image_height=720):
         camera_height = camera_sensor.get_transform().location.z
@@ -434,7 +431,6 @@ class acc:
         print("Camera IPM Transformation Matrix (Homography H):")
         print(H)
         return H
-    
 
     # Function to handle manual control
     def handle_manual_control(self):
@@ -445,38 +441,39 @@ class acc:
                     print(f"Switched to {'manual' if self.manual_mode else 'autonomous'} mode")
                     if self.manual_mode:
                         self.manual_control = carla.VehicleControl(throttle=0.0, steer=0.0, brake=0.0)
-        
+
         if self.manual_mode:
             keys = pygame.key.get_pressed()
             throttle_increment = 0.1
             steer_increment = 0.1
-            
+
             # Throttle control
             if keys[pygame.K_w]:
                 self.manual_control.throttle = min(self.manual_control.throttle + throttle_increment, 1.0)
             if keys[pygame.K_s]:
                 self.manual_control.throttle = max(self.manual_control.throttle - throttle_increment, 0.0)
-            
+
             # Steering control
             if keys[pygame.K_a]:
                 self.manual_control.steer = max(self.manual_control.steer - steer_increment, -1.0)
             if keys[pygame.K_d]:
                 self.manual_control.steer = min(self.manual_control.steer + steer_increment, 1.0)
-            
+
             # Brake control
             if keys[pygame.K_SPACE]:
                 self.manual_control.brake = 1.0
                 self.manual_control.throttle = 0.0
             else:
                 self.manual_control.brake = 0.0
-            
+
             # Reset steer if no input
             if not (keys[pygame.K_a] or keys[pygame.K_d]):
                 self.manual_control.steer *= 0.9  # Dampen steering
-            
+
             self.ego_vehicle.apply_control(self.manual_control)
-            print(f"Manual: Throttle={self.manual_control.throttle:.2f}, Steer={self.manual_control.steer:.2f}, Brake={self.manual_control.brake:.2f}")
-        
+            print(
+                f"Manual: Throttle={self.manual_control.throttle:.2f}, Steer={self.manual_control.steer:.2f}, Brake={self.manual_control.brake:.2f}")
+
     # def generate_target(self):
     #     try:
     #         print("Starting radar, camera, LIDAR, and object detection ROS publishing (press Ctrl+C to stop)...")
@@ -541,7 +538,7 @@ class acc:
     #     finally:
     #         cv2.destroyAllWindows()
     def generate_target(self):
-        acc_controller = ACCPlanningControl(self.ego_vehicle, target_speed_kmh=60.0, time_gap=2.0,
+        acc_controller = ACCPlanningControl(self.ego_vehicle, target_speed_kmh=40.0, time_gap=2.0,
                                             max_follow_distance=self.max_follow_distance)
         try:
             print("Starting radar, camera, LIDAR, and ACC control...")
@@ -567,15 +564,15 @@ class acc:
                                     ipm_v = 0
                                 curve_left_dis = 0
                                 curve_right_dis = 0
-                                if ((-1.5 + curve_left_dis) < track_id[idx][1] < (1.5 + curve_right_dis)) and \
-                                        track_id[idx][6] > -1:
+                                if ((-2 + curve_left_dis) < track_id[idx][1] < (2 + curve_right_dis)):
                                     if ((current_target_idx != -1) and (
                                             track_id[idx][0] < track_id[current_target_idx][0])) or (
                                             current_target_idx == -1):
                                         current_target_idx = idx
                             if current_target_idx >= 0:
                                 cv2.circle(image_with_radar, (
-                                projected_points[current_target_idx][0], projected_points[current_target_idx][1]), 10,
+                                    projected_points[current_target_idx][0], projected_points[current_target_idx][1]),
+                                           10,
                                            (255, 255, 255), -1)
                                 cv2.putText(image_with_radar, "id=" + str(track_id[current_target_idx][-1]),
                                             (projected_points[current_target_idx][0] + 5,
@@ -594,6 +591,7 @@ class acc:
             print("\nStopped by user.")
         finally:
             cv2.destroyAllWindows()
+
     def destroy(self):
         # Cleanup
         self.radar.stop()
@@ -610,17 +608,17 @@ class acc:
 
 def main():
     acc_actor = acc()
-    
+
     thread_1 = threading.Thread(target=acc_actor.radar.listen(acc_actor.radar_callback), name='T1')
     thread_2 = threading.Thread(target=acc_actor.camera.listen(acc_actor.camera_callback), name='T2')
     thread_3 = threading.Thread(target=acc_actor.lidar.listen(acc_actor.lidar_callback), name='T3')
-
 
     thread_1.start()  # 开启T1
     thread_2.start()  # 开启T2
     thread_3.start()
 
     acc_actor.generate_target()
+
 
 if __name__ == '__main__':
     main()
