@@ -2,6 +2,7 @@ import carla
 import math
 import time
 
+###实现纵向PID和横向Stanley控制器
 
 class SimpleACC:
     def __init__(self):

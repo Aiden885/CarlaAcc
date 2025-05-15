@@ -9,7 +9,7 @@ import threading
 import time
 from acc_planning_control import ACCPlanningControl, ACCMode
 
-#用于单独测试Cuise mode功能
+# 用于单独测试Cruise mode功能
 
 class CruiseTest:
     def __init__(self):
@@ -41,8 +41,12 @@ class CruiseTest:
         self.client = carla.Client('localhost', 2000)
         self.client.set_timeout(30.0)
         self.world = self.client.get_world()
+        available_maps = self.client.get_available_maps()
+        print("可用地图列表：")
+        for map_name in available_maps:
+            print(map_name)
         # 加载Town04地图，这个地图有较长的直道，适合测试CRUISE模式
-        self.world = self.client.load_world('Town04', carla.MapLayer.Buildings | carla.MapLayer.ParkedVehicles)
+        self.world = self.client.load_world('Town08', carla.MapLayer.Buildings | carla.MapLayer.ParkedVehicles)
 
         # 关闭建筑物，减少视觉干扰
         self.world.unload_map_layer(carla.MapLayer.Buildings)
@@ -64,28 +68,93 @@ class CruiseTest:
 
         # 获取有效生成点
         spawn_points = self.map.get_spawn_points()
-        # 选择一个直道上的生成点
         spawn_point = None
         for point in spawn_points:
             # 获取该点的路段信息
             waypoint = self.map.get_waypoint(point.location)
             # 检查是否为直道
             if abs(waypoint.transform.rotation.yaw) % 90 < 5 or abs(waypoint.transform.rotation.yaw) % 90 > 85:
-                spawn_point = point
-                break
+                # 获取左侧车道的路点
+                left_lane_waypoint = waypoint.get_left_lane()
+                if left_lane_waypoint and left_lane_waypoint.lane_type == carla.LaneType.Driving:
+                    # 复制左侧车道的变换并调整 z 坐标
+                    spawn_point = carla.Transform(
+                        carla.Location(
+                            x=left_lane_waypoint.transform.location.x,
+                            y=left_lane_waypoint.transform.location.y,
+                            z=left_lane_waypoint.transform.location.z + 0.3  # 增加 0.3 米高度
+                        ),
+                        left_lane_waypoint.transform.rotation
+                    )
+                    print(f"Attempting spawn point in left lane at {spawn_point.location}")
+                    try:
+                        # 尝试生成车辆
+                        self.ego_vehicle = self.world.spawn_actor(ego_vehicle_bp, spawn_point)
+                        print(f"Successfully spawned in left lane at {spawn_point.location}")
+                        break
+                    except RuntimeError as e:
+                        print(f"Spawn failed in left lane at {spawn_point.location}: {e}")
+                        # 如果左侧车道失败，尝试原始生成点
+                        spawn_point = carla.Transform(
+                            carla.Location(
+                                x=point.location.x,
+                                y=point.location.y,
+                                z=point.location.z + 0.3  # 同样增加 0.3 米
+                            ),
+                            point.rotation
+                        )
+                        print(f"Falling back to original spawn point at {spawn_point.location}")
+                        try:
+                            self.ego_vehicle = self.world.spawn_actor(ego_vehicle_bp, spawn_point)
+                            print(f"Successfully spawned in original lane at {spawn_point.location}")
+                            break
+                        except RuntimeError as e:
+                            print(f"Spawn failed in original lane at {spawn_point.location}: {e}")
+                            spawn_point = None
+                            continue
+                else:
+                    # 如果没有有效的左侧车道，尝试原始生成点
+                    spawn_point = carla.Transform(
+                        carla.Location(
+                            x=point.location.x,
+                            y=point.location.y,
+                            z=point.location.z + 0.3
+                        ),
+                        point.rotation
+                    )
+                    print(f"No valid left lane, attempting original spawn point at {spawn_point.location}")
+                    try:
+                        self.ego_vehicle = self.world.spawn_actor(ego_vehicle_bp, spawn_point)
+                        print(f"Successfully spawned in original lane at {spawn_point.location}")
+                        break
+                    except RuntimeError as e:
+                        print(f"Spawn failed in original lane at {spawn_point.location}: {e}")
+                        spawn_point = None
+                        continue
 
         if spawn_point is None:
-            spawn_point = spawn_points[0]  # 如果没找到合适的直道，使用第一个生成点
-
-        self.ego_vehicle = self.world.spawn_actor(ego_vehicle_bp, spawn_point)
+            # 如果所有尝试失败，使用默认生成点并调整 z
+            spawn_point = carla.Transform(
+                carla.Location(
+                    x=spawn_points[1].location.x,
+                    y=spawn_points[1].location.y,
+                    z=spawn_points[1].location.z + 0.3
+                ),
+                spawn_points[1].rotation
+            )
+            print(f"No valid spawn point found, using default spawn point at {spawn_point.location}")
+            try:
+                self.ego_vehicle = self.world.spawn_actor(ego_vehicle_bp, spawn_point)
+                print(f"Successfully spawned at default spawn point at {spawn_point.location}")
+            except RuntimeError as e:
+                raise RuntimeError(f"Failed to spawn at default spawn point {spawn_point.location}: {e}")
 
         # 设置交通管理器
         tm = self.client.get_trafficmanager(8000)
         tm.set_synchronous_mode(True)
         tm_port = tm.get_port()
 
-        # 设置传感器
-        # 设置雷达传感器
+        # 设置传感器（保持不变）
         radar_bp = blueprint_library.find('sensor.other.radar')
         radar_bp.set_attribute('range', '100.0')
         radar_bp.set_attribute('horizontal_fov', '120.0')
@@ -94,7 +163,6 @@ class CruiseTest:
         radar_transform = carla.Transform(carla.Location(x=2.0, z=1.0))
         self.radar = self.world.spawn_actor(radar_bp, radar_transform, attach_to=self.ego_vehicle)
 
-        # 设置摄像头传感器
         camera_bp = blueprint_library.find('sensor.camera.rgb')
         camera_bp.set_attribute('image_size_x', '1280')
         camera_bp.set_attribute('image_size_y', '720')
@@ -102,7 +170,6 @@ class CruiseTest:
         camera_transform = carla.Transform(carla.Location(x=1.5, z=1.5))
         self.camera = self.world.spawn_actor(camera_bp, camera_transform, attach_to=self.ego_vehicle)
 
-        # 设置LIDAR传感器
         lidar_bp = blueprint_library.find('sensor.lidar.ray_cast')
         lidar_bp.set_attribute('range', '100.0')
         lidar_bp.set_attribute('points_per_second', '1000')
@@ -329,6 +396,126 @@ class CruiseTest:
         cv2.putText(image, width_text, (50, h - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
         return image
+
+    def test_cruise_mode(self):
+        # 创建ACC控制器，设置较高的目标速度和较大的最大跟车距离，以便于进入CRUISE模式
+        acc_controller = ACCPlanningControl(self.ego_vehicle, target_speed_kmh=40.0, time_gap=2.0,
+                                            max_follow_distance=self.max_follow_distance)
+
+        try:
+            print("Starting CRUISE mode test...")
+            print("The vehicle should maintain its lane and drive at target speed.")
+            self.get_extrinsic_params(self.radar, self.camera)
+
+            # 创建状态显示窗口
+            cv2.namedWindow("CRUISE Mode Status", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("CRUISE Mode Status", 400, 200)
+
+            mode_colors = {
+                ACCMode.CRUISE: (0, 255, 0),  # 绿色
+                ACCMode.FOLLOW: (255, 255, 0),  # 黄色
+                ACCMode.STOP: (0, 0, 255),  # 红色
+                ACCMode.EMERGENCY: (0, 0, 255)  # 红色
+            }
+
+            while True:
+                self.world.tick()
+
+                if self.manual_mode:
+                    self.handle_manual_control()
+                else:
+                    if self.latest_camera_image is not None:
+                        image_with_radar = self.latest_camera_image.copy()
+
+                        # 使用CARLA API获取车道信息和偏移量
+                        offset, normalized_offset, lane_width = self.get_lane_info()
+
+                        # 在图像上显示车道信息
+                        image_with_lane = self.draw_lane_info(image_with_radar.copy(), offset, normalized_offset,
+                                                              lane_width)
+
+                        # 获取跟踪目标
+                        track_id = self.track_id.copy() if self.track_id is not None else []
+                        target_info = None
+
+                        if track_id:
+                            projected_points = self.project_radar_to_camera(track_id)
+                            current_target_idx = -1
+
+                            # 在图像上显示所有目标
+                            for idx in range(len(track_id)):
+                                if len(projected_points[idx]) >= 2:  # 确保有足够的点坐标
+                                    u, v = projected_points[idx][0:2]
+                                    color = (255, 0, 0)
+                                    cv2.circle(image_with_lane, (u, v), 5, color, -1)
+
+                                # 目标选择逻辑（保持原来的逻辑）
+                                if ((-2) < track_id[idx][1] < 2):
+                                    if ((current_target_idx != -1) and (
+                                            track_id[idx][0] < track_id[current_target_idx][0])) or (
+                                            current_target_idx == -1):
+                                        current_target_idx = idx
+
+                            # 标记选中的目标
+                            if current_target_idx >= 0 and len(projected_points[current_target_idx]) >= 2:
+                                u, v = projected_points[current_target_idx][0:2]
+                                cv2.circle(image_with_lane, (u, v), 10, (255, 255, 255), -1)
+                                cv2.putText(image_with_lane, "id=" + str(track_id[current_target_idx][-1]),
+                                            (u + 5, v), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (150, 225, 100), 2)
+                                target_info = track_id[current_target_idx]
+
+                                # 验证目标有效性
+                                if not all(np.isfinite(target_info)):
+                                    print("Invalid target info, skipping control")
+                                    target_info = None
+
+                        # 应用ACC控制，传递车道偏移信息
+                        control = acc_controller.update(target_info, offset)
+                        self.ego_vehicle.apply_control(control)
+
+                        # 显示当前模式信息
+                        status_image = np.zeros((200, 400, 3), dtype=np.uint8)
+                        mode_text = f"Mode: {acc_controller.mode.name}"
+                        speed_text = f"Speed: {acc_controller.get_ego_state()[0]:.2f} m/s"
+                        target_text = f"Target Speed: {acc_controller.target_speed:.2f} m/s"
+                        lane_text = f"Lane Offset: {offset:.2f} m"
+
+                        cv2.putText(status_image, mode_text, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1,
+                                    mode_colors.get(acc_controller.mode, (255, 255, 255)), 2)
+                        cv2.putText(status_image, speed_text, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 1,
+                                    (255, 255, 255), 2)
+                        cv2.putText(status_image, target_text, (10, 130), cv2.FONT_HERSHEY_SIMPLEX, 1,
+                                    (255, 255, 255), 2)
+                        cv2.putText(status_image, lane_text, (10, 170), cv2.FONT_HERSHEY_SIMPLEX, 1,
+                                    (255, 255, 255), 2)
+
+                        cv2.imshow("CRUISE Mode Status", status_image)
+                        cv2.imshow("Camera View with Lane Info", image_with_lane)
+
+                        key = cv2.waitKey(1)
+                        # 按ESC退出
+                        if key == 27:
+                            break
+
+                        # 按空格键切换到CRUISE模式（强制）
+                        if key == 32:  # 空格键
+                            print("Forcing CRUISE mode")
+                            acc_controller.mode = ACCMode.CRUISE
+
+        except KeyboardInterrupt:
+            print("\nStopped by user.")
+        finally:
+            self.radar.stop()
+            self.camera.stop()
+            self.lidar.stop()
+            cv2.destroyAllWindows()
+
+            # 清理资源
+            self.radar.destroy()
+            self.camera.destroy()
+            self.lidar.destroy()
+            self.ego_vehicle.destroy()
+            print("Test completed and resources cleaned up.")
 
     def test_cruise_mode(self):
         # 创建ACC控制器，设置较高的目标速度和较大的最大跟车距离，以便于进入CRUISE模式
