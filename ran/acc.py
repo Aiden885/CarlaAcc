@@ -1,6 +1,4 @@
 import carla
-import random
-import time
 import math
 import numpy as np
 import cv2
@@ -348,15 +346,6 @@ class acc:
 
                 if self.manual_mode:
                     self.handle_manual_control()
-
-                # Estimate distance to target and control ego vehicle
-                # target_distance = self.estimate_target_distance(self.ego_vehicle, self.target_vehicle, self.latest_lidar_points)
-                # self.follow_target_vehicle(self.ego_vehicle, target_distance)
-
-                # if latest_camera_image is not None:
-                #     cv2.imshow("camera", latest_camera_image)
-                #     cv2.waitKey(1)out_img
-
                 # select target
                 if self.latest_camera_image is not None:
                     image_with_radar = self.latest_camera_image.copy()
@@ -407,7 +396,8 @@ class acc:
                             cv2.putText(image_with_radar, "id=" + str(track_id[current_target_idx][-1]), (projected_points[current_target_idx][0] + 5, projected_points[current_target_idx][1]), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (150,225,100), 2)
                             print("current target info (x, y, z, w, l, h, vx, vy, vz, track_id): ", track_id[current_target_idx])
 
-                    cv2.imshow("lane", lane_image)
+                    if lane_image is not None:
+                        cv2.imshow("lane", lane_image)
                     cv2.imshow("Radar and Objects on Camera", image_with_radar)
                     cv2.waitKey(1)
 

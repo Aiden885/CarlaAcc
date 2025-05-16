@@ -62,8 +62,8 @@ class LaneDetector:
         l_channel = hls[:,:,1]
         s_channel = hls[:,:,2]
         l_channel=l_channel*(255/np.max(l_channel))
-        s_channel=s_channel*(255/np.max(s_channel))
-        l_thresh_min = 210 #np.mean(l_channel)#200
+        # s_channel=s_channel*(255/np.max(s_channel))
+        l_thresh_min = 230 #np.mean(l_channel)#200
         l_thresh_max = 255
         s_thresh_min = 0
         s_thresh_max = 150
@@ -72,10 +72,10 @@ class LaneDetector:
         l_binary = np.zeros_like(l_channel)
         l_binary[(l_channel > l_thresh_min)] = 1
 
-        s_binary = np.zeros_like(s_channel)
-        s_binary[(s_thresh_min < s_channel) & (s_channel < s_thresh_max)] = 1
-        w_binary = np.zeros_like(l_binary)
-        w_binary [(l_binary == 1) & (s_binary == 1)] = 1
+        # s_binary = np.zeros_like(s_channel)
+        # s_binary[(s_thresh_min < s_channel) & (s_channel < s_thresh_max)] = 1
+        # w_binary = np.zeros_like(l_binary)
+        # w_binary [(l_binary == 1) & (s_binary == 1)] = 1
         # cv2.imshow("hls_image", l_binary)
         # cv2.waitKey(1)
 
@@ -429,13 +429,13 @@ class LaneDetector:
         warped = self.apply_ipm(cv_image)
 
         # Apply Sobel edge detection
-        sobel_binary = self.sobel_edge_detection(warped)
+        # sobel_binary = self.sobel_edge_detection(warped)
 
         hls_binary = self.hls_transform(warped)
 
-        white_part = self.get_white_part(warped)
-
-        sombined_image = self.combine_image(hls_binary, sobel_binary)
+        # white_part = self.get_white_part(warped)
+        #
+        # sombined_image = self.combine_image(hls_binary, sobel_binary)
 
 
 
@@ -448,7 +448,7 @@ class LaneDetector:
         # Display results (optional, for debugging)
         # cv2.imshow("Lane Detection", out_img)
         # cv2.waitKey(1)
-        return windows, out_img
+        return windows, out_img, detected_windows
 
     def image_callback(self, data):
             self.lane_detect(data)

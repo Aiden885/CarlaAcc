@@ -109,91 +109,127 @@ class acc:
         self.init_carla()
         self.init_csv()
 
+
+
     def init_carla(self):
+
+
+        # 初始化 Carla 客户端
         self.client = carla.Client('localhost', 2000)
         self.client.set_timeout(30.0)
-        self.world = self.client.get_world()
-        self.world = self.client.load_world('Town04', carla.MapLayer.Buildings | carla.MapLayer.ParkedVehicles)
-        self.world.unload_map_layer(carla.MapLayer.Buildings)
-        self.world.load_map_layer(carla.MapLayer.Buildings)
-        blueprint_library = self.world.get_blueprint_library()
+        try:
+            self.world = self.client.get_world()
+            self.world = self.client.load_world('Town05', carla.MapLayer.Buildings | carla.MapLayer.ParkedVehicles)
+        except RuntimeError as e:
+            raise RuntimeError(f"Failed to load map Town05: {e}")
+
+        # 获取蓝图库和地图
+        self.blueprint_library = self.world.get_blueprint_library()
         map = self.world.get_map()
         self.manual_mode = False
         self.manual_control = carla.VehicleControl(throttle=0.0, steer=0.0, brake=0.0)
-        if self.manual_mode:
-            pygame.init()
-            pygame.display.set_mode((200, 200))
-            pygame.key.set_repeat(50, 50)
-        vehicle_bp = blueprint_library.filter('vehicle.tesla.model3')[0]
-        ego_vehicle_bp = blueprint_library.filter('vehicle.audi.etron')[0]
-        spawn_points = map.get_spawn_points()[0]
-        waypoint = map.get_waypoint(spawn_points.location)
-        lanes = []
-        current_waypoint = waypoint
-        for _ in range(3):
-            lanes.append(current_waypoint)
-            current_waypoint = current_waypoint.get_left_lane()
-            if current_waypoint is None:
-                break
-        vehicles = []
-        locations = []
-        if len(lanes) > 1:
-            target_lane = lanes[1]
-            transform = target_lane.transform
-            transform.location.z += 0.5
-            locations.append(transform.location)
-            target_vehicle = self.world.spawn_actor(vehicle_bp, transform)
-            vehicles.append(target_vehicle)
-            self.target_vehicle = target_vehicle
 
-            # 初始化正弦速度控制器
-            self.target_speed_controller = SinusoidalSpeedController(
-                vehicle=target_vehicle,
-                base_speed=30.0,  # 基础速度30km/h
-                amplitude=10.0,  # 振幅10km/h (速度会在20-40km/h之间变化)
-                period=10.0  # 10秒一个周期
-            )
-        else:
-            raise ValueError("无法找到中间车道，无法生成目标车辆")
-        ego_spawn_point = spawn_points
-        ego_spawn_point.location = locations[0]
-        ego_spawn_point.location.x -= 20
-        self.ego_vehicle = self.world.spawn_actor(ego_vehicle_bp, ego_spawn_point)
+        # 初始化 Pygame（手动模式）
+        if self.manual_mode:
+            try:
+                pygame.init()
+                pygame.display.set_mode((200, 200))
+                pygame.key.set_repeat(50, 50)
+            except pygame.error as e:
+                raise RuntimeError(f"Pygame initialization failed: {e}")
+
+        # 获取车辆蓝图
+        vehicle_bp = self.blueprint_library.filter('vehicle.tesla.model3')[0]
+        ego_vehicle_bp = self.blueprint_library.filter('vehicle.audi.etron')[0]
+
+        # 定义固定生成点（上坡 Town05）
+        fixed_point = carla.Location(x=80.663731, y=-203.651886, z=0.5)
+
+        # 找到最近的 waypoint
+        waypoint = map.get_waypoint(fixed_point, project_to_road=True, lane_type=carla.LaneType.Driving)
+        if waypoint is None:
+            raise RuntimeError("Failed to find a valid waypoint near the specified location")
+
+        # 设置前车生成点（基于 waypoint）
+        spawn_point = waypoint.transform
+        spawn_point.location.z += 0.5  # 略微抬高以避免地面碰撞
+
+        # 生成目标车辆
+        vehicles = []
+        target_vehicle = self.world.try_spawn_actor(vehicle_bp, spawn_point)
+        if target_vehicle is None:
+            raise RuntimeError("Failed to spawn target vehicle at waypoint location")
+        vehicles.append(target_vehicle)
+        self.target_vehicle = target_vehicle
+
+        # 初始化正弦速度控制器
+        self.target_speed_controller = SinusoidalSpeedController(
+            vehicle=target_vehicle,
+            base_speed=30.0,  # 基础速度 30km/h
+            amplitude=10.0,  # 振幅 10km/h (速度在 20-40km/h 之间变化)
+            period=10.0  # 10秒一个周期
+        )
+
+        # 生成自车（后方 20 米）
+        ego_spawn_point = carla.Transform()
+        ego_spawn_point.location = spawn_point.location
+        ego_spawn_point.location.x += 10
+        ego_spawn_point.rotation = spawn_point.rotation
+        self.ego_vehicle = self.world.try_spawn_actor(ego_vehicle_bp, ego_spawn_point)
+        if self.ego_vehicle is None:
+            raise RuntimeError("Failed to spawn ego vehicle")
         vehicles.append(self.ego_vehicle)
         self.vehicles = vehicles
+
+        # 设置交通管理器
         tm = self.client.get_trafficmanager(8000)
         tm.set_global_distance_to_leading_vehicle(2.0)
         tm.set_synchronous_mode(True)
         self.tm_port = tm.get_port()
 
-        # 让目标车辆使用自动驾驶来处理横向控制
+        # 目标车辆自动驾驶设置
         for vehicle in vehicles[:-1]:
             vehicle.set_autopilot(True, self.tm_port)
             tm.auto_lane_change(vehicle, False)
-            # 初始设置一个速度，后面会由控制器动态调整
             tm.vehicle_percentage_speed_difference(vehicle, 60.0)
 
         # 设置速度控制器的交通管理器
         if hasattr(self, 'target_speed_controller'):
             self.target_speed_controller.set_traffic_manager(tm)
 
+        # 设置所有交通信号灯为绿色
+        traffic_lights = self.world.get_actors().filter('traffic.traffic_light')
+        for tl in traffic_lights:
+            tl.set_state(carla.TrafficLightState.Green)
+            tl.freeze(True)  # 锁定为绿色，防止自动切换
+        print(f"Set {len(traffic_lights)} traffic lights to green")
+
+        # 自车自动驾驶（非手动模式）
         if not self.manual_mode:
             vehicles[-1].set_autopilot(True, self.tm_port)
             tm.auto_lane_change(vehicles[-1], False)
-        radar_bp = blueprint_library.find('sensor.other.radar')
-        radar_bp.set_attribute('range', '100.0')
-        radar_bp.set_attribute('horizontal_fov', '120.0')
-        radar_bp.set_attribute('vertical_fov', '30.0')
-        radar_bp.set_attribute('points_per_second', '10000')
+
+        # 配置传感器
+        radar_bp = self.blueprint_library.find('sensor.other.radar')
+        RADAR_CONFIG = {
+            'range': '100.0',
+            'horizontal_fov': '120.0',
+            'vertical_fov': '30.0',
+            'points_per_second': '10000'
+        }
+        for attr, value in RADAR_CONFIG.items():
+            radar_bp.set_attribute(attr, value)
         radar_transform = carla.Transform(carla.Location(x=2.0, z=1.0))
         self.radar = self.world.spawn_actor(radar_bp, radar_transform, attach_to=self.ego_vehicle)
-        camera_bp = blueprint_library.find('sensor.camera.rgb')
+
+        camera_bp = self.blueprint_library.find('sensor.camera.rgb')
         camera_bp.set_attribute('image_size_x', '1280')
         camera_bp.set_attribute('image_size_y', '720')
         camera_bp.set_attribute('fov', '90')
         camera_transform = carla.Transform(carla.Location(x=1.5, z=1.5))
         self.camera = self.world.spawn_actor(camera_bp, camera_transform, attach_to=self.ego_vehicle)
-        lidar_bp = blueprint_library.find('sensor.lidar.ray_cast')
+
+        lidar_bp = self.blueprint_library.find('sensor.lidar.ray_cast')
         lidar_bp.set_attribute('range', '100.0')
         lidar_bp.set_attribute('points_per_second', '1000')
         lidar_bp.set_attribute('rotation_frequency', '10')
@@ -406,7 +442,7 @@ class acc:
                         # cv2.putText(image_with_radar, f"Target Desired: {current_desired_speed:.2f} km/h",
                         #             (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 255), 2)
 
-                        lane_windows, lane_image = self.lane_detector.lane_detect(image_with_radar)
+                        lane_windows, lane_image, detected_windows = self.lane_detector.lane_detect(image_with_radar)
                         track_id = self.track_id.copy() if self.track_id is not None else []
                         target_info = None
                         if track_id:
@@ -418,8 +454,26 @@ class acc:
                                 cv2.circle(image_with_radar, (u, v), 5, color, -1)
                                 if ipm_v < 0:
                                     ipm_v = 0
+
+                                curve_left = 0
+                                curve_right = 0
                                 curve_left_dis = 0
                                 curve_right_dis = 0
+                                if detected_windows is not None:
+                                    for i in range(1, len(detected_windows)):
+                                        if detected_windows[i][0][1] == detected_windows[i - 1][0][1]:
+                                            continue
+                                        if detected_windows[i][0][1] < detected_windows[i - 1][0][1]:
+                                            curve_right += 1
+                                        else:
+                                            curve_left_dis += 1
+                                    if curve_right - curve_left > len(detected_windows) // 2:
+                                        curve_right_dis = 0.5
+                                        curve_left_dis = 0.2
+                                    elif curve_right - curve_left < len(detected_windows) // 2:
+                                        curve_left_dis = -0.5
+                                        curve_right_dis = -0.2
+
                                 if ((-2 + curve_left_dis) < track_id[idx][1] < (2 + curve_right_dis)):
                                     if ((current_target_idx != -1) and (
                                             track_id[idx][0] < track_id[current_target_idx][0])) or (
