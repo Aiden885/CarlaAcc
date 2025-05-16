@@ -443,8 +443,8 @@ class LaneDetector:
         windows, out_img, detected_windows = self.sliding_windows(hls_binary)
         # cv2.imwrite("D:\Apps\carla\CARLA_0.9.14\WindowsNoEditor\image\lane_" + str(self.count) + ".jpg", out_img)
         self.count += 1
-        cv2.imshow("out_img", out_img)
-        cv2.waitKey(1)
+        # cv2.imshow("out_img", out_img)
+        # cv2.waitKey(1)
         # Display results (optional, for debugging)
         # cv2.imshow("Lane Detection", out_img)
         # cv2.waitKey(1)
