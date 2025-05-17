@@ -3,6 +3,7 @@ import math
 import numpy as np
 import cv2
 import kalman_filter
+import lane_detection
 import radar_cluster
 import pygame
 import threading
@@ -16,7 +17,7 @@ class CruiseTest:
         self.tracker = kalman_filter.RadarTracker()
         self.radar_point_cluster = radar_cluster.RadarClusterNode()
         self.max_follow_distance = 150  # 增大最大跟车距离，确保进入CRUISE模式
-
+        self.lane_detector = lane_detection.LaneDetector()
         self.radar_detections = []
         self.latest_camera_image = None
         self.radar_2_world = []
@@ -156,6 +157,29 @@ class CruiseTest:
         else:
             self.track_id = []
 
+
+    def project_radar_to_camera(self, radar_points, image_width=1280, image_height=720, fov=90):
+        fx = image_width / (2.0 * np.tan(fov * np.pi / 360.0))
+        fy = image_height / (2.0 * np.tan(fov * np.pi / 360.0))
+        cx = image_width / 2
+        cy = image_height / 2
+        projected_points = []
+        for x, y, z, w, l, h, vx, vy, vz, id in radar_points:
+            radar_point = np.array([x, y, z, 1])
+            world_point = np.dot(self.radar_2_world, radar_point)
+            camera_point = np.dot(self.world_2_camera, world_point)
+            point_in_camera_coords = np.array([
+                camera_point[1],
+                camera_point[2] * -1,
+                camera_point[0]])
+            u = cx + (fx * point_in_camera_coords[0] / point_in_camera_coords[2])
+            v = cy + (fy * point_in_camera_coords[1] / point_in_camera_coords[2])
+            ipm_point = np.dot(self.lane_detector.M, np.array([u, v - 300, 1]))
+            ipm_point[0] = ipm_point[0] / ipm_point[2]
+            ipm_point[1] = ipm_point[1] / ipm_point[2]
+            projected_points.append([int(u), int(v), int(ipm_point[0]), int(ipm_point[1])])
+        return projected_points
+
     def camera_callback(self, image):
         array = np.frombuffer(image.raw_data, dtype=np.uint8)
         array = array.reshape((image.height, image.width, 4))
@@ -176,34 +200,6 @@ class CruiseTest:
         self.radar_2_world = radar_sensor.get_transform().get_matrix()
         self.world_2_camera = np.array(camera_sensor.get_transform().get_inverse_matrix())
 
-    def project_radar_to_camera(self, radar_points, image_width=1280, image_height=720, fov=90):
-        fx = image_width / (2.0 * np.tan(fov * np.pi / 360.0))
-        fy = image_height / (2.0 * np.tan(fov * np.pi / 360.0))
-        cx = image_width / 2
-        cy = image_height / 2
-
-        projected_points = []
-
-        for x, y, z, w, l, h, vx, vy, vz, id in radar_points:
-            radar_point = np.array([x, y, z, 1])
-            world_point = np.dot(self.radar_2_world, radar_point)
-            camera_point = np.dot(self.world_2_camera, world_point)
-            point_in_camera_coords = np.array([
-                camera_point[1],
-                camera_point[2] * -1,
-                camera_point[0]])
-            u = cx + (fx * point_in_camera_coords[0] / point_in_camera_coords[2])
-            v = cy + (fy * point_in_camera_coords[1] / point_in_camera_coords[2])
-
-            if hasattr(self, 'lane_detector') and hasattr(self.lane_detector, 'M'):
-                ipm_point = np.dot(self.lane_detector.M, np.array([u, v - 300, 1]))
-                ipm_point[0] = ipm_point[0] / ipm_point[2]
-                ipm_point[1] = ipm_point[1] / ipm_point[2]
-                projected_points.append([int(u), int(v), int(ipm_point[0]), int(ipm_point[1])])
-            else:
-                projected_points.append([int(u), int(v), 0, 0])
-
-        return projected_points
 
     def get_lane_info(self):
         """使用CARLA API获取车道信息和车辆相对于车道中心的偏移"""

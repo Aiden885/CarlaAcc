@@ -14,7 +14,7 @@ from acc_planning_control import ACCPlanningControl
 
 # 这个类负责以正弦波模式控制目标车辆的速度
 class SinusoidalSpeedController:
-    def __init__(self, vehicle, base_speed=30.0, amplitude=10.0, period=30.0):
+    def __init__(self, vehicle, base_speed=20.0, amplitude=10.0, period=30.0):
         """
         初始化正弦速度控制器
 
@@ -53,7 +53,7 @@ class SinusoidalSpeedController:
         # Traffic Manager使用百分比差值: 0表示遵守限速，正值表示低于限速的百分比
         if self.tm:
             # 假设限速是50km/h，我们要计算相对于限速的百分比差
-            speed_limit = 50.0  # 假设的限速值
+            speed_limit = 30.0  # 假设的限速值
             percentage_diff = ((speed_limit - speed_factor) / speed_limit) * 100
             self.tm.vehicle_percentage_speed_difference(self.vehicle, percentage_diff)
 
@@ -66,7 +66,7 @@ class SinusoidalSpeedController:
 
             # 获取当前车辆速度
             current_velocity = self.vehicle.get_velocity()
-            current_speed = math.sqrt(current_velocity.x ** 2 + current_velocity.y ** 2 + current_velocity.z ** 2)
+            current_speed = math.sqrt(current_velocity.x ** 2 + current_velocity.y ** 2)
 
             # 计算需要的加速度
             control = self.vehicle.get_control()
@@ -74,7 +74,7 @@ class SinusoidalSpeedController:
             # 简单的比例控制
             if target_speed > current_speed:
                 # 需要加速
-                control.throttle = min(1.0, (target_speed - current_speed) / 5.0)
+                control.throttle = min(0.1, (target_speed - current_speed) /10.0)
                 control.brake = 0.0
             else:
                 # 需要减速
@@ -143,7 +143,7 @@ class acc:
         ego_vehicle_bp = self.blueprint_library.filter('vehicle.audi.etron')[0]
 
         # 定义固定生成点（上坡 Town05）
-        fixed_point = carla.Location(x=80.663731, y=-203.651886, z=0.5)
+        fixed_point = carla.Location(x=10.663731, y=-203.651886, z=0.5)
 
         # 找到最近的 waypoint
         waypoint = map.get_waypoint(fixed_point, project_to_road=True, lane_type=carla.LaneType.Driving)
@@ -165,7 +165,7 @@ class acc:
         # 初始化正弦速度控制器
         self.target_speed_controller = SinusoidalSpeedController(
             vehicle=target_vehicle,
-            base_speed=30.0,  # 基础速度 30km/h
+            base_speed=20.0,  # 基础速度 30km/h
             amplitude=10.0,  # 振幅 10km/h (速度在 20-40km/h 之间变化)
             period=10.0  # 10秒一个周期
         )
@@ -173,14 +173,14 @@ class acc:
         # 生成自车（后方 20 米）
         ego_spawn_point = carla.Transform()
         ego_spawn_point.location = spawn_point.location
-        ego_spawn_point.location.x += 10
+        ego_spawn_point.location.x += 20
         ego_spawn_point.rotation = spawn_point.rotation
         self.ego_vehicle = self.world.try_spawn_actor(ego_vehicle_bp, ego_spawn_point)
         if self.ego_vehicle is None:
             raise RuntimeError("Failed to spawn ego vehicle")
-        vehicles.append(self.ego_vehicle)
+        #vehicles.append(self.ego_vehicle)
         self.vehicles = vehicles
-
+        self.ego_vehicle.set_autopilot(False)
         # 设置交通管理器
         tm = self.client.get_trafficmanager(8000)
         tm.set_global_distance_to_leading_vehicle(2.0)
@@ -188,10 +188,10 @@ class acc:
         self.tm_port = tm.get_port()
 
         # 目标车辆自动驾驶设置
-        for vehicle in vehicles[:-1]:
+        for vehicle in vehicles:
             vehicle.set_autopilot(True, self.tm_port)
             tm.auto_lane_change(vehicle, False)
-            tm.vehicle_percentage_speed_difference(vehicle, 60.0)
+            tm.vehicle_percentage_speed_difference(vehicle, 30.0)
 
         # 设置速度控制器的交通管理器
         if hasattr(self, 'target_speed_controller'):
@@ -205,9 +205,9 @@ class acc:
         print(f"Set {len(traffic_lights)} traffic lights to green")
 
         # 自车自动驾驶（非手动模式）
-        if not self.manual_mode:
-            vehicles[-1].set_autopilot(True, self.tm_port)
-            tm.auto_lane_change(vehicles[-1], False)
+        # if not self.manual_mode:
+        #     vehicles[-1].set_autopilot(True, self.tm_port)
+        #     tm.auto_lane_change(vehicles[-1], False)
 
         # 配置传感器
         radar_bp = self.blueprint_library.find('sensor.other.radar')
@@ -215,7 +215,7 @@ class acc:
             'range': '100.0',
             'horizontal_fov': '120.0',
             'vertical_fov': '30.0',
-            'points_per_second': '10000'
+            'points_per_second': '20000'
         }
         for attr, value in RADAR_CONFIG.items():
             radar_bp.set_attribute(attr, value)
@@ -400,7 +400,7 @@ class acc:
         return distance
 
     def generate_target(self):
-        acc_controller = ACCPlanningControl(self.ego_vehicle, target_speed_kmh=40.0, time_gap=2.0,
+        acc_controller = ACCPlanningControl(self.ego_vehicle, target_speed_kmh=30.0, time_gap=2.0,
                                             max_follow_distance=self.max_follow_distance)
         try:
             print("Starting radar, camera, LIDAR, and ACC control...")
@@ -439,10 +439,30 @@ class acc:
                                     (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
                         cv2.putText(image_with_radar, f"Target Speed: {target_speed:.2f} km/h",
                                     (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-                        # cv2.putText(image_with_radar, f"Target Desired: {current_desired_speed:.2f} km/h",
-                        #             (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 255), 2)
 
+
+
+                #得到车道线相对中心的偏差
                         lane_windows, lane_image, detected_windows = self.lane_detector.lane_detect(image_with_radar)
+                        # Extract the last valid row from lane_windows
+                        valid_row = None
+                        for row in reversed(lane_windows):
+                            if len(row) == 6 and row[2] == 1 and row[5] == 1:
+                                valid_row = row
+                                break
+                        if valid_row is not None:
+               #打印输出
+                            # text = f"Valid Lane Data: {list(valid_row)}"
+                            # cv2.putText(image_with_radar, text, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0),
+                            #             2)
+                            lane_center = (valid_row[0] + valid_row[3]) / 2  # 计算 (left_x + right_x) / 2
+                            cv2.putText(image_with_radar, f"Lane Center X: {lane_center:.2f} px", (10, 120),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)  # 显示车道中心 x
+
+                        else:
+                            cv2.putText(image_with_radar, "No Valid Lane Data", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                                        (255, 255, 0), 2)
+
                         track_id = self.track_id.copy() if self.track_id is not None else []
                         target_info = None
                         if track_id:

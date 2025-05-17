@@ -72,21 +72,13 @@ class LaneDetector:
         l_binary = np.zeros_like(l_channel)
         l_binary[(l_channel > l_thresh_min)] = 1
 
-        # s_binary = np.zeros_like(s_channel)
-        # s_binary[(s_thresh_min < s_channel) & (s_channel < s_thresh_max)] = 1
-        # w_binary = np.zeros_like(l_binary)
-        # w_binary [(l_binary == 1) & (s_binary == 1)] = 1
-        # cv2.imshow("hls_image", l_binary)
-        # cv2.waitKey(1)
 
         return l_binary
 
     def apply_ipm(self, img):
         # Apply Inverse Perspective Mapping
         warped = cv2.warpPerspective(img, self.M, (1200, 800))
-        # cv2.imshow("image", img)
-        # cv2.imshow("ipm_image", warped)
-        # cv2.waitKey(1)
+
         return warped
 
     def bezier_curve(self, control_points, num_points=100):
@@ -106,43 +98,6 @@ class LaneDetector:
 
         return curve_points.astype(np.int32)
 
-    # def fit_spline(self, centers, num_points=100, img_height=1500):
-    #     # """Fit a parametric cubic spline to a set of points."""
-    #     if len(centers) < 2:  # Need at least 2 points for a spline
-    #         return None
-    #
-    #     centers = np.array(centers, dtype=np.float32)
-    #     n = len(centers)
-    #
-    #     # Use normalized y-coordinates as parameter t
-    #     y = centers[:, 1]
-    #     t = (y - y.min()) / (y.max() - y.min()) if y.max() != y.min() else np.linspace(0, 1, n)
-    #
-    #     # Ensure t is strictly increasing (required by CubicSpline)
-    #     if np.any(np.diff(t) <= 0):
-    #         t = np.linspace(0, 1, n)
-    #
-    #     # Fit cubic splines for x and y coordinates
-    #     x_spline = CubicSpline(t, centers[:, 0])
-    #     y_spline = np.linspace(img_height, 0, num_points)
-    #
-    #     # Generate points along the spline
-    #     t_new = np.linspace(0, 1, num_points)
-    #     spline_points = np.column_stack((x_spline(t_new), y_spline))
-    #     return spline_points.astype(np.int32)
-        # if len(centers) < 2:  # Need at least 2 points for a spline
-        #     return None
-
-        # centers = np.flip(np.array(centers, dtype=np.float32), axis=0)
-
-        # # Fit cubic splines for x and y coordinates
-        # cs = CubicSpline(centers[:, 1], centers[:, 0])
-        # y_spline = np.linspace(0, 1500, num_points)
-
-        # # Generate points along the spline
-        # spline_points = np.column_stack((cs(y_spline), y_spline))
-
-        # return np.flip(spline_points.astype(np.int32), axis = 0)
 
     def extract_trapezoid_to_image(self, input_image, trapezoid_points):
         """
@@ -433,9 +388,7 @@ class LaneDetector:
 
         hls_binary = self.hls_transform(warped)
 
-        # white_part = self.get_white_part(warped)
-        #
-        # sombined_image = self.combine_image(hls_binary, sobel_binary)
+
 
 
 
@@ -443,11 +396,7 @@ class LaneDetector:
         windows, out_img, detected_windows = self.sliding_windows(hls_binary)
         # cv2.imwrite("D:\Apps\carla\CARLA_0.9.14\WindowsNoEditor\image\lane_" + str(self.count) + ".jpg", out_img)
         self.count += 1
-        # cv2.imshow("out_img", out_img)
-        # cv2.waitKey(1)
-        # Display results (optional, for debugging)
-        # cv2.imshow("Lane Detection", out_img)
-        # cv2.waitKey(1)
+
         return windows, out_img, detected_windows
 
     def image_callback(self, data):

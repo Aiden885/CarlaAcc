@@ -212,7 +212,7 @@ class ACCPlanningControl:
         lane_error_diff = (lane_offset - self.prev_lane_error) / self.control_dt
 
         # PD计算转向角
-        steer = -(self.lane_kp * lane_offset + self.lane_kd * lane_error_diff)
+        steer = (self.lane_kp * lane_offset + self.lane_kd * lane_error_diff)
 
         # 限制转向角范围
         steer = np.clip(steer, -self.max_steer_angle, self.max_steer_angle)
