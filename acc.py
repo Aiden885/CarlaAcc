@@ -10,82 +10,7 @@ import radar_cluster
 import pygame
 import threading
 from acc_planning_control import ACCPlanningControl
-
-
-# 这个类负责以正弦波模式控制目标车辆的速度
-class SinusoidalSpeedController:
-    def __init__(self, vehicle, base_speed=20.0, amplitude=10.0, period=30.0):
-        """
-        初始化正弦速度控制器
-
-        参数:
-        vehicle - 要控制的Carla车辆
-        base_speed - 基础速度 (km/h)
-        amplitude - 正弦波幅度 (km/h)
-        period - 正弦波周期 (秒)
-        """
-        self.vehicle = vehicle
-        self.base_speed = base_speed
-        self.amplitude = amplitude
-        self.period = period
-        self.start_time = time.time()
-        self.tm = None
-
-    def set_traffic_manager(self, tm):
-        """设置交通管理器引用"""
-        self.tm = tm
-
-    def update(self):
-        """更新目标车辆的速度"""
-        if self.vehicle is None:
-            return
-
-        # 计算当前的正弦速度
-        current_time = time.time() - self.start_time
-        phase = (2 * math.pi * current_time) / self.period
-        speed_factor = self.base_speed + self.amplitude * math.sin(phase)
-
-        # 确保速度为正值
-        if speed_factor < 5.0:
-            speed_factor = 5.0
-
-        # 转换为百分比速度差
-        # Traffic Manager使用百分比差值: 0表示遵守限速，正值表示低于限速的百分比
-        if self.tm:
-            # 假设限速是50km/h，我们要计算相对于限速的百分比差
-            speed_limit = 30.0  # 假设的限速值
-            percentage_diff = ((speed_limit - speed_factor) / speed_limit) * 100
-            self.tm.vehicle_percentage_speed_difference(self.vehicle, percentage_diff)
-
-            # 打印当前设定的速度
-            print(f"Target vehicle speed set to {speed_factor:.2f} km/h (percentage diff: {percentage_diff:.2f}%)")
-        else:
-            # 如果没有交通管理器，直接控制速度
-            # 将km/h转换为m/s
-            target_speed = speed_factor / 3.6
-
-            # 获取当前车辆速度
-            current_velocity = self.vehicle.get_velocity()
-            current_speed = math.sqrt(current_velocity.x ** 2 + current_velocity.y ** 2)
-
-            # 计算需要的加速度
-            control = self.vehicle.get_control()
-
-            # 简单的比例控制
-            if target_speed > current_speed:
-                # 需要加速
-                control.throttle = min(0.1, (target_speed - current_speed) /10.0)
-                control.brake = 0.0
-            else:
-                # 需要减速
-                control.throttle = 0.0
-                control.brake = min(1.0, (current_speed - target_speed) / 5.0)
-
-            # 保持原有的转向控制（由Carla自动驾驶处理）
-            # 应用控制
-            self.vehicle.apply_control(control)
-
-            print(f"Target vehicle direct speed control: {speed_factor:.2f} km/h")
+from sinusoidal_speed_controller import SinusoidalSpeedController  # 导入新的速度控制器
 
 
 class acc:
@@ -106,14 +31,11 @@ class acc:
         self.start_time = None
         self.csv_file = None
         self.csv_writer = None
+        self.target_speed_controller = None  # 初始化为None
         self.init_carla()
         self.init_csv()
 
-
-
     def init_carla(self):
-
-
         # 初始化 Carla 客户端
         self.client = carla.Client('localhost', 2000)
         self.client.set_timeout(30.0)
@@ -162,11 +84,11 @@ class acc:
         vehicles.append(target_vehicle)
         self.target_vehicle = target_vehicle
 
-        # 初始化正弦速度控制器
+        # 初始化正弦速度控制器（使用新的独立模块）
         self.target_speed_controller = SinusoidalSpeedController(
             vehicle=target_vehicle,
-            base_speed=20.0,  # 基础速度 30km/h
-            amplitude=10.0,  # 振幅 10km/h (速度在 20-40km/h 之间变化)
+            base_speed=20.0,  # 基础速度 20km/h
+            amplitude=10.0,  # 振幅 10km/h (速度在 10-30km/h 之间变化)
             period=10.0  # 10秒一个周期
         )
 
@@ -178,9 +100,10 @@ class acc:
         self.ego_vehicle = self.world.try_spawn_actor(ego_vehicle_bp, ego_spawn_point)
         if self.ego_vehicle is None:
             raise RuntimeError("Failed to spawn ego vehicle")
-        #vehicles.append(self.ego_vehicle)
+        # vehicles.append(self.ego_vehicle)
         self.vehicles = vehicles
         self.ego_vehicle.set_autopilot(False)
+
         # 设置交通管理器
         tm = self.client.get_trafficmanager(8000)
         tm.set_global_distance_to_leading_vehicle(2.0)
@@ -194,7 +117,7 @@ class acc:
             tm.vehicle_percentage_speed_difference(vehicle, 30.0)
 
         # 设置速度控制器的交通管理器
-        if hasattr(self, 'target_speed_controller'):
+        if self.target_speed_controller:
             self.target_speed_controller.set_traffic_manager(tm)
 
         # 设置所有交通信号灯为绿色
@@ -203,11 +126,6 @@ class acc:
             tl.set_state(carla.TrafficLightState.Green)
             tl.freeze(True)  # 锁定为绿色，防止自动切换
         print(f"Set {len(traffic_lights)} traffic lights to green")
-
-        # 自车自动驾驶（非手动模式）
-        # if not self.manual_mode:
-        #     vehicles[-1].set_autopilot(True, self.tm_port)
-        #     tm.auto_lane_change(vehicles[-1], False)
 
         # 配置传感器
         radar_bp = self.blueprint_library.find('sensor.other.radar')
@@ -241,7 +159,8 @@ class acc:
     def init_csv(self):
         self.csv_file = open('speed_data.csv', 'w', newline='')
         self.csv_writer = csv.writer(self.csv_file)
-        self.csv_writer.writerow(['Time(s)', 'Ego_Speed(km/h)', 'Target_Speed(km/h)', 'Target_Desired_Speed(km/h)','Distance(m)'])
+        self.csv_writer.writerow(
+            ['Time(s)', 'Ego_Speed(km/h)', 'Target_Speed(km/h)', 'Target_Desired_Speed(km/h)', 'Distance(m)'])
         print("CSV file 'speed_data.csv' created and header written.")
 
     def get_vehicle_speed(self, vehicle):
@@ -327,10 +246,10 @@ class acc:
                 camera_point[0]])
             u = cx + (fx * point_in_camera_coords[0] / point_in_camera_coords[2])
             v = cy + (fy * point_in_camera_coords[1] / point_in_camera_coords[2])
-            ipm_point = np.dot(self.lane_detector.M, np.array([u, v - 300, 1]))
-            ipm_point[0] = ipm_point[0] / ipm_point[2]
-            ipm_point[1] = ipm_point[1] / ipm_point[2]
-            projected_points.append([int(u), int(v), int(ipm_point[0]), int(ipm_point[1])])
+            imp_point = np.dot(self.lane_detector.M, np.array([u, v - 300, 1]))
+            imp_point[0] = imp_point[0] / imp_point[2]
+            imp_point[1] = imp_point[1] / imp_point[2]
+            projected_points.append([int(u), int(v), int(imp_point[0]), int(imp_point[1])])
         return projected_points
 
     def get_ipm_transform_matrix(self, camera_sensor, K, image_width=1280, image_height=720):
@@ -396,7 +315,7 @@ class acc:
         loc2 = vehicle2.get_location()
 
         # 计算2维欧氏距离
-        distance = math.sqrt((loc1.x - loc2.x) ** 2 + (loc1.y - loc2.y) ** 2 )
+        distance = math.sqrt((loc1.x - loc2.x) ** 2 + (loc1.y - loc2.y) ** 2)
         return distance
 
     def generate_target(self):
@@ -407,15 +326,12 @@ class acc:
             self.get_extrinsic_params(self.radar, self.camera)
             self.start_time = time.time()
             while True:
-                # 更新目标车辆的速度（正弦波模式）
+                # 更新目标车辆的速度（使用新的速度控制器）
                 current_desired_speed = 0.0
-                if hasattr(self, 'target_speed_controller'):
+                if self.target_speed_controller:
                     self.target_speed_controller.update()
                     # 获取当前期望速度用于记录
-                    current_time = time.time() - self.target_speed_controller.start_time
-                    phase = (2 * math.pi * current_time) / self.target_speed_controller.period
-                    current_desired_speed = self.target_speed_controller.base_speed + self.target_speed_controller.amplitude * math.sin(
-                        phase)
+                    current_desired_speed = self.target_speed_controller.get_current_desired_speed()
 
                 self.world.tick()
                 if self.manual_mode:
@@ -431,18 +347,19 @@ class acc:
 
                         # 记录数据，增加目标期望速度
                         current_time = time.time() - self.start_time
-                        self.csv_writer.writerow([current_time, ego_speed, target_speed, current_desired_speed,vehicle_distance])
+                        self.csv_writer.writerow(
+                            [current_time, ego_speed, target_speed, current_desired_speed, vehicle_distance])
                         self.csv_file.flush()
 
-                        # 在画面上增加显示目标期望速度
+                        # 在画面上显示速度信息
                         cv2.putText(image_with_radar, f"Ego Speed: {ego_speed:.2f} km/h",
                                     (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
                         cv2.putText(image_with_radar, f"Target Speed: {target_speed:.2f} km/h",
                                     (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                        cv2.putText(image_with_radar, f"Target Desired: {current_desired_speed:.2f} km/h",
+                                    (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 255), 2)
 
-
-
-                #得到车道线相对中心的偏差
+                        # 车道线检测
                         lane_windows, lane_image, detected_windows = self.lane_detector.lane_detect(image_with_radar)
                         # Extract the last valid row from lane_windows
                         valid_row = None
@@ -451,16 +368,12 @@ class acc:
                                 valid_row = row
                                 break
                         if valid_row is not None:
-               #打印输出
-                            # text = f"Valid Lane Data: {list(valid_row)}"
-                            # cv2.putText(image_with_radar, text, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0),
-                            #             2)
                             lane_center = (valid_row[0] + valid_row[3]) / 2  # 计算 (left_x + right_x) / 2
                             cv2.putText(image_with_radar, f"Lane Center X: {lane_center:.2f} px", (10, 120),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)  # 显示车道中心 x
-
                         else:
-                            cv2.putText(image_with_radar, "No Valid Lane Data", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                            cv2.putText(image_with_radar, "No Valid Lane Data", (10, 120), cv2.FONT_HERSHEY_SIMPLEX,
+                                        0.8,
                                         (255, 255, 0), 2)
 
                         track_id = self.track_id.copy() if self.track_id is not None else []
@@ -473,7 +386,7 @@ class acc:
                                 color = (255, 0, 0)
                                 cv2.circle(image_with_radar, (u, v), 5, color, -1)
                                 if ipm_v < 0:
-                                    ipm_v = 0
+                                    imp_v = 0
 
                                 curve_left = 0
                                 curve_right = 0
@@ -537,7 +450,8 @@ class acc:
         for vehicle in self.vehicles:
             vehicle.set_autopilot(False, self.tm_port)
             vehicle.destroy()
-        print(f"Destroyed {len(self.vehicles)} vehicles, radar, camera, and LIDAR.")
+        self.ego_vehicle.destroy()
+        print(f"Destroyed {len(self.vehicles)} vehicles, ego vehicle, radar, camera, and LIDAR.")
 
 
 def main():
