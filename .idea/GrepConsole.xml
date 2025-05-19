@@ -63,14 +63,29 @@
                   <option name="pins">
                     <list>
                       <Pin>
-                        <option name="consoleUUID" value="37f5399a-4783-4a0c-99c2-7af1329caadf" />
+                        <option name="consoleUUID" value="c3eeb8ec-3d92-4dda-8019-9f8d164037c0" />
                         <option name="contentType" value="ConsoleContent" />
                         <option name="grepCompositeModel">
                           <GrepCompositeModel>
                             <option name="models">
                               <list>
                                 <GrepModel>
-                                  <option name="expression" value="Mode:" />
+                                  <option name="expression" value="mode" />
+                                </GrepModel>
+                              </list>
+                            </option>
+                          </GrepCompositeModel>
+                        </option>
+                      </Pin>
+                      <Pin>
+                        <option name="consoleUUID" value="b7aec3a8-8949-4f51-8ab2-109353e3e325" />
+                        <option name="contentType" value="ConsoleContent" />
+                        <option name="grepCompositeModel">
+                          <GrepCompositeModel>
+                            <option name="models">
+                              <list>
+                                <GrepModel>
+                                  <option name="expression" value="VehicleControl" />
                                 </GrepModel>
                               </list>
                             </option>
