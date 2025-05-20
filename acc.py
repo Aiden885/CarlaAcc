@@ -12,8 +12,8 @@ import threading
 from collections import deque
 from acc_planning_control import ACCPlanningControl
 from sinusoidal_speed_controller import SinusoidalSpeedController
-
-from realtime_trajectory_manager import BSplineTrajectoryManager, RealTimeTrajectoryBuffer
+# from carla_3d_trajectory_visualizer import CarlaTrajectoryVisualizer
+# from realtime_trajectory_manager import BSplineTrajectoryManager, RealTimeTrajectoryBuffer
 
 
 class acc:
@@ -37,28 +37,42 @@ class acc:
         self.target_speed_controller = None
 
         # === 新增：轨迹管理系统 ===
-        # 1. 创建轨迹缓冲区
-        self.trajectory_buffer = RealTimeTrajectoryBuffer(
-            max_length=50.0,  # 最大轨迹长度50米
-            spatial_resolution=0.3  # 空间分辨率0.3米/点
-        )
+        # # 1. 创建轨迹缓冲区
+        # self.trajectory_buffer = RealTimeTrajectoryBuffer(
+        #     max_length=50.0,  # 最大轨迹长度50米
+        #     spatial_resolution=0.3  # 空间分辨率0.3米/点
+        # )
+        #
+        # # 2. 创建轨迹管理器
+        # self.trajectory_manager = BSplineTrajectoryManager(
+        #     trajectory_buffer=self.trajectory_buffer,
+        #     min_points_for_fit=5,  # 最少5个点才进行拟合
+        #     fit_interval=3  # 每3帧更新一次拟合
+        # )
+        #
+        # # 3. 性能监控
+        # self.frame_times = deque(maxlen=100)
+        # self.last_frame_time = None
+        #
+        # # 4. 轨迹状态监控
+        # self.trajectory_stats = {
+        #     'total_updates': 0,
+        #     'successful_fits': 0,
+        #     'last_waypoint_count': 0
+        # }
 
-        # 2. 创建轨迹管理器
-        self.trajectory_manager = BSplineTrajectoryManager(
-            trajectory_buffer=self.trajectory_buffer,
-            min_points_for_fit=5,  # 最少5个点才进行拟合
-            fit_interval=3  # 每3帧更新一次拟合
-        )
+        # === 新增：3D轨迹可视化器 ===
+        self.trajectory_visualizer = None  # 将在init_carla后初始化
 
-        # 3. 性能监控
-        self.frame_times = deque(maxlen=100)
-        self.last_frame_time = None
-
-        # 4. 轨迹状态监控
-        self.trajectory_stats = {
-            'total_updates': 0,
-            'successful_fits': 0,
-            'last_waypoint_count': 0
+        # 可视化配置
+        self.visualization_config = {
+            'enable_3d_trajectory': True,
+            'enable_curvature_visualization': True,
+            'enable_tangent_visualization': True,
+            'enable_speed_visualization': False,
+            'enable_lookahead_visualization': True,
+            'update_frequency': 1,  # 每帧更新
+            'frame_counter': 0
         }
 
         self.init_carla()
@@ -79,19 +93,13 @@ class acc:
         self.blueprint_library = self.world.get_blueprint_library()
         map = self.world.get_map()
 
-        # #设置同步模式和时间
-        # settings = self.world.get_settings()
-        # settings.synchronous_mode = True
-        # settings.fixed_delta_seconds = 0.05
-        # self.world.apply_settings(settings)
-
 
         # 获取车辆蓝图
         vehicle_bp = self.blueprint_library.filter('vehicle.tesla.model3')[0]
         ego_vehicle_bp = self.blueprint_library.filter('vehicle.audi.etron')[0]
 
         # 定义固定生成点（上坡 Town05）
-        fixed_point = carla.Location(x=10.663731, y=-203.651886, z=0.5)
+        fixed_point = carla.Location(x=0.663731, y=-203.651886, z=0.5)
 
         # 找到最近的 waypoint
         waypoint = map.get_waypoint(fixed_point, project_to_road=True, lane_type=carla.LaneType.Driving)
@@ -100,7 +108,7 @@ class acc:
 
         # 设置前车生成点（基于 waypoint）
         spawn_point = waypoint.transform
-        spawn_point.location.z += 0.2  # 略微抬高以避免地面碰撞
+        spawn_point.location.z += 0.05  # 略微抬高以避免地面碰撞
 
         # 生成目标车辆
         vehicles = []
@@ -114,32 +122,32 @@ class acc:
         # 初始化正弦速度控制器
         self.target_speed_controller = SinusoidalSpeedController(
             vehicle=target_vehicle,
-            base_speed=20.0,  # 基础速度 20km/h
-            amplitude=10.0,  # 振幅 10km/h (速度在 10-30km/h 之间变化)
+            base_speed=20,  # 基础速度 20km/h
+            amplitude=5.0,  # 振幅 10km/h (速度在 10-30km/h 之间变化)
             period=10.0  # 10秒一个周期
         )
 
-        # 生成自车（后方 20 米）
+        # 生成自车（后方 15 米）
         ego_spawn_point = carla.Transform()
         ego_spawn_point.location = spawn_point.location
-        ego_spawn_point.location.x += 20
+        ego_spawn_point.location.x += 15
         ego_spawn_point.rotation = spawn_point.rotation
         self.ego_vehicle = self.world.try_spawn_actor(ego_vehicle_bp, ego_spawn_point)
-        self.ego_vehicle.set_autopilot(True)
+        # self.ego_vehicle.set_autopilot(True)
 
 
 
         if self.ego_vehicle is None:
             raise RuntimeError("Failed to spawn ego vehicle")
         self.vehicles = vehicles
-        self.ego_vehicle.set_autopilot(True)
-        vehicles.append(self.ego_vehicle)
+        self.ego_vehicle.set_autopilot(False)
+        #vehicles.append(self.ego_vehicle)
 
 
         # 设置交通管理器
         tm = self.client.get_trafficmanager(8000)
         tm.set_global_distance_to_leading_vehicle(2.0)
-        tm.set_synchronous_mode(True)
+        tm.set_synchronous_mode(False)
         self.tm_port = tm.get_port()
         #自车不变道
         tm.auto_lane_change(self.ego_vehicle,False)
@@ -149,6 +157,8 @@ class acc:
             vehicle.set_autopilot(True, self.tm_port)
             tm.auto_lane_change(vehicle, False)
             tm.vehicle_percentage_speed_difference(vehicle, 30.0)
+
+        self.ego_vehicle.set_autopilot(False)
 
         # 设置速度控制器的交通管理器
         if self.target_speed_controller:
@@ -193,8 +203,9 @@ class acc:
     def init_csv(self):
         self.csv_file = open('speed_data.csv', 'w', newline='')
         self.csv_writer = csv.writer(self.csv_file)
-        self.csv_writer.writerow(['Time(s)', 'Ego_Speed(km/h)', 'Target_Speed(km/h)', 'Target_Desired_Speed(km/h)',
-                                  'Distance(m)', 'Target_World_X(m)', 'Target_World_Y(m)', 'Processing_Time(ms)'])
+        # 添加期望跟车距离列
+        self.csv_writer.writerow(['Time(s)', 'Ego_Speed(km/h)', 'Target_Speed(km/h)',
+                                  'Actual_Distance(m)', 'Desired_Distance(m)', 'Lane_Offset'])
         print("CSV file 'speed_data.csv' created and header written.")
 
     def get_vehicle_speed(self, vehicle):
@@ -202,6 +213,19 @@ class acc:
         speed_m_s = math.sqrt(velocity.x ** 2 + velocity.y ** 2 + velocity.z ** 2)
         speed_kmh = speed_m_s * 3.6
         return speed_kmh
+
+    # 添加计算期望跟车距离的方法
+    def calculate_desired_following_distance(self, ego_speed_kmh, time_gap=2.0, min_distance=5.0):
+        """
+        计算期望的跟车距离
+        :param ego_speed_kmh: 自车速度 (km/h)
+        :param time_gap: 期望时间间隔 (秒)
+        :param min_distance: 最小安全距离 (米)
+        :return: 期望跟车距离 (米)
+        """
+        ego_speed_ms = ego_speed_kmh / 3.6  # 转换为 m/s
+        desired_distance = max(min_distance + ego_speed_ms * time_gap, 15 )
+        return desired_distance
 
     def radar_callback(self, radar_data):
         self.radar_points = []
@@ -331,107 +355,180 @@ class acc:
 
         for idx in range(len(track_id)):
             # 简化的车道判断
-            if -2 < track_id[idx][1] < 2:  # Y坐标在车道内
+            if -3 < track_id[idx][1] < 3:  # Y坐标在车道内
                 if track_id[idx][0] < min_distance:  # 选择最近的
                     min_distance = track_id[idx][0]
                     current_target_idx = idx
 
         return current_target_idx
 
-    def visualize_trajectory_on_image_fast(self, image):
-        """可视化轨迹（使用新的轨迹点）"""
-        # 获取最近的轨迹点（使用新接口）
-        recent_waypoints = self.trajectory_manager.get_control_waypoints(lookahead_distance=30.0)
+    # def visualize_trajectory_on_image_fast(self, image):
+    #     """可视化轨迹（使用新的轨迹点）"""
+    #     # 获取最近的轨迹点（使用新接口）
+    #     recent_waypoints = self.trajectory_manager.get_control_waypoints(lookahead_distance=30.0)
+    #
+    #     if len(recent_waypoints) < 2:
+    #         return
+    #
+    #     # 获取自车位置
+    #     ego_location = self.ego_vehicle.get_location()
+    #     ego_x, ego_y = ego_location.x, ego_location.y
+    #
+    #     # 可视化参数
+    #     scale = 20
+    #     img_center_x = self.image_width // 2
+    #     img_center_y = self.image_height
+    #
+    #     # 绘制轨迹线和点
+    #     points_to_draw = []
+    #     for wp in recent_waypoints:
+    #         # 转换为图像坐标（简化投影）
+    #         rel_x = wp.world_x - ego_x
+    #         rel_y = wp.world_y - ego_y
+    #
+    #         img_x = int(img_center_x + rel_y * scale)
+    #         img_y = int(img_center_y - rel_x * scale)
+    #
+    #         # 边界检查
+    #         if 0 <= img_x < self.image_width and 0 <= img_y < self.image_height:
+    #             points_to_draw.append((img_x, img_y, wp))
+    #
+    #     # 绘制轨迹线（绿色）
+    #     for i in range(1, len(points_to_draw)):
+    #         cv2.line(image, points_to_draw[i - 1][:2], points_to_draw[i][:2], (0, 255, 0), 2)
+    #
+    #     # 绘制轨迹点
+    #     for img_x, img_y, wp in points_to_draw[-10:]:  # 只绘制最后10个点
+    #         # 根据曲率改变点的颜色
+    #         if wp.curvature > 0.1:  # 弯道
+    #             color = (0, 255, 255)  # 黄色
+    #         else:  # 直道
+    #             color = (0, 255, 0)  # 绿色
+    #         cv2.circle(image, (img_x, img_y), 3, color, -1)
+    #
+    #         # 绘制切线方向
+    #         if len(points_to_draw) > 5:  # 只在有足够点时绘制
+    #             tangent_length = 15
+    #             end_x = int(img_x + tangent_length * math.cos(wp.tangent_angle))
+    #             end_y = int(img_y - tangent_length * math.sin(wp.tangent_angle))
+    #             cv2.arrowedLine(image, (img_x, img_y), (end_x, end_y), (255, 0, 0), 1)
+    # 替换现有的visualize_trajectory_on_image_fast方法：
+    # def visualize_trajectory_3d_realtime(self):
+    #     """实时3D轨迹可视化"""
+    #     if not self.visualization_config['enable_3d_trajectory']:
+    #         return
+    #
+    #     # 控制更新频率
+    #     self.visualization_config['frame_counter'] += 1
+    #     if self.visualization_config['frame_counter'] % self.visualization_config['update_frequency'] != 0:
+    #         return
+    #
+    #     try:
+    #         # 1. 基本轨迹可视化
+    #         self.trajectory_visualizer.visualize_trajectory_3d(
+    #             self.trajectory_manager,
+    #             show_curvature=self.visualization_config['enable_curvature_visualization'],
+    #             show_tangents=self.visualization_config['enable_tangent_visualization'],
+    #             show_speed=self.visualization_config['enable_speed_visualization']
+    #         )
+    #
+    #         # 2. 前瞻路径可视化（用于控制）
+    #         if self.visualization_config['enable_lookahead_visualization']:
+    #             self.trajectory_visualizer.visualize_lookahead_path(
+    #                 self.trajectory_manager,
+    #                 self.ego_vehicle,
+    #                 lookahead_distance=30.0
+    #             )
+    #
+    #         # 3. 额外的密集轨迹可视化（可选）
+    #         # self.trajectory_visualizer.visualize_trajectory_dense(
+    #         #     self.trajectory_manager,
+    #         #     point_interval=2.0
+    #         # )
+    #
+    #     except Exception as e:
+    #         print(f"3D trajectory visualization error: {e}")
 
-        if len(recent_waypoints) < 2:
-            return
+    # def update_display_text(self, image, ego_speed, target_speed, desired_speed, trajectory_info, processing_time):
+    #     """更新显示文本，增加轨迹信息"""
+    #     texts = [
+    #         (f"Ego Speed: {ego_speed:.1f} km/h", (10, 30), (0, 255, 0)),
+    #         (f"Target Speed: {target_speed:.1f} km/h", (10, 60), (0, 0, 255)),
+    #         (f"Target Desired: {desired_speed:.1f} km/h", (10, 90), (255, 0, 255)),
+    #         (f"Process Time: {processing_time:.2f}ms", (10, 120), (255, 255, 255))
+    #     ]
+    #
+    #     # 添加轨迹信息
+    #     if trajectory_info:
+    #         texts.extend([
+    #             (f"Traj Points: {trajectory_info['waypoint_count']}", (10, 150), (255, 255, 0)),
+    #             (f"Traj Length: {trajectory_info['total_length']:.1f}m", (10, 180), (255, 255, 0)),
+    #             (f"Curvature: {trajectory_info.get('current_curvature', 0.0):.3f}", (10, 210), (255, 255, 0))
+    #         ])
+    #
+    #     # 添加平均帧率显示
+    #     if self.frame_times:
+    #         avg_frame_time = np.mean(self.frame_times)
+    #         fps = 1000.0 / avg_frame_time
+    #         texts.append((f"FPS: {fps:.1f}", (10, 240), (0, 255, 255)))
+    #
+    #     for text, pos, color in texts:
+    #         cv2.putText(image, text, pos, cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-        # 获取自车位置
-        ego_location = self.ego_vehicle.get_location()
-        ego_x, ego_y = ego_location.x, ego_location.y
+    # def show_performance_stats(self):
+    #     """显示性能统计"""
+    #     # # 帧率统计
+    #     # if self.frame_times:
+    #     #     avg_frame_time = np.mean(self.frame_times)
+    #     #     fps = 1000.0 / avg_frame_time
+    #     #     print(f"\nFrame Rate Statistics:")
+    #     #     print(f"  Average FPS: {fps:.1f}")
+    #     #     print(f"  Average frame time: {avg_frame_time:.2f} ms")
+    #     #     print(f"  Max frame time: {np.max(self.frame_times):.2f} ms")
+    #
+    #     # 轨迹处理统计
+    #     traj_stats = self.trajectory_manager.get_performance_stats()
+    #     if traj_stats:
+    #         print(f"\nTrajectory Processing Statistics:")
+    #         for key, value in traj_stats.items():
+    #             print(f"  {key}: {value}")
 
-        # 可视化参数
-        scale = 20
-        img_center_x = self.image_width // 2
-        img_center_y = self.image_height
+    def get_lane_offset(self):
+        """获取车辆相对于车道中心的偏移量"""
+        if self.world is None:
+            return 0.0
 
-        # 绘制轨迹线和点
-        points_to_draw = []
-        for wp in recent_waypoints:
-            # 转换为图像坐标（简化投影）
-            rel_x = wp.world_x - ego_x
-            rel_y = wp.world_y - ego_y
+        carla_map = self.world.get_map()
+        if carla_map is None:
+            return 0.0
 
-            img_x = int(img_center_x + rel_y * scale)
-            img_y = int(img_center_y - rel_x * scale)
+        vehicle_location = self.ego_vehicle.get_location()
+        self.current_waypoint = carla_map.get_waypoint(
+            vehicle_location,
+            project_to_road=True,
+            lane_type=carla.LaneType.Driving
+        )
 
-            # 边界检查
-            if 0 <= img_x < self.image_width and 0 <= img_y < self.image_height:
-                points_to_draw.append((img_x, img_y, wp))
+        if self.current_waypoint is None:
+            return 0.0
 
-        # 绘制轨迹线（绿色）
-        for i in range(1, len(points_to_draw)):
-            cv2.line(image, points_to_draw[i - 1][:2], points_to_draw[i][:2], (0, 255, 0), 2)
+        lane_center = self.current_waypoint.transform.location
+        lane_direction = self.current_waypoint.transform.get_forward_vector()
 
-        # 绘制轨迹点
-        for img_x, img_y, wp in points_to_draw[-10:]:  # 只绘制最后10个点
-            # 根据曲率改变点的颜色
-            if wp.curvature > 0.1:  # 弯道
-                color = (0, 255, 255)  # 黄色
-            else:  # 直道
-                color = (0, 255, 0)  # 绿色
-            cv2.circle(image, (img_x, img_y), 3, color, -1)
+        to_center_vector = carla.Vector3D(
+            lane_center.x - vehicle_location.x,
+            lane_center.y - vehicle_location.y,
+            0
+        )
 
-            # 绘制切线方向
-            if len(points_to_draw) > 5:  # 只在有足够点时绘制
-                tangent_length = 15
-                end_x = int(img_x + tangent_length * math.cos(wp.tangent_angle))
-                end_y = int(img_y - tangent_length * math.sin(wp.tangent_angle))
-                cv2.arrowedLine(image, (img_x, img_y), (end_x, end_y), (255, 0, 0), 1)
+        right_direction = carla.Vector3D(
+            -lane_direction.y,
+            lane_direction.x,
+            0
+        ).make_unit_vector()
 
-    def update_display_text(self, image, ego_speed, target_speed, desired_speed, trajectory_info, processing_time):
-        """更新显示文本，增加轨迹信息"""
-        texts = [
-            (f"Ego Speed: {ego_speed:.1f} km/h", (10, 30), (0, 255, 0)),
-            (f"Target Speed: {target_speed:.1f} km/h", (10, 60), (0, 0, 255)),
-            (f"Target Desired: {desired_speed:.1f} km/h", (10, 90), (255, 0, 255)),
-            (f"Process Time: {processing_time:.2f}ms", (10, 120), (255, 255, 255))
-        ]
-
-        # 添加轨迹信息
-        if trajectory_info:
-            texts.extend([
-                (f"Traj Points: {trajectory_info['waypoint_count']}", (10, 150), (255, 255, 0)),
-                (f"Traj Length: {trajectory_info['total_length']:.1f}m", (10, 180), (255, 255, 0)),
-                (f"Curvature: {trajectory_info.get('current_curvature', 0.0):.3f}", (10, 210), (255, 255, 0))
-            ])
-
-        # 添加平均帧率显示
-        if self.frame_times:
-            avg_frame_time = np.mean(self.frame_times)
-            fps = 1000.0 / avg_frame_time
-            texts.append((f"FPS: {fps:.1f}", (10, 240), (0, 255, 255)))
-
-        for text, pos, color in texts:
-            cv2.putText(image, text, pos, cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-
-    def show_performance_stats(self):
-        """显示性能统计"""
-        # 帧率统计
-        if self.frame_times:
-            avg_frame_time = np.mean(self.frame_times)
-            fps = 1000.0 / avg_frame_time
-            print(f"\nFrame Rate Statistics:")
-            print(f"  Average FPS: {fps:.1f}")
-            print(f"  Average frame time: {avg_frame_time:.2f} ms")
-            print(f"  Max frame time: {np.max(self.frame_times):.2f} ms")
-
-        # 轨迹处理统计
-        traj_stats = self.trajectory_manager.get_performance_stats()
-        if traj_stats:
-            print(f"\nTrajectory Processing Statistics:")
-            for key, value in traj_stats.items():
-                print(f"  {key}: {value}")
+        offset = to_center_vector.dot(right_direction)
+        return offset
 
     def generate_target(self):
         """主循环 - 集成轨迹处理"""
@@ -442,6 +539,13 @@ class acc:
             max_follow_distance=self.max_follow_distance
         )
 
+        # # 延迟配置
+        # DELAY_TIME = 0.5  # 延迟5秒
+        # control_enabled = True
+        # start_time = time.time()
+        #
+        # print(f"🟡 自车将在 {DELAY_TIME} 秒后开始...")
+
         try:
 
             self.get_extrinsic_params(self.radar, self.camera)
@@ -450,15 +554,21 @@ class acc:
             frame_count = 0
 
             while True:
-                # 帧时间监控
-                current_frame_time = time.perf_counter()
-                if self.last_frame_time is not None:
-                    frame_time = (current_frame_time - self.last_frame_time) * 1000
-                    self.frame_times.append(frame_time)
-                self.last_frame_time = current_frame_time
+                #   延迟出发
+                # # 检查是否到了启动时间
+                # if not control_enabled and (time.time() - start_time) >= DELAY_TIME:
+                #     control_enabled = True
+                #     print("🟢 自车开始出发！")
 
-                # 更新目标车辆的速度
-                current_desired_speed = 0.0
+
+                # # 帧时间监控
+                # current_frame_time = time.perf_counter()
+                # if self.last_frame_time is not None:
+                #     frame_time = (current_frame_time - self.last_frame_time) * 1000
+                #     self.frame_times.append(frame_time)
+                # self.last_frame_time = current_frame_time
+
+
                 if self.target_speed_controller:
                     self.target_speed_controller.update()
                     current_desired_speed = self.target_speed_controller.get_current_desired_speed()
@@ -500,65 +610,75 @@ class acc:
                                             (u + 5, v), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (150, 225, 100), 2)
 
                                 target_info = track_id[current_target_idx]
-                                if len(target_info) >= 9 and all(np.isfinite(target_info[:9])):
+                                # if len(target_info) >= 9 and all(np.isfinite(target_info[:9])):
                                     # === 核心：将目标信息传递给轨迹管理器 ===
-                                    trajectory_waypoint = self.trajectory_manager.add_target_info_realtime(
-                                        target_info, self.ego_vehicle
-                                    )
-                                    self.trajectory_stats['total_updates'] += 1
-
-                                    # 获取轨迹信息用于显示和记录
-                                    trajectory_info = self.trajectory_buffer.get_info()
-                                    if trajectory_waypoint:
-                                        trajectory_info['current_curvature'] = trajectory_waypoint.curvature
-                                        trajectory_info['current_tangent_angle'] = trajectory_waypoint.tangent_angle
-                                        self.trajectory_stats['successful_fits'] += 1
+                                    # trajectory_waypoint = self.trajectory_manager.add_target_info_realtime(
+                                    #     target_info, self.ego_vehicle
+                                    # )
+                                    # self.trajectory_stats['total_updates'] += 1
+                                    #
+                                    # # 获取轨迹信息用于显示和记录
+                                    # trajectory_info = self.trajectory_buffer.get_info()
+                                    # if trajectory_waypoint:
+                                    #     trajectory_info['current_curvature'] = trajectory_waypoint.curvature
+                                    #     trajectory_info['current_tangent_angle'] = trajectory_waypoint.tangent_angle
+                                    #     self.trajectory_stats['successful_fits'] += 1
 
                         except Exception as e:
                             print(f"Target detection/trajectory error: {e}")
+                    #
+                    # # 计算轨迹处理时间
+                    # traj_processing_time = (time.perf_counter() - traj_start_time) * 1000
 
-                    # 计算轨迹处理时间
-                    traj_processing_time = (time.perf_counter() - traj_start_time) * 1000
-
-                    # === 准备传递给控制器的轨迹数据 ===
-                    control_trajectory = None
-                    if self.trajectory_buffer.is_valid():
-                        # 获取前瞻轨迹点用于控制
-                        control_waypoints = self.trajectory_manager.get_control_waypoints(lookahead_distance=30.0)
-                        if control_waypoints:
-                            control_trajectory = {
-                                'waypoints': control_waypoints,
-                                'target_waypoint': trajectory_waypoint,
-                                'is_valid': True,
-                                'waypoint_count': len(control_waypoints),
-                                'curvature_profile': self.trajectory_manager.get_trajectory_curvature_profile()
-                            }
+                    # # === 准备传递给控制器的轨迹数据 ===
+                    # control_trajectory = None
+                    # if self.trajectory_buffer.is_valid():
+                    #     # 获取前瞻轨迹点用于控制
+                    #     control_waypoints = self.trajectory_manager.get_control_waypoints(lookahead_distance=30.0)
+                    #     if control_waypoints:
+                    #         control_trajectory = {
+                    #             'waypoints': control_waypoints,
+                    #             'target_waypoint': trajectory_waypoint,
+                    #             'is_valid': True,
+                    #             'waypoint_count': len(control_waypoints),
+                    #             'curvature_profile': self.trajectory_manager.get_trajectory_curvature_profile()
+                    #         }
 
 
-                    # 记录数据（增加轨迹信息）
-                    target_world_x = trajectory_waypoint.world_x if trajectory_waypoint else 0.0
-                    target_world_y = trajectory_waypoint.world_y if trajectory_waypoint else 0.0
-                    target_curvature = trajectory_waypoint.curvature if trajectory_waypoint else 0.0
-                    target_tangent_angle = trajectory_waypoint.tangent_angle if trajectory_waypoint else 0.0
+                    # # 记录数据（增加轨迹信息）
+                    # target_world_x = trajectory_waypoint.world_x if trajectory_waypoint else 0.0
+                    # target_world_y = trajectory_waypoint.world_y if trajectory_waypoint else 0.0
+                    # target_curvature = trajectory_waypoint.curvature if trajectory_waypoint else 0.0
+                    # target_tangent_angle = trajectory_waypoint.tangent_angle if trajectory_waypoint else 0.0
 
                     current_time = time.time() - self.start_time
+
+                    # 计算期望跟车距离
+                    desired_distance = self.calculate_desired_following_distance(ego_speed, time_gap=2.0,
+                                                                                 min_distance=5.0)
+
+                    # 写入CSV数据
                     self.csv_writer.writerow([
-                        current_time, ego_speed, target_speed, current_desired_speed,
-                        vehicle_distance, target_world_x, target_world_y, traj_processing_time,
-                        trajectory_info['waypoint_count'] if trajectory_info else 0,
-                        trajectory_info['total_length'] if trajectory_info else 0.0,
-                        target_curvature, target_tangent_angle
+                        current_time,
+                        ego_speed,
+                        target_speed,
+                        vehicle_distance,  # 实际距离
+                        desired_distance,  # 期望距离
+                        self.get_lane_offset()
                     ])
                     self.csv_file.flush()
 
-                    # 显示信息
-                    if frame_count % 5 == 0:  # 每5帧更新一次显示
-                        self.update_display_text(image_with_radar, ego_speed, target_speed,
-                                                 current_desired_speed, trajectory_info, traj_processing_time)
+                    # # 显示信息
+                    # if frame_count % 5 == 0:  # 每5帧更新一次显示
+                    #     self.update_display_text(image_with_radar, ego_speed, target_speed,
+                    #                              current_desired_speed, trajectory_info, traj_processing_time)
 
                     # 可视化轨迹
-                    self.visualize_trajectory_on_image_fast(image_with_radar)
+                    #  self.visualize_trajectory_on_image_fast(image_with_radar)
+                    # 可视化轨迹（3D）
+                    # self.visualize_trajectory_3d_realtime()
 
+                    lane_center = 510
                     # 车道线检测（简化版本）
                     try:
                         lane_windows, lane_image, detected_windows = self.lane_detector.lane_detect(image_with_radar)
@@ -576,22 +696,33 @@ class acc:
 
                     # ===将轨迹传递给控制器 ===
                     try:
-                        if control_trajectory and control_trajectory['is_valid']:
+                        # if control_trajectory and control_trajectory['is_valid']:
+
                             # 使用轨迹信息进行控制
-                            control = acc_controller.update_with_trajectory(target_info, control_trajectory)
-
-                        else:
-                            # 回退到原有的点控制
-                            control = acc_controller.update(target_info)
-
+                            #control = acc_controller.update_with_trajectory(target_info, control_trajectory,(lane_center-510)/100)
+                        control = acc_controller.cruise_control((lane_center-510)/150, target_info)
+                        if control.brake < 0.01 :
+                            control.brake = 0
                         self.ego_vehicle.apply_control(control)
-                        #print(control)
+                        #else:
+                            # 回退到原有的点控制 lane_center-510
+                            #control = acc_controller.update(target_info,(lane_center-510)/100, target_info)
+                            #control = acc_controller.cruise_control((lane_center - 510) / 100,target_info)
+                        # if control_enabled:
+                        #     self.ego_vehicle.apply_control(control)
+                        # else:
+                        #     # 保持停止
+                        #     stop_control = carla.VehicleControl(throttle=0.0, brake=1.0, steer=0.0)
+                        #     self.ego_vehicle.apply_control(stop_control)
+                        #
+
+                        print(control)
                     except Exception as e:
                         print(f"ACC control error: {e}")
 
                     # 显示图像
                     cv2.imshow("Radar and Objects on Camera", image_with_radar)
-                    cv2.imshow("lane_image", lane_image)
+                    # cv2.imshow("lane_image", lane_image)
                     # cv2.imwrite("C:\App\carla\CARLA_0.9.14\images\lane_frame_" +str(frame_count) + ".jpg", lane_image)
                     cv2.waitKey(1)
 
@@ -605,7 +736,7 @@ class acc:
             traceback.print_exc()
         finally:
             print("Cleaning up...")
-            self.show_performance_stats()
+            # self.show_performance_stats()
             cv2.destroyAllWindows()
             self.csv_file.close()
             self.destroy()

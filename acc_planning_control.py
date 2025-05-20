@@ -23,7 +23,7 @@ class ACCPlanningControl:
         self.control_dt = 0.05  # 控制步长改为0.05s（20Hz）
         self.prev_accel = 0.0
         self.prev_steer = 0.0
-        self.smooth_alpha = 0.7  # 平滑因子
+        self.smooth_alpha = 0.4  # 平滑因子
         self.mode = ACCMode.CRUISE
 
         # === 新增：PID控制器参数（纵向） ===
@@ -36,14 +36,14 @@ class ACCPlanningControl:
 
         # === 新增：Stanley控制器参数（横向） ===
         self.stanley_k = 0.5  # Stanley控制器增益
-        self.max_steer_angle = 0.5  # 最大转向角（弧度）
+        self.max_steer_angle = 0.4  # 最大转向角（弧度）
 
         # === 保留原有的CRUISE模式参数 ===
-        self.speed_kp = 1.0
-        self.speed_ki = 0.05
-        self.speed_kd = 0.01
-        self.lane_kp = 0.2
-        self.lane_kd = 0.1
+        self.speed_kp = 0.8
+        self.speed_ki = 0
+        self.speed_kd = 0
+        self.lane_kp = 0.04
+        self.lane_kd = 0
         self.speed_error_sum = 0.0
         self.prev_speed_error = 0.0
         self.prev_lane_error = 0.0
@@ -565,26 +565,47 @@ class ACCPlanningControl:
 
         return ref_speed, ref_dist, 0.0, 0.0
 
-    def cruise_control(self, lane_offset=None):
-        """CRUISE模式下的车道保持和速度控制（保持原有逻辑）"""
+    def cruise_control(self, lane_offset=None, target_info=None):
+        """CRUISE模式下的车道保持和速度控制（新增PID纵向控制基于target_info）"""
         ego_speed, ego_accel = self.get_ego_state()
 
         if lane_offset is None:
             lane_offset = self.get_lane_offset()
+        print(f"CRUISE - Lane Offset: {lane_offset:.1f}m")
 
-        # 纵向控制：PID速度控制
-        speed_error = self.target_speed - ego_speed
-        self.speed_error_sum += speed_error * self.control_dt
-        speed_error_diff = (speed_error - self.prev_speed_error) / self.control_dt
+        # 纵向控制
+        if target_info is not None and len(target_info) >= 8 and all(np.isfinite(target_info)):
+            # 使用雷达检测的距离信息
+            current_distance = float(target_info[0])
+            target_speed = ego_speed + float(target_info[6])  # 前车速度
 
-        self.speed_error_sum = max(min(self.speed_error_sum, 5.0), -5.0)
+            # 动态调整期望距离
+            dynamic_desired_distance = max(self.desired_distance, ego_speed * self.time_gap)
+            distance_error = current_distance - dynamic_desired_distance
 
-        accel = (self.speed_kp * speed_error +
-                 self.speed_ki * self.speed_error_sum +
-                 self.speed_kd * speed_error_diff)
+            # 速度限制
+            max_ref_speed = min(target_speed,
+                                self.target_speed) if target_speed < self.target_speed else self.target_speed
 
-        accel = np.clip(accel, self.max_decel, self.max_accel)
-        self.prev_speed_error = speed_error
+            # PID纵向控制
+            accel = self.pid_longitudinal_control(distance_error)
+
+            # 考虑前车速度的前馈控制
+            if abs(float(target_info[6])) > 0.1:  # 如果前车在加减速
+                feedforward = 0.5 * float(target_info[6]) / 3.6  # 前馈项
+                accel += feedforward
+        else:
+            # 没有目标信息，使用原有速度PID控制
+            speed_error = self.target_speed - ego_speed
+            self.speed_error_sum += speed_error * self.control_dt
+            speed_error_diff = (speed_error - self.prev_speed_error) / self.control_dt
+
+            self.speed_error_sum = max(min(self.speed_error_sum, 5.0), -5.0)
+
+            accel = (self.speed_kp * speed_error +
+                     self.speed_ki * self.speed_error_sum +
+                     self.speed_kd * speed_error_diff)
+            self.prev_speed_error = speed_error
 
         # 横向控制：基于车道偏移的PD控制
         lane_error_diff = (lane_offset - self.prev_lane_error) / self.control_dt
@@ -593,6 +614,7 @@ class ACCPlanningControl:
         self.prev_lane_error = lane_offset
 
         # 平滑控制输出
+        accel = np.clip(accel, self.max_decel, self.max_accel)
         accel = self.smooth_alpha * accel + (1 - self.smooth_alpha) * self.prev_accel
         steer = self.smooth_alpha * steer + (1 - self.smooth_alpha) * self.prev_steer
         self.prev_accel = accel
@@ -606,7 +628,10 @@ class ACCPlanningControl:
 
         return control
 
-    def follow_control_with_trajectory(self, target_info, trajectory_waypoints):
+
+
+
+    def follow_control_with_trajectory(self, target_info, trajectory_waypoints, lane_offset=None):
         """FOLLOW模式下的PID纵向+Stanley横向控制（使用轨迹点）"""
         ego_speed, _ = self.get_ego_state()
 
@@ -709,7 +734,7 @@ class ACCPlanningControl:
         else:
             return self.cruise_control(lane_offset)
 
-    def update_with_trajectory(self, target_info, trajectory_data):
+    def update_with_trajectory(self, target_info, trajectory_data, lane_offset=None):
         """新接口：使用轨迹信息的控制更新"""
         if not hasattr(self, 'prev_control'):
             self.prev_control = carla.VehicleControl(throttle=0.0, brake=0.0, steer=0.0)
@@ -727,12 +752,12 @@ class ACCPlanningControl:
 
         # 根据模式执行控制
         if self.mode == ACCMode.CRUISE:
-            return self.cruise_control()
+            return self.cruise_control(lane_offset)
         elif self.mode in [ACCMode.FOLLOW, ACCMode.STOP, ACCMode.EMERGENCY]:
             # FOLLOW模式使用轨迹进行控制
             return self.follow_control_with_trajectory(target_info, trajectory_waypoints)
         else:
-            return self.cruise_control()
+            return self.cruise_control(lane_offset)
 
     # === 新增：轨迹相关的辅助方法 ===
     def get_trajectory_preview_distance(self, ego_speed):
