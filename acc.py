@@ -99,8 +99,13 @@ class acc:
         ego_vehicle_bp = self.blueprint_library.filter('vehicle.audi.etron')[0]
 
         # 定义固定生成点（上坡 Town05）
-        fixed_point = carla.Location(x=0.663731, y=-203.651886, z=0.5)
-
+        # fixed_point = carla.Location(x=0.663731, y=-203.651886, z=0.5)
+        # 定义固定生成点（上坡 Town05）
+        # fixed_point = carla.Location(x=0.663731, y=-203.651886, z=0.5)
+        #fixed_point = carla.Location(x=-120.663731, y=-203.651886, z=0.5) #curve
+        #fixed_point = carla.Location(x=-244.663731, y=-70.651886, z=0.5) #straight
+        #fixed_point = carla.Location(x=-114.663731, y=205.651886, z=0) #downhill
+        fixed_point = carla.Location(x=-2.7663731, y=205.651886, z=0.5)  # crossroad
         # 找到最近的 waypoint
         waypoint = map.get_waypoint(fixed_point, project_to_road=True, lane_type=carla.LaneType.Driving)
         if waypoint is None:
@@ -108,7 +113,7 @@ class acc:
 
         # 设置前车生成点（基于 waypoint）
         spawn_point = waypoint.transform
-        spawn_point.location.z += 0.05  # 略微抬高以避免地面碰撞
+        spawn_point.location.z += 0.5  # 略微抬高以避免地面碰撞
 
         # 生成目标车辆
         vehicles = []
@@ -130,7 +135,8 @@ class acc:
         # 生成自车（后方 15 米）
         ego_spawn_point = carla.Transform()
         ego_spawn_point.location = spawn_point.location
-        ego_spawn_point.location.x += 15
+        #ego_spawn_point.location.y += 5
+        ego_spawn_point.location.x -= 15
         ego_spawn_point.rotation = spawn_point.rotation
         self.ego_vehicle = self.world.try_spawn_actor(ego_vehicle_bp, ego_spawn_point)
         # self.ego_vehicle.set_autopilot(True)
@@ -152,6 +158,8 @@ class acc:
         #自车不变道
         tm.auto_lane_change(self.ego_vehicle,False)
 
+        # 设置车辆完全忽略交通信号灯
+        tm.ignore_lights_percentage(self.ego_vehicle, 100)
         # 目标车辆自动驾驶设置
         for vehicle in vehicles:
             vehicle.set_autopilot(True, self.tm_port)
@@ -568,7 +576,7 @@ class acc:
                 #     self.frame_times.append(frame_time)
                 # self.last_frame_time = current_frame_time
 
-
+#前车控制
                 if self.target_speed_controller:
                     self.target_speed_controller.update()
                     current_desired_speed = self.target_speed_controller.get_current_desired_speed()

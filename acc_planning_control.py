@@ -704,7 +704,7 @@ class ACCPlanningControl:
             control.brake = 0.0
         else:
             control.throttle = 0.0
-            control.brake = min(-accel / -self.max_decel, 1.0)
+            control.brake = min(-accel / -self.max_decel, 1.0)/2
 
         # 横向控制（归一化到 [-1, 1]）
         control.steer = steer / self.max_steer_angle

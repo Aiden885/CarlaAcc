@@ -56,7 +56,7 @@ class SinusoidalSpeedController:
         # 方式1：通过交通管理器控制速度（推荐）
         if self.tm:
             # 假设限速是30km/h，计算相对于限速的百分比差
-            speed_limit = 30.0
+            speed_limit = 50
             percentage_diff = ((speed_limit - desired_speed) / speed_limit) * 100
             self.tm.vehicle_percentage_speed_difference(self.vehicle, percentage_diff)
 

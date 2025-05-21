@@ -61,7 +61,8 @@ class LaneDetector:
         # These values might need adjustment based on your specific conditions
         l_channel = hls[:,:,1]
         s_channel = hls[:,:,2]
-        l_channel=l_channel*(255/np.max(l_channel))
+        l_max = 1.0625
+        l_channel=l_channel*l_max
         # s_channel=s_channel*(255/np.max(s_channel))
         l_thresh_min = 230 #np.mean(l_channel)#200
         l_thresh_max = 255
