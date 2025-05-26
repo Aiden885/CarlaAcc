@@ -399,7 +399,7 @@ class CruiseTest:
                                     target_info = None
 
                         # 应用ACC控制，传递车道偏移信息
-                        control = acc_controller.update(target_info, offset)
+                        control = acc_controller.cruise_control(offset, None)
                         self.ego_vehicle.apply_control(control)
 
                         # 显示当前模式信息
