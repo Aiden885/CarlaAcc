@@ -8,8 +8,11 @@ import lane_detection
 import kalman_filter
 import radar_cluster
 import threading
+
 from acc_planning_control import ACCPlanningControl
 from sinusoidal_speed_controller import SinusoidalSpeedController
+
+
 
 class acc:
     def __init__(self):
@@ -31,8 +34,26 @@ class acc:
         self.csv_writer = None
         self.target_speed_controller = None
 
+
+        # === 新增：3D轨迹可视化器 ===
+        self.trajectory_visualizer = None  # 将在init_carla后初始化
+
+        # 可视化配置
+        self.visualization_config = {
+            'enable_3d_trajectory': True,
+            'enable_curvature_visualization': True,
+            'enable_tangent_visualization': True,
+            'enable_speed_visualization': False,
+            'enable_lookahead_visualization': True,
+            'update_frequency': 1,  # 每帧更新
+            'frame_counter': 0
+        }
+
         self.init_carla()
         self.init_csv()
+
+
+
 
     def init_carla(self):
         # 初始化 Carla 客户端
@@ -48,18 +69,14 @@ class acc:
         self.blueprint_library = self.world.get_blueprint_library()
         map = self.world.get_map()
 
+
         # 获取车辆蓝图
         vehicle_bp = self.blueprint_library.filter('vehicle.tesla.model3')[0]
         ego_vehicle_bp = self.blueprint_library.filter('vehicle.audi.etron')[0]
 
         # 定义固定生成点（上坡 Town05）
         fixed_point = carla.Location(x=0.663731, y=-203.651886, z=0.5)
-        # 定义固定生成点（上坡 Town05）
-        # fixed_point = carla.Location(x=0.663731, y=-203.651886, z=0.5)
-        # fixed_point = carla.Location(x=-120.663731, y=-203.651886, z=0.5) #curve
-        # fixed_point = carla.Location(x=-244.663731, y=-70.651886, z=0.5) #straight
-        # fixed_point = carla.Location(x=-114.663731, y=205.651886, z=0) #downhill
-        # fixed_point = carla.Location(x=-2.7663731, y=205.651886, z=0.5)  # crossroad
+
         # 找到最近的 waypoint
         waypoint = map.get_waypoint(fixed_point, project_to_road=True, lane_type=carla.LaneType.Driving)
         if waypoint is None:
@@ -67,7 +84,7 @@ class acc:
 
         # 设置前车生成点（基于 waypoint）
         spawn_point = waypoint.transform
-        spawn_point.location.z += 0.5  # 略微抬高以避免地面碰撞
+        spawn_point.location.z += 0.05  # 略微抬高以避免地面碰撞
 
         # 生成目标车辆
         vehicles = []
@@ -81,7 +98,7 @@ class acc:
         # 初始化正弦速度控制器
         self.target_speed_controller = SinusoidalSpeedController(
             vehicle=target_vehicle,
-            base_speed=20,  # 基础速度 20km/h
+            base_speed=30,  # 基础速度 20km/h
             amplitude=5.0,  # 振幅 10km/h (速度在 10-30km/h 之间变化)
             period=10.0  # 10秒一个周期
         )
@@ -89,28 +106,28 @@ class acc:
         # 生成自车（后方 15 米）
         ego_spawn_point = carla.Transform()
         ego_spawn_point.location = spawn_point.location
-        # ego_spawn_point.location.y += 5
-        ego_spawn_point.location.x += 15
+        ego_spawn_point.location.x += 20
         ego_spawn_point.rotation = spawn_point.rotation
         self.ego_vehicle = self.world.try_spawn_actor(ego_vehicle_bp, ego_spawn_point)
         # self.ego_vehicle.set_autopilot(True)
+
+
 
         if self.ego_vehicle is None:
             raise RuntimeError("Failed to spawn ego vehicle")
         self.vehicles = vehicles
         self.ego_vehicle.set_autopilot(False)
-        # vehicles.append(self.ego_vehicle)
+        #vehicles.append(self.ego_vehicle)
+
 
         # 设置交通管理器
         tm = self.client.get_trafficmanager(8000)
         tm.set_global_distance_to_leading_vehicle(2.0)
         tm.set_synchronous_mode(False)
         self.tm_port = tm.get_port()
-        # 自车不变道
-        tm.auto_lane_change(self.ego_vehicle, False)
+        #自车不变道
+        tm.auto_lane_change(self.ego_vehicle,False)
 
-        # 设置车辆完全忽略交通信号灯
-        tm.ignore_lights_percentage(self.ego_vehicle, 100)
         # 目标车辆自动驾驶设置
         for vehicle in vehicles:
             vehicle.set_autopilot(True, self.tm_port)
@@ -159,8 +176,6 @@ class acc:
         lidar_transform = carla.Transform(carla.Location(x=0.0, z=2.0))
         self.lidar = self.world.spawn_actor(lidar_bp, lidar_transform, attach_to=self.ego_vehicle)
 
-
-
     def init_csv(self):
         self.csv_file = open('speed_data.csv', 'w', newline='')
         self.csv_writer = csv.writer(self.csv_file)
@@ -185,7 +200,7 @@ class acc:
         :return: 期望跟车距离 (米)
         """
         ego_speed_ms = ego_speed_kmh / 3.6  # 转换为 m/s
-        desired_distance = max(min_distance + ego_speed_ms * time_gap, 15)
+        desired_distance = max(min_distance + ego_speed_ms * time_gap, 15 )
         return desired_distance
 
     def radar_callback(self, radar_data):
@@ -228,6 +243,7 @@ class acc:
         else:
             self.track_id = []
             print("No filtered points")
+
 
     def camera_callback(self, image):
         array = np.frombuffer(image.raw_data, dtype=np.uint8)
@@ -389,15 +405,13 @@ class acc:
                 #     control_enabled = True
                 #     print("🟢 自车开始出发！")
 
-                # 前车控制
+
                 if self.target_speed_controller:
                     self.target_speed_controller.update()
                     current_desired_speed = self.target_speed_controller.get_current_desired_speed()
 
-                # # 更新 spectator 视角（每帧更新）
-                self.update_spectator_view()
-
                 self.world.tick()
+
 
                 # 轨迹处理性能计时
                 traj_start_time = time.perf_counter()
@@ -407,7 +421,7 @@ class acc:
                     target_speed = self.get_vehicle_speed(self.target_vehicle) if self.target_vehicle else 0.0
                     vehicle_distance = self.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
 
-                    # 目标检测和轨迹处理 ===
+                    #目标检测和轨迹处理 ===
                     track_id = self.track_id.copy() if self.track_id is not None else []
                     target_info = None
                     trajectory_waypoint = None
@@ -437,6 +451,8 @@ class acc:
                         except Exception as e:
                             print(f"Target detection/trajectory error: {e}")
 
+
+
                     current_time = time.time() - self.start_time
 
                     # 计算期望跟车距离
@@ -453,6 +469,9 @@ class acc:
                         self.get_lane_offset()
                     ])
                     self.csv_file.flush()
+
+
+
                     lane_center = 510
                     # 车道线检测（简化版本）
                     try:
@@ -471,14 +490,13 @@ class acc:
 
                     # ===将轨迹传递给控制器 ===
                     try:
-                        # if control_trajectory and control_trajectory['is_valid']:
 
-                        # 使用轨迹信息进行控制
-                        # control = acc_controller.update_with_trajectory(target_info, control_trajectory,(lane_center-510)/100)
-                        control = acc_controller.cruise_control((lane_center - 510) / 150, target_info)
-                        if control.brake < 0.01:
+                        control = acc_controller.cruise_control((lane_center-510)/150, target_info)
+                        if control.brake < 0.01 :
                             control.brake = 0
                         self.ego_vehicle.apply_control(control)
+
+                        #
 
                         print(control)
                     except Exception as e:
@@ -486,12 +504,11 @@ class acc:
 
                     # 显示图像
                     cv2.imshow("Radar and Objects on Camera", image_with_radar)
-                    #cv2.imshow("lane_image", lane_image)
+                    # cv2.imshow("lane_image", lane_image)
                     # cv2.imwrite("C:\App\carla\CARLA_0.9.14\images\lane_frame_" +str(frame_count) + ".jpg", lane_image)
                     cv2.waitKey(1)
 
                     frame_count += 1
-                # self.update_spectator()
 
         except KeyboardInterrupt:
             print("\nStopped by user.")
@@ -506,6 +523,7 @@ class acc:
             self.csv_file.close()
             self.destroy()
 
+
     def destroy(self):
         self.radar.stop()
         self.camera.stop()
@@ -517,39 +535,6 @@ class acc:
             vehicle.destroy()
         self.ego_vehicle.destroy()
         print(f"Destroyed {len(self.vehicles)} vehicles, ego vehicle, radar, camera, and LIDAR.")
-
-    def update_spectator_view(self):
-        """使用 CARLA 内置的 spectator 跟随车辆"""
-        # 获取世界中的 spectator
-        spectator = self.world.get_spectator()
-        
-        # 获取车辆的变换信息
-        ego_transform = self.ego_vehicle.get_transform()
-        ego_location = ego_transform.location
-        ego_rotation = ego_transform.rotation
-        
-        # 第三人称视角 - 在车后方并略高
-        offset_distance = 8  # 车后方距离
-        height_offset = 3    # 高度偏移
-        
-        # 计算车辆朝向的弧度值
-        yaw_rad = math.radians(ego_rotation.yaw)
-        
-        # 计算摄像机位置（车辆后上方）
-        spectator_x = ego_location.x - offset_distance * math.cos(yaw_rad)
-        spectator_y = ego_location.y - offset_distance * math.sin(yaw_rad)
-        spectator_z = ego_location.z + height_offset
-        
-        # 创建新的变换
-        spectator_transform = carla.Transform(
-            carla.Location(x=spectator_x, y=spectator_y, z=spectator_z),
-            # 摄像机朝向车辆
-            carla.Rotation(pitch=-15, yaw=ego_rotation.yaw)
-        )
-        
-        # 更新 spectator 位置
-        spectator.set_transform(spectator_transform)
-
 
 def main():
     acc_actor = acc()

@@ -2,7 +2,8 @@ import numpy as np
 import carla
 from enum import Enum
 import math
-
+# 导入SPPVT控制器
+from sppvt_longitudinal_control import sppvt_longitudinal_control
 
 class ACCMode(Enum):
     CRUISE = 1  # 定速巡航
@@ -12,7 +13,7 @@ class ACCMode(Enum):
 
 
 class ACCPlanningControl:
-    def __init__(self, ego_vehicle, target_speed_kmh=50, time_gap=2.0, max_follow_distance=50.0):
+    def __init__(self, ego_vehicle, target_speed_kmh=40.0, time_gap=2.0, max_follow_distance=50.0):
         self.ego_vehicle = ego_vehicle
         self.target_speed = target_speed_kmh / 3.6  # 转换为 m/s
         self.time_gap = time_gap
@@ -27,15 +28,13 @@ class ACCPlanningControl:
         self.mode = ACCMode.CRUISE
 
         # === 新增：PID控制器参数（纵向） ===
-        self.pid_kp = 1  # 比例增益
+        self.pid_kp = 0.5  # 比例增益
         self.pid_ki = 0.01  # 积分增益
         self.pid_kd = 0.05  # 微分增益
         self.pid_prev_error = 0.0
         self.pid_integral = 0.0
         self.desired_distance = 15.0  # 期望跟车距离
 
-        # === 新增：Stanley控制器参数（横向） ===
-        self.stanley_k = 0.5  # Stanley控制器增益
         self.max_steer_angle = 0.4  # 最大转向角（弧度）
 
         # === 保留原有的CRUISE模式参数 ===
@@ -43,7 +42,7 @@ class ACCPlanningControl:
         self.speed_ki = 0
         self.speed_kd = 0
         self.lane_kp = 0.04
-        self.lane_kd = 0.2
+        self.lane_kd = 0
         self.speed_error_sum = 0.0
         self.prev_speed_error = 0.0
         self.prev_lane_error = 0.0
@@ -141,6 +140,45 @@ class ACCPlanningControl:
         return np.clip(pid_output, self.max_decel, self.max_accel)
 
 
+
+    def plan(self, target_info):
+        """规划参考状态"""
+        ego_speed, _ = self.get_ego_state()
+
+        if target_info is None or len(target_info) < 8 or not all(np.isfinite(target_info)):
+            self.mode = ACCMode.CRUISE
+            return self.target_speed, self.max_follow_distance, 0.0, 0.0
+
+        dist = float(target_info[0])  # 纵向距离
+        rel_vel = float(target_info[6])  # 纵向相对速度
+
+        if not all(np.isfinite([dist, rel_vel])):
+            self.mode = ACCMode.CRUISE
+            return self.target_speed, self.max_follow_distance, 0.0, 0.0
+
+        lead_speed = ego_speed + rel_vel
+        safe_dist = self.compute_safe_distance(ego_speed)
+
+        # 决定控制模式
+        if dist > self.max_follow_distance:
+            self.mode = ACCMode.CRUISE
+            ref_speed = self.target_speed
+            ref_dist = self.max_follow_distance
+        elif dist < self.min_safe_distance:
+            self.mode = ACCMode.EMERGENCY
+            ref_speed = 0.0
+            ref_dist = self.min_safe_distance
+        elif lead_speed < 0.1 and dist < safe_dist:
+            self.mode = ACCMode.STOP
+            ref_speed = 0.0
+            ref_dist = self.min_safe_distance
+        else:
+            self.mode = ACCMode.FOLLOW
+            ref_speed = min(lead_speed, self.target_speed)
+            ref_dist = safe_dist
+
+        return ref_speed, ref_dist, 0.0, 0.0
+
     def cruise_control(self, lane_offset=None, target_info=None):
         """CRUISE模式下的车道保持和速度控制（新增PID纵向控制基于target_info）"""
         ego_speed, ego_accel = self.get_ego_state()
@@ -157,14 +195,16 @@ class ACCPlanningControl:
 
             # 动态调整期望距离
             dynamic_desired_distance = max(self.desired_distance, ego_speed * self.time_gap)
-            distance_error = current_distance - dynamic_desired_distance
+
+            distance_error =  current_distance - dynamic_desired_distance   # 正确
 
             # 速度限制
             max_ref_speed = min(target_speed,
                                 self.target_speed) if target_speed < self.target_speed else self.target_speed
 
             # PID纵向控制
-            accel = self.pid_longitudinal_control(distance_error)
+            # accel = self.pid_longitudinal_control(distance_error)
+            accel = sppvt_longitudinal_control(distance_error, self.control_dt)
 
             # 考虑前车速度的前馈控制
             if abs(float(target_info[6])) > 0.1:  # 如果前车在加减速
@@ -218,7 +258,7 @@ class ACCPlanningControl:
             control.brake = 0.0
         else:
             control.throttle = 0.0
-            control.brake = min(-accel / -self.max_decel, 1.0)/2
+            control.brake = min(-accel / -self.max_decel, 1.0)
 
         # 横向控制（归一化到 [-1, 1]）
         control.steer = steer / self.max_steer_angle
@@ -230,4 +270,5 @@ class ACCPlanningControl:
 
         self.prev_control = control
         return control
+
 
