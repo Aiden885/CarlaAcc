@@ -53,8 +53,6 @@ class acc:
         self.init_csv()
 
 
-
-
     def init_carla(self):
         # 初始化 Carla 客户端
         self.client = carla.Client('localhost', 2000)

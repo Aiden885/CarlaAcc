@@ -141,43 +141,7 @@ class ACCPlanningControl:
 
 
 
-    def plan(self, target_info):
-        """规划参考状态"""
-        ego_speed, _ = self.get_ego_state()
 
-        if target_info is None or len(target_info) < 8 or not all(np.isfinite(target_info)):
-            self.mode = ACCMode.CRUISE
-            return self.target_speed, self.max_follow_distance, 0.0, 0.0
-
-        dist = float(target_info[0])  # 纵向距离
-        rel_vel = float(target_info[6])  # 纵向相对速度
-
-        if not all(np.isfinite([dist, rel_vel])):
-            self.mode = ACCMode.CRUISE
-            return self.target_speed, self.max_follow_distance, 0.0, 0.0
-
-        lead_speed = ego_speed + rel_vel
-        safe_dist = self.compute_safe_distance(ego_speed)
-
-        # 决定控制模式
-        if dist > self.max_follow_distance:
-            self.mode = ACCMode.CRUISE
-            ref_speed = self.target_speed
-            ref_dist = self.max_follow_distance
-        elif dist < self.min_safe_distance:
-            self.mode = ACCMode.EMERGENCY
-            ref_speed = 0.0
-            ref_dist = self.min_safe_distance
-        elif lead_speed < 0.1 and dist < safe_dist:
-            self.mode = ACCMode.STOP
-            ref_speed = 0.0
-            ref_dist = self.min_safe_distance
-        else:
-            self.mode = ACCMode.FOLLOW
-            ref_speed = min(lead_speed, self.target_speed)
-            ref_dist = safe_dist
-
-        return ref_speed, ref_dist, 0.0, 0.0
 
     def cruise_control(self, lane_offset=None, target_info=None):
         """CRUISE模式下的车道保持和速度控制（新增PID纵向控制基于target_info）"""
