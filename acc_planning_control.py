@@ -4,6 +4,8 @@ from enum import Enum
 import math
 # 导入SPPVT控制器
 from sppvt_longitudinal_control import sppvt_longitudinal_control
+# 在文件顶部添加导入
+from three_mode_controller import three_mode_control
 
 class ACCMode(Enum):
     CRUISE = 1  # 定速巡航
@@ -26,6 +28,7 @@ class ACCPlanningControl:
         self.prev_steer = 0.0
         self.smooth_alpha = 0.4  # 平滑因子
         self.mode = ACCMode.CRUISE
+
 
         # === 新增：PID控制器参数（纵向） ===
         self.pid_kp = 0.5  # 比例增益
@@ -151,41 +154,18 @@ class ACCPlanningControl:
             lane_offset = self.get_lane_offset()
         print(f"CRUISE - Lane Offset: {lane_offset:.1f}m")
 
-        # 纵向控制
+        # === 新增：使用三模式控制 ===
         if target_info is not None and len(target_info) >= 8 and all(np.isfinite(target_info)):
-            # 使用雷达检测的距离信息
             current_distance = float(target_info[0])
-            target_speed = ego_speed + float(target_info[6])  # 前车速度
+            # 使用三模式控制
+            accel, control_info = three_mode_control(ego_speed, current_distance, self.target_speed)
 
-            # 动态调整期望距离
-            dynamic_desired_distance = max(self.desired_distance, ego_speed * self.time_gap)
+            print(f"Three-Mode: {control_info['mode']} - {control_info['message']}")
 
-            distance_error =  current_distance - dynamic_desired_distance   # 正确
-
-            # 速度限制
-            max_ref_speed = min(target_speed,
-                                self.target_speed) if target_speed < self.target_speed else self.target_speed
-
-            # PID纵向控制
-            # accel = self.pid_longitudinal_control(distance_error)
-            accel = sppvt_longitudinal_control(distance_error, self.control_dt)
-
-            # 考虑前车速度的前馈控制
-            if abs(float(target_info[6])) > 0.1:  # 如果前车在加减速
-                feedforward = 0.5 * float(target_info[6]) / 3.6  # 前馈项
-                accel += feedforward
         else:
-            # 没有目标信息，使用原有速度PID控制
-            speed_error = self.target_speed - ego_speed
-            self.speed_error_sum += speed_error * self.control_dt
-            speed_error_diff = (speed_error - self.prev_speed_error) / self.control_dt
-
-            self.speed_error_sum = max(min(self.speed_error_sum, 5.0), -5.0)
-
-            accel = (self.speed_kp * speed_error +
-                     self.speed_ki * self.speed_error_sum +
-                     self.speed_kd * speed_error_diff)
-            self.prev_speed_error = speed_error
+            # 没有目标，使用速度控制模式
+            accel, control_info = three_mode_control(ego_speed, None, self.target_speed)
+            print(f"No Target: {control_info['mode']} - {control_info['message']}")
 
         # 横向控制：基于车道偏移的PD控制
         lane_error_diff = (lane_offset - self.prev_lane_error) / self.control_dt

@@ -221,7 +221,7 @@ class SPPVTLongitudinalController:
 
         return control_output
 
-        return control_output
+
 
     def reset(self):
         """重置控制器状态"""

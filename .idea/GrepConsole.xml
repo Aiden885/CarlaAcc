@@ -100,7 +100,53 @@
                             <option name="models">
                               <list>
                                 <GrepModel>
-                                  <option name="expression" value="CRUISE" />
+                                  <option name="expression" value="Three-Mode:" />
+                                </GrepModel>
+                              </list>
+                            </option>
+                          </GrepCompositeModel>
+                        </option>
+                      </Pin>
+                      <Pin>
+                        <option name="consoleUUID" value="0180bd8e-cbe2-422c-86d5-4ec555bfcbcc" />
+                        <option name="contentType" value="ConsoleContent" />
+                        <option name="grepCompositeModel">
+                          <GrepCompositeModel>
+                            <option name="models">
+                              <list>
+                                <GrepModel>
+                                  <option name="expression" value="No Target:" />
+                                </GrepModel>
+                              </list>
+                            </option>
+                          </GrepCompositeModel>
+                        </option>
+                      </Pin>
+                      <Pin>
+                        <option name="consoleUUID" value="93de28c9-0171-4769-8ac0-9e39ecbf44e5" />
+                        <option name="contentType" value="ConsoleContent" />
+                        <option name="grepCompositeModel">
+                          <GrepCompositeModel>
+                            <option name="models">
+                              <list>
+                                <GrepModel>
+                                  <option name="expression" value="Three-Mode:" />
+                                </GrepModel>
+                              </list>
+                            </option>
+                          </GrepCompositeModel>
+                        </option>
+                        <option name="parentConsoleUUID" value="c3eeb8ec-3d92-4dda-8019-9f8d164037c0" />
+                      </Pin>
+                      <Pin>
+                        <option name="consoleUUID" value="711440cc-cec6-4c98-8265-0108d350fbe0" />
+                        <option name="contentType" value="ConsoleContent" />
+                        <option name="grepCompositeModel">
+                          <GrepCompositeModel>
+                            <option name="models">
+                              <list>
+                                <GrepModel>
+                                  <option name="expression" value="distance_error" />
                                 </GrepModel>
                               </list>
                             </option>

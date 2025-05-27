@@ -11,7 +11,8 @@ import threading
 
 from acc_planning_control import ACCPlanningControl
 from sinusoidal_speed_controller import SinusoidalSpeedController
-
+# 在文件顶部添加导入
+from three_mode_controller import calculate_three_mode_desired_distance, set_three_mode_parameters
 
 
 class acc:
@@ -34,24 +35,11 @@ class acc:
         self.csv_writer = None
         self.target_speed_controller = None
 
-
-        # === 新增：3D轨迹可视化器 ===
-        self.trajectory_visualizer = None  # 将在init_carla后初始化
-
-        # 可视化配置
-        self.visualization_config = {
-            'enable_3d_trajectory': True,
-            'enable_curvature_visualization': True,
-            'enable_tangent_visualization': True,
-            'enable_speed_visualization': False,
-            'enable_lookahead_visualization': True,
-            'update_frequency': 1,  # 每帧更新
-            'frame_counter': 0
-        }
-
         self.init_carla()
         self.init_csv()
 
+        # 在init_carla()调用后添加三模式参数设置
+        set_three_mode_parameters(V1_kmh=-1, V2_kmh=30, V3_kmh=50, G1_m=15.0, G2_s=2.0)
 
     def init_carla(self):
         # 初始化 Carla 客户端
@@ -177,10 +165,15 @@ class acc:
     def init_csv(self):
         self.csv_file = open('speed_data.csv', 'w', newline='')
         self.csv_writer = csv.writer(self.csv_file)
-        # 添加期望跟车距离列
-        self.csv_writer.writerow(['Time(s)', 'Ego_Speed(km/h)', 'Target_Speed(km/h)',
-                                  'Actual_Distance(m)', 'Desired_Distance(m)', 'Lane_Offset'])
-        print("CSV file 'speed_data.csv' created and header written.")
+        self.csv_writer.writerow([
+            'Time(s)',
+            'Ego_Speed(km/h)',
+            'Target_Speed(km/h)',
+            'Actual_Distance(m)',
+            'Desired_Distance(m)',
+            'Control_Mode',  # 新增
+            'Lane_Offset'
+        ])
 
     def get_vehicle_speed(self, vehicle):
         velocity = vehicle.get_velocity()
@@ -188,18 +181,12 @@ class acc:
         speed_kmh = speed_m_s * 3.6
         return speed_kmh
 
-    # 添加计算期望跟车距离的方法
+
     def calculate_desired_following_distance(self, ego_speed_kmh, time_gap=2.0, min_distance=5.0):
-        """
-        计算期望的跟车距离
-        :param ego_speed_kmh: 自车速度 (km/h)
-        :param time_gap: 期望时间间隔 (秒)
-        :param min_distance: 最小安全距离 (米)
-        :return: 期望跟车距离 (米)
-        """
-        ego_speed_ms = ego_speed_kmh / 3.6  # 转换为 m/s
-        desired_distance = max(min_distance + ego_speed_ms * time_gap, 15 )
-        return desired_distance
+        """使用三模式控制计算期望跟车距离"""
+        ego_speed_ms = ego_speed_kmh / 3.6
+        desired_distance, control_mode = calculate_three_mode_desired_distance(ego_speed_ms)
+        return desired_distance, control_mode  # 返回距离和模式
 
     def radar_callback(self, radar_data):
         self.radar_points = []
@@ -453,19 +440,20 @@ class acc:
 
                     current_time = time.time() - self.start_time
 
-                    # 计算期望跟车距离
-                    desired_distance = self.calculate_desired_following_distance(ego_speed, time_gap=2.0,
-                                                                                 min_distance=5.0)
+                    # 计算期望跟车距离和控制模式
+                    desired_distance, control_mode = self.calculate_desired_following_distance(ego_speed)
 
-                    # 写入CSV数据
+                    # 写入CSV数据（添加控制模式列）
                     self.csv_writer.writerow([
                         current_time,
                         ego_speed,
                         target_speed,
-                        vehicle_distance,  # 实际距离
-                        desired_distance,  # 期望距离
+                        vehicle_distance,
+                        desired_distance,
+                        control_mode,  # 新增控制模式
                         self.get_lane_offset()
                     ])
+
                     self.csv_file.flush()
 
 
@@ -493,9 +481,6 @@ class acc:
                         if control.brake < 0.01 :
                             control.brake = 0
                         self.ego_vehicle.apply_control(control)
-
-                        #
-
                         print(control)
                     except Exception as e:
                         print(f"ACC control error: {e}")
