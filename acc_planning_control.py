@@ -7,12 +7,6 @@ from sppvt_longitudinal_control import sppvt_longitudinal_control
 # 在文件顶部添加导入
 from three_mode_controller import three_mode_control
 
-class ACCMode(Enum):
-    CRUISE = 1  # 定速巡航
-    FOLLOW = 2  # 跟车（使用轨迹跟踪）
-    STOP = 3  # 刹停
-    EMERGENCY = 4  # 紧急制动
-
 
 class ACCPlanningControl:
     def __init__(self, ego_vehicle, target_speed_kmh=40.0, time_gap=2.0, max_follow_distance=50.0):
@@ -27,7 +21,7 @@ class ACCPlanningControl:
         self.prev_accel = 0.0
         self.prev_steer = 0.0
         self.smooth_alpha = 0.4  # 平滑因子
-        self.mode = ACCMode.CRUISE
+
 
 
         # === 新增：PID控制器参数（纵向） ===
