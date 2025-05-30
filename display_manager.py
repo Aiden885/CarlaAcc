@@ -288,7 +288,8 @@ class DisplayManager:
             ("Cruise Mode", "ON" if info.get('cruise_mode', False) else "OFF",
              (255, 255, 0) if info.get('cruise_mode', False) else (128, 128, 128)),
             ("", "", (255, 255, 255)),
-            ("V3 (Max)", f"{info.get('V3_kmh', 0):.1f} km/h", (255, 255, 255)),
+            ("Cruise Speed", f"{info.get('cruise_speed_kmh', 0):.1f} km/h", (255, 255, 0)),  # 显示当前巡航速度
+            ("V3 (Max Limit)", f"{info.get('V3_kmh', 0):.1f} km/h", (200, 200, 200)),  # V3改为最大限制
             ("G1 (Min Dist)", f"{info.get('G1_m', 0):.1f} m", (255, 255, 255)),
             ("G2 (Time Gap)", f"{info.get('G2_s', 0):.1f} s", (255, 255, 255)),
             ("", "", (255, 255, 255)),

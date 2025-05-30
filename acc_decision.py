@@ -325,18 +325,21 @@ class ACCDecisionModule:
                 return f"无继控制: 使用V3={self.V3_kmh:.1f}km/h, G1={self.G1_m:.1f}m {adjustment_msg}"
 
             elif control_mode == ACCControlMode.TARGET_DECREASE:
-                # 减速：在定速巡航模式下始终有效，或无前车时有效
-                self.V3_kmh = max(self.V2_kmh + 1, self.V3_kmh - self.speed_step)
-                self._update_three_mode_parameters()
-                mode_desc = "纯定速巡航" if old_state == ACCState.CRUISE_ONLY else "定速控制"
-                return f"目标减量: 新V3={self.V3_kmh:.1f}km/h（{mode_desc}）"
+                # 减速：直接调整巡航速度
+                self.cruise_target_speed_kmh = getattr(self, 'cruise_target_speed_kmh', 50.0)
+                self.cruise_target_speed_kmh = max(20.0, self.cruise_target_speed_kmh - self.speed_step)
+                self.target_speed_changed = True
+                return f"减速: 巡航速度调至{self.cruise_target_speed_kmh:.1f}km/h"
 
             elif control_mode == ACCControlMode.TARGET_INCREASE:
                 # 增速：在定速巡航模式下始终有效，或无前车时有效
-                self.V3_kmh = min(120.0, self.V3_kmh + self.speed_step)
-                self._update_three_mode_parameters()
-                mode_desc = "纯定速巡航" if old_state == ACCState.CRUISE_ONLY else "定速控制"
-                return f"目标增量: 新V3={self.V3_kmh:.1f}km/h（{mode_desc}）"
+                self.cruise_target_speed_kmh = getattr(self, 'cruise_target_speed_kmh', 50.0)  # 默认50
+                self.cruise_target_speed_kmh = min(120.0, self.cruise_target_speed_kmh + self.speed_step)
+
+                # 通知主循环更新ACC控制器
+                self.target_speed_changed = True
+
+                return f"增速: 巡航速度调至{self.cruise_target_speed_kmh:.1f}km/h"
 
             elif control_mode == ACCControlMode.DISTANCE_DECREASE:
                 # 减距：仅在有前车时有效（在process_command中已检查）

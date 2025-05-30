@@ -60,16 +60,24 @@ class ThreeModeController:
                   f"V3={self.V3 * 3.6:.1f}km/h, G1={self.G1:.1f}m, G2={self.G2:.1f}s, "
                   f"目标速度={self.target_speed * 3.6:.1f}km/h")
 
-    def determine_control_mode(self, ego_speed):
+    def determine_control_mode(self, ego_speed, current_distance=None):  # 新增距离参数
         """
-        根据车速确定控制模式
-
-        参数:
-        ego_speed: 自车速度 (m/s)
-
-        返回:
-        mode: 'DISABLED', 'DISTANCE', 'TIME', 'SPEED'
+        根据车速和距离确定控制模式
+        距离优先：当距离过近时，强制进入距离/时距控制
         """
+        # === 新增：距离优先逻辑 ===
+        if current_distance is not None:
+            # 计算期望距离
+            desired_distance_for_time = ego_speed * self.G2  # 时距控制的期望距离
+
+            # 如果距离过近，强制进入距离控制（不管速度多高）
+            if current_distance < self.G1:
+                return 'DISTANCE'
+            # 如果距离小于时距要求，强制进入时距控制
+            elif current_distance < desired_distance_for_time:
+                return 'TIME'
+
+        # === 原有的速度判断逻辑 ===
         if ego_speed < self.V1:
             return 'DISABLED'
         elif ego_speed < self.V2:
@@ -135,7 +143,7 @@ class ThreeModeController:
         control_info: 控制信息字典
         """
         # 确定控制模式
-        mode = self.determine_control_mode(ego_speed)
+        mode = self.determine_control_mode(ego_speed, current_distance)
 
         # 模式切换处理
         if mode != self.current_mode:
@@ -291,3 +299,145 @@ def enable_three_mode_debug(enable=True):
 def get_three_mode_status():
     """获取三模式状态"""
     return _global_three_mode_controller.get_status()
+
+def three_mode_control_with_force_mode(ego_speed, current_distance, target_speed, force_mode=None):
+        """
+        带强制模式的三模式控制
+
+        Args:
+            ego_speed: 当前速度 (m/s)
+            current_distance: 前车距离 (m)，None表示无前车
+            target_speed: 目标速度 (m/s)
+            force_mode: 强制模式 "distance"/"time_gap"/None
+
+        Returns:
+            (accel, control_info): 加速度和控制信息
+        """
+
+        if force_mode is None:
+            # 正常模式：调用原有的three_mode_control
+            return three_mode_control(ego_speed, current_distance, target_speed)
+
+        if current_distance is None:
+            # 无前车时不使用强制模式
+            return three_mode_control(ego_speed, None, target_speed)
+
+        # 获取当前三模式参数
+        try:
+            params = get_three_mode_status()
+            V1_ms = params['V1_kmh'] / 3.6
+            V2_ms = params['V2_kmh'] / 3.6
+            V3_ms = params['V3_kmh'] / 3.6
+            G1_m = params['G1_m']
+            G2_s = params['G2_s']
+        except:
+            # 如果获取参数失败，使用默认值
+            V1_ms = 10.0 / 3.6
+            V2_ms = 30.0 / 3.6
+            V3_ms = 50.0 / 3.6
+            G1_m = 15.0
+            G2_s = 2.0
+
+        if force_mode == "distance":
+            # 强制距离控制（第1阶段）
+            # 检查是否满足距离控制条件
+            if current_distance < G1_m:
+                # 距离过近，需要减速
+                distance_error = G1_m - current_distance
+                # 简单的比例控制
+                accel = -min(3.0, distance_error * 0.5)  # 最大减速3 m/s²
+
+                control_info = {
+                    'mode': 'FORCE_DISTANCE_CONTROL',
+                    'message': f'强制距离控制: 距离{current_distance:.1f}m < G1({G1_m:.1f}m), 减速{abs(accel):.1f}m/s²',
+                    'stage': 1,
+                    'target_distance': G1_m,
+                    'current_distance': current_distance
+                }
+            else:
+                # 距离足够，轻微减速或保持
+                accel = -0.5  # 轻微减速
+                control_info = {
+                    'mode': 'FORCE_DISTANCE_MAINTAIN',
+                    'message': f'强制距离控制: 距离{current_distance:.1f}m >= G1({G1_m:.1f}m), 保持控制',
+                    'stage': 1,
+                    'target_distance': G1_m,
+                    'current_distance': current_distance
+                }
+
+        elif force_mode == "time_gap":
+            # 强制时距控制（第2阶段）
+            desired_distance = ego_speed * G2_s + G1_m
+
+            if current_distance < desired_distance:
+                # 时距不足，需要减速
+                distance_error = desired_distance - current_distance
+                accel = -min(2.5, distance_error * 0.3)  # 最大减速2.5 m/s²
+
+                control_info = {
+                    'mode': 'FORCE_TIME_GAP_CONTROL',
+                    'message': f'强制时距控制: 距离{current_distance:.1f}m < 需求{desired_distance:.1f}m, 减速{abs(accel):.1f}m/s²',
+                    'stage': 2,
+                    'desired_distance': desired_distance,
+                    'current_distance': current_distance,
+                    'time_gap': G2_s
+                }
+            else:
+                # 时距足够，轻微减速或保持
+                accel = -0.3  # 轻微减速
+                control_info = {
+                    'mode': 'FORCE_TIME_GAP_MAINTAIN',
+                    'message': f'强制时距控制: 距离{current_distance:.1f}m >= 需求{desired_distance:.1f}m, 保持控制',
+                    'stage': 2,
+                    'desired_distance': desired_distance,
+                    'current_distance': current_distance,
+                    'time_gap': G2_s
+                }
+
+        else:
+            # 未知的强制模式，回退到正常模式
+            return three_mode_control(ego_speed, current_distance, target_speed)
+
+        # 限制加速度范围
+        accel = max(-4.0, min(2.0, accel))
+
+        return accel, control_info
+
+def get_force_mode_recommendation(ego_speed, current_distance, speed_increase_threshold=2.8):
+        """
+        根据当前状态推荐强制模式类型
+
+        Args:
+            ego_speed: 当前速度 (m/s)
+            current_distance: 前车距离 (m)
+            speed_increase_threshold: 速度增加阈值 (m/s)
+
+        Returns:
+            推荐的强制模式: "distance"/"time_gap"/None
+        """
+
+        if current_distance is None:
+            return None
+
+        try:
+            params = get_three_mode_status()
+            G1_m = params['G1_m']
+            G2_s = params['G2_s']
+        except:
+            G1_m = 15.0
+            G2_s = 2.0
+
+        # 计算期望的时距距离
+        desired_time_gap_distance = ego_speed * G2_s + G1_m
+
+        # 如果距离很近（小于G1），推荐距离控制
+        if current_distance < G1_m * 1.2:  # 给一点缓冲
+            return "distance"
+
+        # 如果距离在时距范围内，推荐时距控制
+        elif current_distance < desired_time_gap_distance * 1.3:  # 给一点缓冲
+            return "time_gap"
+
+        # 距离较远，可能不需要强制控制
+        else:
+            return "time_gap"  # 保守起见，还是用时距控制

@@ -5,7 +5,8 @@ import math
 # 导入SPPVT控制器
 from sppvt_longitudinal_control import sppvt_longitudinal_control
 # 在文件顶部添加导入
-from three_mode_controller import three_mode_control
+from three_mode_controller import three_mode_control, three_mode_control_with_force_mode, get_force_mode_recommendation
+import time
 
 
 class ACCPlanningControl:
@@ -21,8 +22,6 @@ class ACCPlanningControl:
         self.prev_accel = 0.0
         self.prev_steer = 0.0
         self.smooth_alpha = 0.4  # 平滑因子
-
-
 
         # === 新增：PID控制器参数（纵向） ===
         self.pid_kp = 0.5  # 比例增益
@@ -56,6 +55,17 @@ class ACCPlanningControl:
         # 车道信息
         self.current_waypoint = None
         self.lane_width = 3.5
+
+        # === 新增：前车重检测强制控制属性 ===
+        self.last_target_lost_time = None
+        self.speed_when_target_lost = None
+        self.force_control_start_time = None
+        self.force_control_duration = 8.0  # 强制控制持续时间（秒）
+
+        # === 新增：多帧平均检测属性 ===
+        self.target_history = []  # 存储最近几帧的检测结果
+        self.history_size = 10  # 历史帧数
+        self.min_valid_frames = 2  # 最少需要的有效检测帧数
 
     def get_ego_state(self):
         """获取本车状态"""
@@ -136,24 +146,105 @@ class ACCPlanningControl:
         # 限制输出范围
         return np.clip(pid_output, self.max_decel, self.max_accel)
 
-
     def cruise_control(self, lane_offset=None, target_info=None):
-        """车道保持和速度控制（新增PID纵向控制基于target_info）"""
+        """车道保持和速度控制（增加多帧平均检测逻辑）"""
         ego_speed, ego_accel = self.get_ego_state()
 
         if lane_offset is None:
             lane_offset = self.get_lane_offset()
         print(f"CRUISE - Lane Offset: {lane_offset:.1f}m")
 
-        # === 新增：使用三模式控制 ===
-        if target_info is not None and len(target_info) >= 8 and all(np.isfinite(target_info)):
-            current_distance = float(target_info[0])
-            if current_distance is None:
-                print("YYYYYYYYYYYYYYYYYYYYYYY")
-            # 使用三模式控制
-            accel, control_info = three_mode_control(ego_speed, current_distance, self.target_speed)
+        # === 新增：多帧平均检测逻辑 ===
+        # 更新检测历史
+        self.target_history.append(target_info)
+        if len(self.target_history) > self.history_size:
+            self.target_history.pop(0)
 
-            print(f"Three-Mode: {control_info['mode']} - {control_info['message']}")
+        # 统计有效检测
+        valid_detections = [t for t in self.target_history if t is not None]
+
+        # 判断有效的前车信息
+        if len(valid_detections) >= self.min_valid_frames:
+            # 使用最新的有效检测
+            effective_target_info = valid_detections[-1]
+            target_status = f"有效检测 ({len(valid_detections)}/{len(self.target_history)}帧)"
+        else:
+            # 检测不足，认为无前车
+            effective_target_info = None
+            target_status = f"检测不足 ({len(valid_detections)}/{len(self.target_history)}帧)"
+
+        print(f"🎯 前车检测: {target_status}")
+
+        # === 前车重检测强制控制逻辑（使用effective_target_info）===
+        force_mode = None
+        force_control_active = False
+
+        if effective_target_info is not None:
+            # 有前车的情况
+            current_distance = float(effective_target_info[0])
+            print(f"📏 传递给三模式: 距离={current_distance:.1f}m, 速度={ego_speed * 3.6:.1f}km/h")
+            print(f"📏 effective_target_info长度: {len(effective_target_info)}")
+            print(f"📏 effective_target_info内容: {effective_target_info[:3]}...")  # 只显示前3个元素
+
+            # 检查前车重新检测
+            if self.last_target_lost_time is not None:
+                # 前车重新出现，检查是否需要强制控制
+                speed_increase = ego_speed - (self.speed_when_target_lost or ego_speed)
+
+                if speed_increase > 2.8:  # 速度增加超过2.8 m/s (约10 km/h)
+                    # 启动强制控制
+                    if self.force_control_start_time is None:
+                        self.force_control_start_time = time.time()
+                        # 根据距离情况选择强制模式
+                        force_mode = get_force_mode_recommendation(ego_speed, current_distance)
+                        print(f"🚨 前车重新检测，速度增加{speed_increase * 3.6:.1f}km/h，启动强制{force_mode}控制")
+
+                    # 检查是否还在强制控制期间
+                    force_duration = time.time() - self.force_control_start_time
+                    if force_duration < self.force_control_duration:
+                        # 继续使用之前确定的强制模式
+                        force_mode = get_force_mode_recommendation(ego_speed, current_distance)
+                        force_control_active = True
+                        print(f"🛡️ 强制{force_mode}控制中 ({force_duration:.1f}/{self.force_control_duration:.1f}秒)")
+                    else:
+                        # 强制期结束
+                        self.force_control_start_time = None
+                        print(f"✅ 强制控制结束，恢复自主选择")
+                else:
+                    print(f"📍 前车重新检测，速度变化不大({speed_increase * 3.6:.1f}km/h)，正常控制")
+
+            # 清除前车丢失状态
+            self.last_target_lost_time = None
+            self.speed_when_target_lost = None
+
+        else:
+            # 无前车情况
+            if self.last_target_lost_time is None:
+                # 刚刚丢失前车，记录状态
+                self.last_target_lost_time = time.time()
+                self.speed_when_target_lost = ego_speed
+                print(f"📍 前车丢失，记录速度: {ego_speed * 3.6:.1f} km/h")
+
+            # 清除强制控制状态
+            if self.force_control_start_time is not None:
+                self.force_control_start_time = None
+                print(f"📍 前车持续丢失，清除强制控制状态")
+
+        # === 使用三模式控制（使用effective_target_info）===
+        if effective_target_info is not None and len(effective_target_info) >= 8 and all(
+                np.isfinite(effective_target_info)):
+            current_distance = float(effective_target_info[0])
+
+            if force_control_active and force_mode:
+                # 使用强制模式的三模式控制
+                accel, control_info = three_mode_control_with_force_mode(
+                    ego_speed, current_distance, self.target_speed, force_mode=force_mode
+                )
+                print(f"🛡️ Force-Mode: {control_info['mode']} - {control_info['message']}")
+            else:
+                # 使用正常的三模式控制
+                accel, control_info = three_mode_control(ego_speed, current_distance, self.target_speed)
+                print(f"Three-Mode: {control_info['mode']} - {control_info['message']}")
 
         else:
             # 没有目标，使用速度控制模式
@@ -175,7 +266,9 @@ class ACCPlanningControl:
 
         control = self.control_to_vehicle(accel, steer)
 
-        print(f"CRUISE Mode - Speed: {ego_speed:.2f}/{self.target_speed:.2f} m/s, "
+        # 显示控制状态
+        control_type = "FORCE" if force_control_active else "NORMAL"
+        print(f"CRUISE Mode ({control_type}) - Speed: {ego_speed:.2f}/{self.target_speed:.2f} m/s, "
               f"Lane Offset: {lane_offset:.2f} m, Accel: {accel:.2f} m/s², "
               f"Steer: {steer:.2f} rad")
 

@@ -16,7 +16,7 @@ from pygame.locals import *
 # ACC相关模块
 from acc_planning_control import ACCPlanningControl
 from sinusoidal_speed_controller import SinusoidalSpeedController
-from three_mode_controller import calculate_three_mode_desired_distance, set_three_mode_parameters
+from three_mode_controller import calculate_three_mode_desired_distance, set_three_mode_parameters, get_three_mode_status
 from acc_decision import ACCDecisionModule, ACCCommand, ACCState
 
 # 导入显示管理器
@@ -352,6 +352,23 @@ class acc:
         target_distance = self.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
         has_target = target_distance < 50.0
 
+        # === 新增：直接处理增速/减速指令 ===
+        if command == ACCCommand.INCREASE_SPEED and self.acc_control_active:
+            if hasattr(self, 'acc_controller') and self.acc_controller:
+                current_target = self.acc_controller.target_speed * 3.6  # 转换为km/h
+                new_target = min(120.0, current_target + 1.0)  # 增加1 km/h
+                self.acc_controller.target_speed = new_target / 3.6  # 转换回m/s
+                print(f"🎯 增速: {current_target:.1f} → {new_target:.1f} km/h")
+                return
+
+        elif command == ACCCommand.DECREASE_SPEED and self.acc_control_active:
+            if hasattr(self, 'acc_controller') and self.acc_controller:
+                current_target = self.acc_controller.target_speed * 3.6  # 转换为km/h
+                new_target = max(20.0, current_target - 1.0)  # 减少1 km/h，最低20km/h
+                self.acc_controller.target_speed = new_target / 3.6  # 转换回m/s
+                print(f"🎯 减速: {current_target:.1f} → {new_target:.1f} km/h")
+                return
+
         # === 调试：处理指令前的状态 ===
         print(f"\n🔍 处理ACC指令调试:")
         print(f"   指令: {command.value}")
@@ -360,6 +377,7 @@ class acc:
         print(f"   当前速度: {ego_speed:.1f} km/h")
         print(f"   有前车: {has_target}")
 
+        # === 其他指令继续用原来的决策模块逻辑 ===
         state, mode, msg = self.acc_decision.process_command(
             command, ego_speed, has_target, target_distance if has_target else None)
 
@@ -380,11 +398,17 @@ class acc:
         print(f"   manual_control_active更新为: {self.manual_control_active}")
         print(f"   is_active从参数: {acc_params['is_active']}")
 
-        # 同步参数
-        self._sync_three_mode_parameters()
+        # 同步参数（但不包括增速/减速，因为那些直接修改了target_speed）
+        if command not in [ACCCommand.INCREASE_SPEED, ACCCommand.DECREASE_SPEED]:
+            self._sync_three_mode_parameters()
 
         print(f"ACC指令 {command.value}: {msg}")
         print(f"🎯 当前速度: {ego_speed:.1f} km/h, ACC激活: {self.acc_control_active}")
+
+        # 显示当前巡航速度（如果ACC激活且有控制器）
+        if self.acc_control_active and hasattr(self, 'acc_controller') and self.acc_controller:
+            current_cruise_speed = self.acc_controller.target_speed * 3.6
+            print(f"🎯 当前巡航速度: {current_cruise_speed:.1f} km/h")
 
     def get_system_info(self):
         """获取系统状态信息，用于显示"""
@@ -394,6 +418,11 @@ class acc:
         acc_params = self.acc_decision.get_current_parameters()
         acc_status = self.acc_decision.get_status_info()
 
+        # 获取当前巡航速度
+        cruise_speed_kmh = 0.0
+        if hasattr(self, 'acc_controller') and self.acc_controller:
+            cruise_speed_kmh = self.acc_controller.target_speed * 3.6
+
         return {
             'ego_speed': ego_speed,
             'target_distance': target_distance,
@@ -401,14 +430,14 @@ class acc:
             'acc_active': self.acc_control_active,
             'acc_state': acc_status['state_description'],
             'cruise_mode': acc_params.get('cruise_mode_active', False),
-            'V3_kmh': acc_params['V3_kmh'],
+            'cruise_speed_kmh': cruise_speed_kmh,  # 新增：当前巡航速度
+            'V3_kmh': acc_params['V3_kmh'],  # 保留：最大速度限制
             'G1_m': acc_params['G1_m'],
             'G2_s': acc_params['G2_s'],
             'throttle': self.throttle,
             'brake': self.brake,
             'steer': self.steer
         }
-
     # === 以下是原有的传感器回调和处理函数 ===
 
     def get_vehicle_speed(self, vehicle):
@@ -570,7 +599,7 @@ class acc:
         # 创建ACC控制器
         acc_controller = ACCPlanningControl(
             self.ego_vehicle,
-            target_speed_kmh=30,
+            target_speed_kmh=80,
             time_gap=2.0,
             max_follow_distance=self.max_follow_distance
         )
