@@ -137,11 +137,8 @@ class ACCPlanningControl:
         return np.clip(pid_output, self.max_decel, self.max_accel)
 
 
-
-
-
     def cruise_control(self, lane_offset=None, target_info=None):
-        """CRUISE模式下的车道保持和速度控制（新增PID纵向控制基于target_info）"""
+        """车道保持和速度控制（新增PID纵向控制基于target_info）"""
         ego_speed, ego_accel = self.get_ego_state()
 
         if lane_offset is None:
@@ -151,6 +148,8 @@ class ACCPlanningControl:
         # === 新增：使用三模式控制 ===
         if target_info is not None and len(target_info) >= 8 and all(np.isfinite(target_info)):
             current_distance = float(target_info[0])
+            if current_distance is None:
+                print("YYYYYYYYYYYYYYYYYYYYYYY")
             # 使用三模式控制
             accel, control_info = three_mode_control(ego_speed, current_distance, self.target_speed)
 

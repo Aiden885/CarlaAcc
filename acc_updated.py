@@ -9,14 +9,27 @@ import kalman_filter
 import radar_cluster
 import threading
 
+# Pygame相关
+import pygame
+from pygame.locals import *
+
+# ACC相关模块
 from acc_planning_control import ACCPlanningControl
 from sinusoidal_speed_controller import SinusoidalSpeedController
 from three_mode_controller import calculate_three_mode_desired_distance, set_three_mode_parameters
-from acc_decision import ACCDecisionModule, ACCCommand  # 新增导入
+from acc_decision import ACCDecisionModule, ACCCommand, ACCState
+
+# 导入显示管理器
+from display_manager import DisplayManager
 
 
 class acc:
     def __init__(self):
+        # === 显示管理器初始化 ===
+        self.display_manager = DisplayManager(1280, 720)
+        self.show_opencv = True  # 是否显示OpenCV窗口
+
+        # === 原有的传感器和检测模块 ===
         self.tracker = kalman_filter.RadarTracker()
         self.lane_detector = lane_detection.LaneDetector()
         self.radar_point_cluster = radar_cluster.RadarClusterNode()
@@ -35,20 +48,26 @@ class acc:
         self.csv_writer = None
         self.target_speed_controller = None
 
-        # === 新增：ACC决策模块 ===
-        self.acc_decision = ACCDecisionModule(30.0, 2.0)
-        self.acc_decision.set_debug(True)  # 启用调试模式
+        # === ACC决策模块 ===
+        self.acc_decision = ACCDecisionModule(initial_V3_kmh=50.0, initial_G1_m=15.0, initial_time_gap=2.0)
+        self.acc_decision.set_debug(True)
 
-        # 人工指令缓存
-        self.manual_command = None
-        self.manual_command_time = None
-        self.manual_command_timeout = 0.1  # 100ms超时
+        # === 控制状态 ===
+        self.acc_control_active = False
+        self.manual_control_active = True
+        self.throttle = 0.0
+        self.brake = 0.0
+        self.steer = 0.0
 
+        # === 运行控制 ===
+        self.running = True
+
+        # 初始化CARLA
         self.init_carla()
         self.init_csv()
 
-        # 在init_carla()调用后添加三模式参数设置
-        set_three_mode_parameters(V1_kmh=5, V2_kmh=30, V3_kmh=50, G1_m=15.0, G2_s=2.0)
+        # 初始化三模式参数
+        self._sync_three_mode_parameters()
 
     def init_carla(self):
         # 初始化 Carla 客户端
@@ -60,6 +79,12 @@ class acc:
         except RuntimeError as e:
             raise RuntimeError(f"Failed to load map Town05: {e}")
 
+        # 设置同步模式
+        settings = self.world.get_settings()
+        settings.synchronous_mode = True
+        settings.fixed_delta_seconds = 1.0 / 60.0
+        self.world.apply_settings(settings)
+
         # 获取蓝图库和地图
         self.blueprint_library = self.world.get_blueprint_library()
         map = self.world.get_map()
@@ -68,19 +93,16 @@ class acc:
         vehicle_bp = self.blueprint_library.filter('vehicle.tesla.model3')[0]
         ego_vehicle_bp = self.blueprint_library.filter('vehicle.audi.etron')[0]
 
-        # 定义固定生成点（上坡 Town05）
+        # 定义固定生成点
         fixed_point = carla.Location(x=0.663731, y=-203.651886, z=0.5)
-
-        # 找到最近的 waypoint
         waypoint = map.get_waypoint(fixed_point, project_to_road=True, lane_type=carla.LaneType.Driving)
         if waypoint is None:
             raise RuntimeError("Failed to find a valid waypoint near the specified location")
 
-        # 设置前车生成点（基于 waypoint）
-        spawn_point = waypoint.transform
-        spawn_point.location.z += 0.05  # 略微抬高以避免地面碰撞
-
         # 生成目标车辆
+        spawn_point = waypoint.transform
+        spawn_point.location.z += 0.05
+
         vehicles = []
         target_vehicle = self.world.try_spawn_actor(vehicle_bp, spawn_point)
         if target_vehicle is None:
@@ -92,12 +114,12 @@ class acc:
         # 初始化正弦速度控制器
         self.target_speed_controller = SinusoidalSpeedController(
             vehicle=target_vehicle,
-            base_speed=30,  # 基础速度 30km/h
-            amplitude=5.0,  # 振幅 5km/h (速度在 25-35km/h 之间变化)
-            period=10.0  # 10秒一个周期
+            base_speed=70,
+            amplitude=5.0,
+            period=10.0
         )
 
-        # 生成自车（后方 15 米）
+        # 生成自车
         ego_spawn_point = carla.Transform()
         ego_spawn_point.location = spawn_point.location
         ego_spawn_point.location.x += 20
@@ -109,34 +131,33 @@ class acc:
         self.vehicles = vehicles
         self.ego_vehicle.set_autopilot(False)
 
+        # 初始化显示管理器的相机
+        self.display_manager.init_camera_manager(self.ego_vehicle)
+
         # 设置交通管理器
         tm = self.client.get_trafficmanager(8000)
         tm.set_global_distance_to_leading_vehicle(2.0)
         tm.set_synchronous_mode(False)
         self.tm_port = tm.get_port()
-        # 自车不变道
         tm.auto_lane_change(self.ego_vehicle, False)
 
-        # 目标车辆自动驾驶设置
+        # 目标车辆设置
         for vehicle in vehicles:
             vehicle.set_autopilot(True, self.tm_port)
             tm.auto_lane_change(vehicle, False)
             tm.vehicle_percentage_speed_difference(vehicle, 30.0)
 
-        self.ego_vehicle.set_autopilot(False)
-
-        # 设置速度控制器的交通管理器
         if self.target_speed_controller:
             self.target_speed_controller.set_traffic_manager(tm)
 
-        # 设置所有交通信号灯为绿色
+        # 设置交通灯
         traffic_lights = self.world.get_actors().filter('traffic.traffic_light')
         for tl in traffic_lights:
             tl.set_state(carla.TrafficLightState.Green)
-            tl.freeze(True)  # 锁定为绿色，防止自动切换
-        print(f"Set {len(traffic_lights)} traffic lights to green")
+            tl.freeze(True)
 
         # 配置传感器
+        # 雷达
         radar_bp = self.blueprint_library.find('sensor.other.radar')
         RADAR_CONFIG = {
             'range': '100.0',
@@ -149,6 +170,7 @@ class acc:
         radar_transform = carla.Transform(carla.Location(x=2.0, z=1.0))
         self.radar = self.world.spawn_actor(radar_bp, radar_transform, attach_to=self.ego_vehicle)
 
+        # 相机（用于OpenCV处理）
         camera_bp = self.blueprint_library.find('sensor.camera.rgb')
         camera_bp.set_attribute('image_size_x', '1280')
         camera_bp.set_attribute('image_size_y', '720')
@@ -156,6 +178,7 @@ class acc:
         camera_transform = carla.Transform(carla.Location(x=1.5, z=1.5))
         self.camera = self.world.spawn_actor(camera_bp, camera_transform, attach_to=self.ego_vehicle)
 
+        # 激光雷达
         lidar_bp = self.blueprint_library.find('sensor.lidar.ray_cast')
         lidar_bp.set_attribute('range', '100.0')
         lidar_bp.set_attribute('points_per_second', '1000')
@@ -166,7 +189,8 @@ class acc:
         self.lidar = self.world.spawn_actor(lidar_bp, lidar_transform, attach_to=self.ego_vehicle)
 
     def init_csv(self):
-        self.csv_file = open('speed_data.csv', 'w', newline='')
+        """初始化CSV文件"""
+        self.csv_file = open('speed_data_integrated.csv', 'w', newline='')
         self.csv_writer = csv.writer(self.csv_file)
         self.csv_writer.writerow([
             'Time(s)',
@@ -176,10 +200,216 @@ class acc:
             'Desired_Distance(m)',
             'Control_Mode',
             'Lane_Offset',
-            'ACC_State',  # 新增
-            'ACC_Active',  # 新增
-            'ACC_Target_Speed'  # 新增
+            'ACC_State',
+            'ACC_Active',
+            'V3_Setting',
+            'G1_Setting',
+            'G2_Setting',
+            'Cruise_Mode',
+            'Manual_Throttle',
+            'Manual_Brake',
+            'Manual_Steer'
         ])
+
+    def _sync_three_mode_parameters(self):
+        """同步ACC决策参数到三模式控制器"""
+        acc_params = self.acc_decision.get_current_parameters()
+        set_three_mode_parameters(
+            V1_kmh=0,
+            V2_kmh=30,
+            V3_kmh=acc_params['V3_kmh'],
+            G1_m=acc_params['G1_m'],
+            G2_s=acc_params['G2_s']
+        )
+
+    def handle_keyboard_input(self):
+        """处理键盘输入"""
+        keys = pygame.key.get_pressed()
+
+        # === 人工介入检测（优先级最高）===
+        if self.acc_control_active:
+            # 检测任何手动控制输入
+            manual_input_detected = (
+                    keys[K_w] or keys[K_UP] or  # 油门
+                    keys[K_s] or keys[K_DOWN] or  # 刹车
+                    keys[K_a] or keys[K_LEFT] or  # 右转
+                    keys[K_d] or keys[K_RIGHT] or  # 右转
+                    keys[K_SPACE]  # 手刹
+            )
+
+            if manual_input_detected:
+                ego_speed = self.get_vehicle_speed(self.ego_vehicle)
+                # 根据输入类型确定指令
+                if keys[K_w] or keys[K_UP]:
+                    command = ACCCommand.THROTTLE
+                    input_type = "油门"
+                else:
+                    command = ACCCommand.BRAKE
+                    input_type = "刹车/转向/手刹"
+
+                # 立即处理人工介入
+                state, mode, msg = self.acc_decision.process_command(command, ego_speed)
+
+                # 更新控制状态 - 修正逻辑
+                acc_params = self.acc_decision.get_current_parameters()
+                self.acc_control_active = acc_params['is_active']
+                self.manual_control_active = True  # 人工介入后强制设为手动模式
+
+                print(f"🚨 人工{input_type}介入: {msg}")
+                print(f"💡 当前状态: {self.acc_decision.current_state.value}, 需按1键重新激活ACC")
+
+        # 基础车辆控制（只在手动模式下有效）
+        if self.manual_control_active:
+            # 油门
+            if keys[K_w] or keys[K_UP]:
+                self.throttle = min(1.0, self.throttle + 0.02)
+            else:
+                self.throttle = max(0.0, self.throttle - 0.05)
+
+            # 刹车
+            if keys[K_s] or keys[K_DOWN]:
+                self.brake = min(1.0, self.brake + 0.05)
+            else:
+                self.brake = max(0.0, self.brake - 0.1)
+
+            # 转向
+            if keys[K_a] or keys[K_LEFT]:
+                self.steer = max(-1.0, self.steer - 0.05)
+            elif keys[K_d] or keys[K_RIGHT]:
+                self.steer = min(1.0, self.steer + 0.05)
+            else:
+                self.steer = self.steer * 0.9
+
+        # 手刹
+        hand_brake = keys[K_SPACE]
+
+        # 应用手动控制
+        if self.ego_vehicle and self.manual_control_active:
+            control = carla.VehicleControl()
+            control.throttle = self.throttle
+            control.brake = self.brake
+            control.steer = self.steer
+            control.hand_brake = hand_brake
+            self.ego_vehicle.apply_control(control)
+
+    def handle_events(self):
+        """处理事件"""
+        # 处理显示管理器的事件
+        display_events = self.display_manager.handle_display_events()
+
+        for event_type, event_data in display_events:
+            if event_type == 'quit':
+                self.running = False
+                return
+
+            elif event_type == 'keydown':
+                # 退出
+                if event_data == K_ESCAPE:
+                    self.running = False
+
+                # OpenCV窗口控制
+                elif event_data == K_o:
+                    self.show_opencv = not self.show_opencv
+                    print(f"OpenCV窗口: {'开启' if self.show_opencv else '关闭'}")
+
+                elif event_data == K_p:
+                    debug_state = not self.acc_decision.debug
+                    self.acc_decision.set_debug(debug_state)
+                    print(f"ACC调试模式: {'开启' if debug_state else '关闭'}")
+
+                # ACC控制
+                elif event_data == K_1:
+                    self._process_acc_command(ACCCommand.ENGAGE)
+
+                elif event_data == K_2:
+                    self._process_acc_command(ACCCommand.EXIT)
+
+                elif event_data == K_3:
+                    self._process_acc_command(ACCCommand.CRUISE_MODE)
+
+                elif event_data == K_q:
+                    if self.acc_control_active:
+                        self._process_acc_command(ACCCommand.INCREASE_SPEED)
+
+                elif event_data == K_e:
+                    if self.acc_control_active:
+                        self._process_acc_command(ACCCommand.DECREASE_SPEED)
+
+                elif event_data == K_r:
+                    if self.acc_control_active:
+                        self._process_acc_command(ACCCommand.INCREASE_DISTANCE)
+
+                elif event_data == K_t:
+                    if self.acc_control_active:
+                        self._process_acc_command(ACCCommand.DECREASE_DISTANCE)
+
+    def _process_acc_command(self, command):
+        """处理ACC指令"""
+        if not self.ego_vehicle:
+            return
+
+        ego_speed = self.get_vehicle_speed(self.ego_vehicle)
+        target_distance = self.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
+        has_target = target_distance < 50.0
+
+        # === 调试：处理指令前的状态 ===
+        print(f"\n🔍 处理ACC指令调试:")
+        print(f"   指令: {command.value}")
+        print(f"   处理前状态: {self.acc_decision.current_state.value}")
+        print(f"   处理前控制模式: {self.acc_decision.current_control_mode}")
+        print(f"   当前速度: {ego_speed:.1f} km/h")
+        print(f"   有前车: {has_target}")
+
+        state, mode, msg = self.acc_decision.process_command(
+            command, ego_speed, has_target, target_distance if has_target else None)
+
+        # === 调试：处理指令后的状态 ===
+        print(f"   处理后状态: {state.value}")
+        print(f"   处理后控制模式: {mode.value if mode else None}")
+        print(f"   状态转移消息: {msg}")
+
+        acc_params = self.acc_decision.get_current_parameters()
+        self.acc_control_active = acc_params['is_active']
+
+        # 修正：只有在ACC激活时才设为自动模式
+        if self.acc_control_active:
+            self.manual_control_active = False  # ACC激活时关闭手动模式
+        # 如果ACC未激活，保持当前的manual_control_active状态
+
+        print(f"   acc_control_active更新为: {self.acc_control_active}")
+        print(f"   manual_control_active更新为: {self.manual_control_active}")
+        print(f"   is_active从参数: {acc_params['is_active']}")
+
+        # 同步参数
+        self._sync_three_mode_parameters()
+
+        print(f"ACC指令 {command.value}: {msg}")
+        print(f"🎯 当前速度: {ego_speed:.1f} km/h, ACC激活: {self.acc_control_active}")
+
+    def get_system_info(self):
+        """获取系统状态信息，用于显示"""
+        ego_speed = self.get_vehicle_speed(self.ego_vehicle)
+        target_distance = self.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
+        has_target = target_distance < 50.0
+        acc_params = self.acc_decision.get_current_parameters()
+        acc_status = self.acc_decision.get_status_info()
+
+        return {
+            'ego_speed': ego_speed,
+            'target_distance': target_distance,
+            'has_target': has_target,
+            'acc_active': self.acc_control_active,
+            'acc_state': acc_status['state_description'],
+            'cruise_mode': acc_params.get('cruise_mode_active', False),
+            'V3_kmh': acc_params['V3_kmh'],
+            'G1_m': acc_params['G1_m'],
+            'G2_s': acc_params['G2_s'],
+            'throttle': self.throttle,
+            'brake': self.brake,
+            'steer': self.steer
+        }
+
+    # === 以下是原有的传感器回调和处理函数 ===
 
     def get_vehicle_speed(self, vehicle):
         velocity = vehicle.get_velocity()
@@ -192,31 +422,6 @@ class acc:
         ego_speed_ms = ego_speed_kmh / 3.6
         desired_distance, control_mode = calculate_three_mode_desired_distance(ego_speed_ms)
         return desired_distance, control_mode
-
-    def process_manual_command(self, command):
-        """
-        处理手动ACC指令
-
-        Args:
-            command: ACCCommand枚举值
-        """
-        if command and isinstance(command, ACCCommand):
-            ego_speed = self.get_vehicle_speed(self.ego_vehicle)
-            state, mode, msg = self.acc_decision.process_command(command, ego_speed)
-            print(f"ACC指令处理: {command.value} -> {msg}")
-
-            # 清除处理过的指令
-            self.manual_command = None
-            self.manual_command_time = None
-
-            return msg
-        return None
-
-    def check_manual_command_timeout(self):
-        """检查手动指令超时"""
-        if self.manual_command_time and time.time() - self.manual_command_time > self.manual_command_timeout:
-            self.manual_command = None
-            self.manual_command_time = None
 
     def radar_callback(self, radar_data):
         self.radar_points = []
@@ -254,10 +459,8 @@ class acc:
                         break
             else:
                 self.track_id = []
-                print("No clusters found")
         else:
             self.track_id = []
-            print("No filtered points")
 
     def camera_callback(self, image):
         array = np.frombuffer(image.raw_data, dtype=np.uint8)
@@ -301,29 +504,6 @@ class acc:
             projected_points.append([int(u), int(v), int(ipm_point[0]), int(ipm_point[1])])
         return projected_points
 
-    def get_ipm_transform_matrix(self, camera_sensor, K, image_width=1280, image_height=720):
-        camera_height = camera_sensor.get_transform().location.z
-        fx, fy = K[0, 0], K[1, 1]
-        cx, cy = K[0, 2], K[1, 2]
-        src_points = np.float32([
-            [image_width * 0.2, image_height],
-            [image_width * 0.8, image_height],
-            [image_width * 0.6, image_height * 0.4],
-            [image_width * 0.4, image_height * 0.4]
-        ])
-        ground_width = 10.0
-        ground_length = 20.0
-        dst_points = np.float32([
-            [-ground_width / 2, 0],
-            [ground_width / 2, 0],
-            [ground_width / 2, ground_length],
-            [-ground_width / 2, ground_length]
-        ])
-        H, _ = cv2.findHomography(src_points, dst_points)
-        print("Camera IPM Transformation Matrix (Homography H):")
-        print(H)
-        return H
-
     def get_vehicle_distance(self, vehicle1, vehicle2):
         """计算两个车辆之间的距离（米）"""
         if vehicle1 is None or vehicle2 is None:
@@ -332,7 +512,6 @@ class acc:
         loc1 = vehicle1.get_location()
         loc2 = vehicle2.get_location()
 
-        # 计算2维欧氏距离
         distance = math.sqrt((loc1.x - loc2.x) ** 2 + (loc1.y - loc2.y) ** 2)
         return distance
 
@@ -342,7 +521,6 @@ class acc:
         min_distance = float('inf')
 
         for idx in range(len(track_id)):
-            # 简化的车道判断
             if -3 < track_id[idx][1] < 3:  # Y坐标在车道内
                 if track_id[idx][0] < min_distance:  # 选择最近的
                     min_distance = track_id[idx][0]
@@ -388,10 +566,11 @@ class acc:
         return offset
 
     def generate_target(self):
-        """主循环 - 集成轨迹处理"""
+        """主循环 - 完整集成ACC决策、控制和显示"""
+        # 创建ACC控制器
         acc_controller = ACCPlanningControl(
             self.ego_vehicle,
-            target_speed_kmh=30.0,
+            target_speed_kmh=30,
             time_gap=2.0,
             max_follow_distance=self.max_follow_distance
         )
@@ -399,102 +578,74 @@ class acc:
         try:
             self.get_extrinsic_params(self.radar, self.camera)
             self.start_time = time.time()
-
             frame_count = 0
 
-            while True:
-                # 检查手动指令超时
-                self.check_manual_command_timeout()
+            print("\n=== ACC Integrated Control System ===")
+            print("系统将在Pygame窗口中显示CARLA画面和ACC控制信息")
+            print("\n键盘控制:")
+            print("  1: ACC开启  2: ACC退出  3: 定速巡航")
+            print("  Q/E: 增速/降速  R/T: 增距/降距")
+            print("  W/S: 油门/刹车  A/D: 转向")
+            print("  C: 切换视角  I: 信息显示  O: OpenCV窗口")
+            print("  H: 帮助  P: 调试模式  ESC: 退出")
+            print("\n")
 
-                # 处理待处理的手动指令
-                if self.manual_command:
-                    self.process_manual_command(self.manual_command)
+            while self.running:
+                # 处理事件
+                self.handle_events()
+                self.handle_keyboard_input()
 
+                # 更新前车速度控制
                 if self.target_speed_controller:
                     self.target_speed_controller.update()
-                    current_desired_speed = self.target_speed_controller.get_current_desired_speed()
 
-                self.world.tick()
+                # 世界更新
+                if self.world:
+                    self.world.tick()
 
-                # 轨迹处理性能计时
-                traj_start_time = time.perf_counter()
+                self.display_manager.tick(60)  # 60 FPS
+
+                # 获取车辆状态
+                ego_speed = self.get_vehicle_speed(self.ego_vehicle)
+                target_speed = self.get_vehicle_speed(self.target_vehicle) if self.target_vehicle else 0.0
+                vehicle_distance = self.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
+                has_target = vehicle_distance < 50.0
+
+                # 获取ACC决策输出
+                acc_params = self.acc_decision.get_current_parameters()
+                acc_status = self.acc_decision.get_status_info()
+
+                # === OpenCV图像处理（用于雷达和车道检测） ===
                 if self.latest_camera_image is not None:
                     image_with_radar = self.latest_camera_image.copy()
-                    ego_speed = self.get_vehicle_speed(self.ego_vehicle)
-                    target_speed = self.get_vehicle_speed(self.target_vehicle) if self.target_vehicle else 0.0
-                    vehicle_distance = self.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
 
-                    # === ACC决策处理 ===
-                    acc_decision_output = self.acc_decision.get_decision_output(ego_speed, vehicle_distance)
-
-                    # 更新控制器的目标速度
-                    if acc_decision_output['acc_active']:
-                        acc_controller.target_speed = acc_decision_output['target_speed_ms']
-                        acc_controller.time_gap = acc_decision_output['time_gap']
-
-                    # 目标检测和轨迹处理 ===
+                    # 目标检测和轨迹处理
                     track_id = self.track_id.copy() if self.track_id is not None else []
                     target_info = None
-                    trajectory_waypoint = None
-                    trajectory_info = None
 
                     if track_id:
                         try:
                             projected_points = self.project_radar_to_camera(track_id)
                             current_target_idx = self.find_best_target(track_id, projected_points)
 
-                            # 绘制所有检测到的目标
+                            # 绘制检测目标
                             for idx in range(min(len(track_id), len(projected_points))):
                                 if len(projected_points[idx]) >= 2:
                                     u, v = projected_points[idx][0], projected_points[idx][1]
                                     cv2.circle(image_with_radar, (u, v), 5, (255, 0, 0), -1)
 
                             if current_target_idx >= 0 and current_target_idx < len(projected_points):
-                                # 绘制选中的目标
                                 u, v = projected_points[current_target_idx][0], projected_points[current_target_idx][1]
                                 cv2.circle(image_with_radar, (u, v), 10, (255, 255, 255), -1)
-
                                 cv2.putText(image_with_radar, f"id={track_id[current_target_idx][-1]:.0f}",
                                             (u + 5, v), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (150, 225, 100), 2)
-
                                 target_info = track_id[current_target_idx]
 
                         except Exception as e:
-                            print(f"Target detection/trajectory error: {e}")
+                            print(f"Target detection error: {e}")
 
-                    current_time = time.time() - self.start_time
-
-                    # 计算期望跟车距离和控制模式
-                    desired_distance, control_mode = self.calculate_desired_following_distance(ego_speed)
-
-                    # === 显示ACC状态信息 ===
-                    acc_status = self.acc_decision.get_status_info()
-                    # cv2.putText(image_with_radar, f"ACC: {acc_status['state_description']}",
-                    #             (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                    #             (0, 255, 0) if acc_decision_output['acc_active'] else (0, 0, 255), 2)
-                    # cv2.putText(image_with_radar, f"Target: {acc_decision_output['target_speed_kmh']:.1f}km/h",
-                    #             (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                    # cv2.putText(image_with_radar, f"Gap: {acc_decision_output['time_gap']:.1f}s",
-                    #             (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-
-                    # # 写入CSV数据（添加ACC状态列）
-                    # self.csv_writer.writerow([
-                    #     current_time,
-                    #     ego_speed,
-                    #     target_speed,
-                    #     vehicle_distance,
-                    #     desired_distance,
-                    #     control_mode,
-                    #     self.get_lane_offset(),
-                    #     acc_status['current_state'],  # ACC状态
-                    #     acc_decision_output['acc_active'],  # ACC是否激活
-                    #     acc_decision_output['target_speed_kmh']  # ACC目标速度
-                    # ])
-                    #
-                    # self.csv_file.flush()
-
+                    # 车道检测
                     lane_center = 510
-                    # 车道线检测（简化版本）
                     try:
                         lane_windows, lane_image, detected_windows = self.lane_detector.lane_detect(image_with_radar)
                         valid_row = None
@@ -504,36 +655,138 @@ class acc:
                                 break
                         if valid_row is not None:
                             lane_center = (valid_row[0] + valid_row[3]) / 2
-                            cv2.putText(image_with_radar, f"Lane Center: {lane_center:.1f} px", (10, 270),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
                     except Exception as e:
                         print(f"Lane detection error: {e}")
 
-                    # ===将轨迹传递给控制器 ===
+                    # 在OpenCV图像上添加ACC状态信息
+                    y_offset = 10
+                    cv2.putText(image_with_radar, f"ACC: {acc_status['state_description']}", (10, y_offset),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                    y_offset += 25
+
+                    cv2.putText(image_with_radar, f"Active: {'YES' if self.acc_control_active else 'NO'}",
+                                (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                                (0, 255, 0) if self.acc_control_active else (255, 255, 255), 2)
+                    y_offset += 25
+
+                    if acc_params.get('cruise_mode_active', False):
+                        cv2.putText(image_with_radar, "CRUISE MODE", (10, y_offset),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                        y_offset += 25
+
+                    # 显示OpenCV窗口（如果启用）
+                    if self.show_opencv:
+                        cv2.imshow("Radar and Lane Detection", image_with_radar)
+                        cv2.waitKey(1)
+
+                # === 车辆控制 ===
+                # 检查是否应该进行ACC控制 - 基于控制模式
+                decision_output = self.acc_decision.get_decision_output(ego_speed, vehicle_distance)
+
+                # === 调试输出：检查每个判断条件 ===
+                print(f"\n=== ACC控制判断调试 ===")
+                print(f"1. acc_control_active: {self.acc_control_active}")
+                print(f"2. decision_output['control_enabled']: {decision_output['control_enabled']}")
+                print(f"3. is_in_active_control_mode(): {self.acc_decision.is_in_active_control_mode()}")
+                print(f"4. current_state: {self.acc_decision.current_state.value}")
+                print(f"5. current_control_mode: {decision_output.get('current_control_mode', 'None')}")
+                print(f"6. manual_control_active: {self.manual_control_active}")
+                print(
+                    f"7. 综合判断结果: {self.acc_control_active and decision_output['control_enabled'] and self.acc_decision.is_in_active_control_mode()}")
+                print("=== 调试结束 ===\n")
+
+                # === 重要：只有在非手动控制模式下才执行ACC控制 ===
+                if (self.acc_control_active and
+                        decision_output['control_enabled'] and
+                        self.acc_decision.is_in_active_control_mode() and
+                        not self.manual_control_active):  # 新增条件：确保不在手动控制模式
+                    # ACC控制模式 - 只有在主动控制模式下才执行
+                    print("✅ 进入ACC控制执行分支")
                     try:
-                        # 只有在ACC激活时才进行控制
-                        if acc_decision_output['acc_active']:
-                            control = acc_controller.cruise_control((lane_center - 510) / 150, target_info)
+                        lane_offset = (lane_center - 510) / 150
+
+                        # === 调试target_info ===
+                        print(f"🎯 target_info调试:")
+                        print(f"   target_info类型: {type(target_info)}")
+                        print(f"   target_info值: {target_info}")
+                        if target_info is not None:
+                            print(
+                                f"   target_info长度: {len(target_info) if hasattr(target_info, '__len__') else 'No length'}")
+                        print(f"   force_cruise_mode: {decision_output['force_cruise_mode']}")
+
+                        # 根据定速巡航模式决定是否使用目标信息
+                        if decision_output['force_cruise_mode']:
+                            # 定速巡航模式：忽略前车
+                            print("🚗 执行定速巡航控制 (忽略前车)")
+                            control = acc_controller.cruise_control(lane_offset, None)
                         else:
-                            # ACC未激活时，保持当前状态或轻微制动
-                            control = carla.VehicleControl()
-                            control.throttle = 0.0
-                            control.brake = 0.1
-                            control.steer = 0.0
+                            # 正常ACC模式：使用前车信息
+                            print(f"🚗 执行自适应ACC控制 (使用前车信息: {target_info is not None})")
+                            control = acc_controller.cruise_control(lane_offset, target_info)
 
                         if control.brake < 0.01:
                             control.brake = 0
                         self.ego_vehicle.apply_control(control)
 
-                        print(f"ACC Active: {acc_decision_output['acc_active']}, Control: {control}")
+                        # 显示当前控制模式
+                        current_mode = decision_output.get('current_control_mode', 'Unknown')
+                        print(f"🎮 ACC executing control mode: {current_mode}")
+
                     except Exception as e:
-                        print(f"ACC control error: {e}")
+                        print(f"❌ ACC control error详细信息:")
+                        print(f"   错误类型: {type(e).__name__}")
+                        print(f"   错误消息: {str(e)}")
+                        print(f"   target_info: {target_info}")
+                        print(f"   lane_offset: {(lane_center - 510) / 150}")
+                        import traceback
+                        print(f"   完整错误堆栈:")
+                        traceback.print_exc()
 
-                    # 显示图像
-                    cv2.imshow("Radar and Objects on Camera", image_with_radar)
-                    cv2.waitKey(1)
+                else:
+                    # 不满足控制条件时的提示
+                    print("❌ 未进入ACC控制分支")
+                    if self.acc_control_active:
+                        acc_state = self.acc_decision.current_state.value
+                        control_mode = decision_output.get('current_control_mode', 'None')
+                        is_active_mode = self.acc_decision.is_in_active_control_mode()
+                        print(f"💡 原因分析: State={acc_state}, ControlMode={control_mode}, "
+                              f"ActiveMode={is_active_mode}, ControlEnabled={decision_output['control_enabled']}, "
+                              f"ManualActive={self.manual_control_active}")
+                    else:
+                        if self.acc_decision.current_state == ACCState.ADAPTIVE_HISTORY_STANDBY:
+                            print("💡 提示: ACC处于待命状态，按1键可重新激活")
+                        else:
+                            print("💡 原因: ACC未激活 (acc_control_active=False)")
 
-                    frame_count += 1
+                # === 数据记录 ===
+                current_time = time.time() - self.start_time
+                desired_distance, control_mode = self.calculate_desired_following_distance(ego_speed)
+
+                self.csv_writer.writerow([
+                    current_time,
+                    ego_speed,
+                    target_speed,
+                    vehicle_distance,
+                    desired_distance,
+                    control_mode,
+                    self.get_lane_offset(),
+                    acc_status['state_description'],
+                    self.acc_control_active,
+                    acc_params['V3_kmh'],
+                    acc_params['G1_m'],
+                    acc_params['G2_s'],
+                    acc_params.get('cruise_mode_active', False),
+                    self.throttle,
+                    self.brake,
+                    self.steer
+                ])
+                self.csv_file.flush()
+
+                # === Pygame渲染 ===
+                system_info = self.get_system_info()
+                self.display_manager.render_display(system_info)
+
+                frame_count += 1
 
         except KeyboardInterrupt:
             print("\nStopped by user.")
@@ -545,34 +798,57 @@ class acc:
             print("Cleaning up...")
             cv2.destroyAllWindows()
             self.csv_file.close()
+            self.display_manager.destroy()
             self.destroy()
 
     def destroy(self):
+        # 停止传感器
         self.radar.stop()
         self.camera.stop()
         self.lidar.stop()
+
+        # 销毁传感器
         self.radar.destroy()
         self.camera.destroy()
         self.lidar.destroy()
+
+        # 销毁车辆
         for vehicle in self.vehicles:
             vehicle.destroy()
         self.ego_vehicle.destroy()
-        print(f"Destroyed {len(self.vehicles)} vehicles, ego vehicle, radar, camera, and LIDAR.")
+
+        # 恢复异步模式
+        if self.world:
+            settings = self.world.get_settings()
+            settings.synchronous_mode = False
+            self.world.apply_settings(settings)
+
+        print(f"Destroyed {len(self.vehicles)} vehicles, ego vehicle, sensors, and restored settings.")
 
 
 def main():
     acc_actor = acc()
+
+    # 创建传感器监听线程
     thread_1 = threading.Thread(target=acc_actor.radar.listen, args=(acc_actor.radar_callback,), name='T1')
     thread_2 = threading.Thread(target=acc_actor.camera.listen, args=(acc_actor.camera_callback,), name='T2')
     thread_3 = threading.Thread(target=acc_actor.lidar.listen, args=(acc_actor.lidar_callback,), name='T3')
+
     thread_1.start()
     thread_2.start()
     thread_3.start()
+
     try:
         acc_actor.generate_target()
     except KeyboardInterrupt:
         print("Program interrupted.")
     finally:
+        # 停止传感器监听
+        acc_actor.radar.stop()
+        acc_actor.camera.stop()
+        acc_actor.lidar.stop()
+
+        # 等待线程结束
         thread_1.join()
         thread_2.join()
         thread_3.join()

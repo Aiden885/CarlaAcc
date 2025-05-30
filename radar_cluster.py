@@ -2,6 +2,8 @@
 
 import numpy as np
 from sklearn.cluster import DBSCAN
+import time
+
 class RadarClusterNode:
     def __init__(self):
         # rospy.init_node('radar_cluster_node', anonymous=True)
@@ -65,9 +67,9 @@ class RadarClusterNode:
             
             # Append center point with mean velocity
             cluster_points.append([center[0], center[1], center[2], w, l, h, mean_velocity[0], mean_velocity[1], mean_velocity[2]])
-
-        if not cluster_points:
-            return None
+        time_s = time.time()
+        # if len(cluster_points) == 0:
+        #     print("no object ", time_s, "   ", len(radar_points))
         
         return cluster_points
 

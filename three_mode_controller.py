@@ -278,7 +278,7 @@ def three_mode_control(ego_speed_ms, current_distance=None, target_speed_ms=None
         ego_speed_ms, current_distance, target_speed_ms)
 
 
-def set_three_mode_parameters(V1_kmh=20, V2_kmh=40, V3_kmh=80, G1_m=5.0, G2_s=2.0, target_speed_kmh=30.0):
+def set_three_mode_parameters(V1_kmh=0, V2_kmh=30, V3_kmh=50, G1_m=5.0, G2_s=2.0, target_speed_kmh=30.0):
     """设置全局三模式参数"""
     _global_three_mode_controller.set_parameters(V1_kmh, V2_kmh, V3_kmh, G1_m, G2_s, target_speed_kmh)
 

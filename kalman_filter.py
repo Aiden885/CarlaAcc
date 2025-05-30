@@ -49,8 +49,8 @@ class RadarTracker:
         self.next_id = 0    # Next available tracking ID
         self.frame_counts = {}  # Count of frames per track
         self.miss_counts = {}   # Count of consecutive missed frames
-        self.max_distance =  4 # Maximum distance for matching
-        self.max_misses = 3     # Keep tracking for 3 frames after disappearance
+        self.max_distance =  10 # Maximum distance for matching
+        self.max_misses = 6     # Keep tracking for 3 frames after disappearance
         self.attributes = {}    # Store z, w, l, h, vz for each track
 
     def update(self, radar_points):
@@ -59,8 +59,7 @@ class RadarTracker:
         Returns: list of tuples (x, y, z, w, l, h, vx, vy, vz, track_id)
         """
         radar_points = np.array(radar_points)
-        if radar_points is None:
-            return 
+
         # Predict positions for existing trackers
         predictions = {}
         for track_id, kf in self.trackers.items():
@@ -70,8 +69,9 @@ class RadarTracker:
         # Calculate distances between predictions and new measurements (using x, y only)
         matched = set()
         assignments = []
-        
-        if len(predictions) > 0 and len(radar_points) > 0:
+
+        if len(predictions) > 0 and radar_points.shape[0] != 0:
+            
             pred_points = np.array([p[:2] for p in predictions.values()])  # Use x, y
             meas_points = radar_points[:, :2]  # Use x, y
             dist_matrix = distance.cdist(pred_points, meas_points)
@@ -90,20 +90,21 @@ class RadarTracker:
         # Update matched trackers and reset miss counts
         tracked_points = []
         matched_ids = set()
-        for track_id, point_idx in assignments:
-            # Use only x, y, vx, vy for Kalman update
-            z = radar_points[point_idx][[0, 1, 6, 7]]  # [x, y, vx, vy]
-            pred = self.trackers[track_id].update(z)
-            self.frame_counts[track_id] += 1
-            self.miss_counts[track_id] = 0  # Reset miss count
-            # Store z, w, l, h, vz
-            self.attributes[track_id] = radar_points[point_idx][2:6].tolist() + [radar_points[point_idx][8]]
-            matched_ids.add(track_id)
-            
-            if self.frame_counts[track_id] >= 3:
-                x, y, vx, vy = pred
-                z, w, l, h, vz = self.attributes[track_id]
-                tracked_points.append((x, -y, z, w, l, h, vx, vy, vz, track_id))
+        if len(assignments) > 0:
+            for track_id, point_idx in assignments:
+                # Use only x, y, vx, vy for Kalman update
+                z = radar_points[point_idx][[0, 1, 6, 7]]  # [x, y, vx, vy]
+                pred = self.trackers[track_id].update(z)
+                self.frame_counts[track_id] += 1
+                self.miss_counts[track_id] = 0  # Reset miss count
+                # Store z, w, l, h, vz
+                self.attributes[track_id] = radar_points[point_idx][2:6].tolist() + [radar_points[point_idx][8]]
+                matched_ids.add(track_id)
+                
+                if self.frame_counts[track_id] >= 3:
+                    x, y, vx, vy = pred
+                    z, w, l, h, vz = self.attributes[track_id]
+                    tracked_points.append((x, -y, z, w, l, h, vx, vy, vz, track_id))
 
         tmp_tracker = self.trackers.copy()
         # Handle unmatched trackers (predict only, up to 3 frames)
@@ -124,16 +125,17 @@ class RadarTracker:
                     del self.attributes[track_id]
 
         # Create new trackers for unmatched points
-        for i, point in enumerate(radar_points):
-            if i not in matched:
-                kf = KalmanFilter(dt=0.1)
-                kf.x = point[[0, 1, 6, 7]].reshape(4, 1)  # Initialize x, y, vx, vy
-                new_id = self.next_id
-                self.trackers[new_id] = kf
-                self.frame_counts[new_id] = 1
-                self.miss_counts[new_id] = 0
-                self.attributes[new_id] = point[2:6].tolist() + [point[8]]  # Store z, w, l, h, vz
-                self.next_id += 1
+        if radar_points.shape[0] != 0:
+            for i, point in enumerate(radar_points):
+                if i not in matched:
+                    kf = KalmanFilter(dt=0.1)
+                    kf.x = point[[0, 1, 6, 7]].reshape(4, 1)  # Initialize x, y, vx, vy
+                    new_id = self.next_id
+                    self.trackers[new_id] = kf
+                    self.frame_counts[new_id] = 1
+                    self.miss_counts[new_id] = 0
+                    self.attributes[new_id] = point[2:6].tolist() + [point[8]]  # Store z, w, l, h, vz
+                    self.next_id += 1
 
         # Do not remove trackers immediately to ensure persistence
         return tracked_points

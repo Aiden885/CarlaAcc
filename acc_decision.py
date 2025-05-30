@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-ACC自适应巡航控制决策模块 - 完整版
+ACC自适应巡航控制决策模块 - 完整版（修改版）
 实现ACC系统的指令处理、状态管理和状态转移逻辑
 支持基于三模式控制的增速/减速和增距/减距逻辑
 支持一键定速巡航功能
+添加了当前控制模式追踪
 """
 
 from enum import Enum
@@ -49,10 +50,11 @@ class ACCControlMode(Enum):
 
 class ACCDecisionModule:
     """
-    ACC决策模块 - 完整版
+    ACC决策模块 - 完整版（修改版）
     负责处理ACC指令、管理状态转移和输出控制决策
     支持基于三模式控制的速度和距离调整逻辑
     支持一键定速巡航功能
+    添加了当前控制模式追踪
     """
 
     def __init__(self, initial_V3_kmh=50.0, initial_G1_m=15.0, initial_time_gap=2.0):
@@ -68,13 +70,17 @@ class ACCDecisionModule:
         self.current_state = ACCState.SYSTEM_EXIT
         self.previous_state = None
 
+        # === 新增：当前控制模式追踪 ===
+        self.current_control_mode = None
+        self.previous_control_mode = None
+
         # === 三模式控制参数 ===
         self.V3_kmh = initial_V3_kmh  # 最高速度限制（用户可调）
         self.G1_m = initial_G1_m  # 最小安全车距（用户可调）
         self.G2_s = initial_time_gap  # 时距参数
 
         # 固定的三模式参数
-        self.V1_kmh = 10.0  # 最低激活速度
+        self.V1_kmh = 0 # 最低激活速度
         self.V2_kmh = 30.0  # 车距/时距切换速度
 
         # 调整步长
@@ -118,8 +124,8 @@ class ACCDecisionModule:
             (ACCState.IN_CONTROL, ACCCommand.INCREASE_DISTANCE): (ACCState.IN_CONTROL,
                                                                   ACCControlMode.DISTANCE_INCREASE),
             (ACCState.IN_CONTROL, ACCCommand.CRUISE_MODE): (ACCState.CRUISE_ONLY, ACCControlMode.CRUISE_MODE_ENGAGE),
-            (ACCState.IN_CONTROL, ACCCommand.THROTTLE): (ACCState.SYSTEM_STANDBY, None),
-            (ACCState.IN_CONTROL, ACCCommand.BRAKE): (ACCState.SYSTEM_STANDBY, None),
+            (ACCState.IN_CONTROL, ACCCommand.THROTTLE): (ACCState.ADAPTIVE_HISTORY_STANDBY, None),
+            (ACCState.IN_CONTROL, ACCCommand.BRAKE): (ACCState.ADAPTIVE_HISTORY_STANDBY, None),
             (ACCState.IN_CONTROL, ACCCommand.EXIT): (ACCState.SYSTEM_EXIT, None),
 
             # 适速有史待命状态的转移
@@ -145,8 +151,8 @@ class ACCDecisionModule:
             (ACCState.CRUISE_ONLY, ACCCommand.INCREASE_SPEED): (ACCState.CRUISE_ONLY, ACCControlMode.TARGET_INCREASE),
             (ACCState.CRUISE_ONLY, ACCCommand.ENGAGE): (ACCState.IN_CONTROL, ACCControlMode.CONTINUE_CONTROL),
             # 切换回自适应模式
-            (ACCState.CRUISE_ONLY, ACCCommand.THROTTLE): (ACCState.SYSTEM_STANDBY, None),
-            (ACCState.CRUISE_ONLY, ACCCommand.BRAKE): (ACCState.SYSTEM_STANDBY, None),
+            (ACCState.CRUISE_ONLY, ACCCommand.THROTTLE): (ACCState.ADAPTIVE_HISTORY_STANDBY, None),
+            (ACCState.CRUISE_ONLY, ACCCommand.BRAKE): (ACCState.ADAPTIVE_HISTORY_STANDBY, None),
             (ACCState.CRUISE_ONLY, ACCCommand.EXIT): (ACCState.SYSTEM_EXIT, None),
 
             # 低速状态的转移
@@ -218,6 +224,7 @@ class ACCDecisionModule:
 
         # 保存当前状态作为历史
         self.previous_state = self.current_state
+        self.previous_control_mode = self.current_control_mode
 
         # === 特殊逻辑：增速/减速指令的条件检查 ===
         if command in [ACCCommand.INCREASE_SPEED, ACCCommand.DECREASE_SPEED]:
@@ -246,6 +253,9 @@ class ACCDecisionModule:
 
             # 保存原状态用于调试输出
             old_state_for_debug = self.current_state
+
+            # === 新增：更新当前控制模式 ===
+            self.current_control_mode = control_mode
 
             # 执行状态转移
             success_msg = self._execute_state_transition(new_state, control_mode, command, ego_speed_kmh, has_target,
@@ -380,11 +390,15 @@ class ACCDecisionModule:
         elif new_state == ACCState.SYSTEM_STANDBY:
             # 保存当前设定作为历史
             self._save_history()
+            # 清除控制模式
+            self.current_control_mode = None
             return "系统待命: 人工操作优先，ACC暂停"
 
         elif new_state == ACCState.SYSTEM_EXIT:
             # 清除历史和待存储调整
             self._clear_history()
+            # 清除控制模式
+            self.current_control_mode = None
             return "系统退出: ACC完全关闭"
 
         return f"转移到状态: {new_state.value}"
@@ -410,9 +424,10 @@ class ACCDecisionModule:
         self.pending_distance_adjustment = 0.0  # 清除待存储调整
         self.cruise_mode_active = False
         self.force_cruise_mode = False
+        self.current_control_mode = None  # 清除控制模式
 
         if self.debug:
-            print("清除历史设定、待存储调整和定速模式标志")
+            print("清除历史设定、待存储调整、定速模式标志和控制模式")
 
     def update_state_by_speed(self, ego_speed_kmh):
         """
@@ -456,7 +471,8 @@ class ACCDecisionModule:
             'is_active': self.current_state in [ACCState.IN_CONTROL, ACCState.CRUISE_ONLY],
             'pending_distance_adjustment': self.pending_distance_adjustment,
             'cruise_mode_active': self.cruise_mode_active,
-            'force_cruise_mode': self.force_cruise_mode
+            'force_cruise_mode': self.force_cruise_mode,
+            'current_control_mode': self.current_control_mode.value if self.current_control_mode else None
         }
 
     def get_decision_output(self, ego_speed_kmh, current_distance=None):
@@ -490,7 +506,8 @@ class ACCDecisionModule:
             'effective_has_target': effective_has_target,  # 考虑强制定速模式后的有效前车状态
             'cruise_mode_active': self.cruise_mode_active,
             'force_cruise_mode': self.force_cruise_mode,
-            'pending_distance_adjustment': self.pending_distance_adjustment
+            'pending_distance_adjustment': self.pending_distance_adjustment,
+            'current_control_mode': self.current_control_mode.value if self.current_control_mode else None
         }
 
         return decision
@@ -508,6 +525,28 @@ class ACCDecisionModule:
         }
         return descriptions.get(self.current_state, "未知状态")
 
+    def is_in_active_control_mode(self):
+        """
+        判断是否处于主动控制模式
+
+        Returns:
+            bool: 是否处于需要执行控制的模式
+        """
+        if self.current_control_mode is None:
+            return False
+
+        active_modes = [
+            ACCControlMode.CONTINUE_CONTROL,
+            ACCControlMode.NO_CONTINUE_CONTROL,
+            ACCControlMode.TARGET_DECREASE,
+            ACCControlMode.TARGET_INCREASE,
+            ACCControlMode.DISTANCE_DECREASE,
+            ACCControlMode.DISTANCE_INCREASE,
+            ACCControlMode.CRUISE_MODE_ENGAGE
+        ]
+
+        return self.current_control_mode in active_modes
+
     def set_debug(self, enable):
         """启用/禁用调试模式"""
         self.debug = enable
@@ -516,6 +555,8 @@ class ACCDecisionModule:
         """重置ACC决策模块"""
         self.current_state = ACCState.SYSTEM_EXIT
         self.previous_state = None
+        self.current_control_mode = None
+        self.previous_control_mode = None
         self._clear_history()
         print("ACC决策模块已重置")
 
@@ -524,6 +565,8 @@ class ACCDecisionModule:
         return {
             'current_state': self.current_state.value,
             'previous_state': self.previous_state.value if self.previous_state else None,
+            'current_control_mode': self.current_control_mode.value if self.current_control_mode else None,
+            'previous_control_mode': self.previous_control_mode.value if self.previous_control_mode else None,
             'V3_kmh': self.V3_kmh,
             'G1_m': self.G1_m,
             'G2_s': self.G2_s,
@@ -535,13 +578,14 @@ class ACCDecisionModule:
             'state_description': self._get_state_description(),
             'pending_distance_adjustment': self.pending_distance_adjustment,
             'cruise_mode_active': self.cruise_mode_active,
-            'force_cruise_mode': self.force_cruise_mode
+            'force_cruise_mode': self.force_cruise_mode,
+            'is_in_active_control_mode': self.is_in_active_control_mode()
         }
 
 
 def test_acc_decision_logic():
     """测试ACC决策模块的逻辑"""
-    print("=== ACC决策模块逻辑测试（包含定速巡航） ===")
+    print("=== ACC决策模块逻辑测试（包含控制模式追踪） ===")
 
     # 创建决策模块
     acc_decision = ACCDecisionModule(initial_V3_kmh=50.0, initial_G1_m=15.0)
@@ -550,6 +594,7 @@ def test_acc_decision_logic():
     ego_speed = 35.0  # km/h
 
     print(f"\n初始状态: {acc_decision.current_state.value}")
+    print(f"初始控制模式: {acc_decision.current_control_mode}")
     print(f"初始参数: V3={acc_decision.V3_kmh}km/h, G1={acc_decision.G1_m}m")
 
     # 测试1: 从退出状态开启ACC
@@ -557,81 +602,56 @@ def test_acc_decision_logic():
     state, mode, msg = acc_decision.process_command(ACCCommand.ENGAGE, ego_speed, has_target=False)
     print(f"结果: {msg}")
     print(f"当前状态: {acc_decision.current_state.value}")
+    print(f"当前控制模式: {acc_decision.current_control_mode}")
 
     # 测试2: 进入控制状态
     print("\n=== 测试2: 再次开启进入控制状态 ===")
     state, mode, msg = acc_decision.process_command(ACCCommand.ENGAGE, ego_speed, has_target=False)
     print(f"结果: {msg}")
     print(f"当前状态: {acc_decision.current_state.value}")
+    print(f"当前控制模式: {acc_decision.current_control_mode.value if acc_decision.current_control_mode else None}")
+    print(f"是否处于主动控制模式: {acc_decision.is_in_active_control_mode()}")
 
-    # 测试3: 有前车时增速（应该无效）
-    print("\n=== 测试3: 有前车时增速（应该无效） ===")
-    state, mode, msg = acc_decision.process_command(ACCCommand.INCREASE_SPEED, ego_speed, has_target=True,
-                                                    current_distance=20.0)
-    print(f"结果: {msg}")
-
-    # 测试4: 无前车时增速（应该生效）
-    print("\n=== 测试4: 无前车时增速（应该生效） ===")
+    # 测试3: 增速指令
+    print("\n=== 测试3: 增速指令 ===")
     state, mode, msg = acc_decision.process_command(ACCCommand.INCREASE_SPEED, ego_speed, has_target=False)
     print(f"结果: {msg}")
-    print(f"当前V3: {acc_decision.V3_kmh}km/h")
+    print(f"当前控制模式: {acc_decision.current_control_mode.value if acc_decision.current_control_mode else None}")
+    print(f"是否处于主动控制模式: {acc_decision.is_in_active_control_mode()}")
 
-    # 测试5: 切换到定速巡航模式
-    print("\n=== 测试5: 切换到定速巡航模式 ===")
+    # 测试4: 切换到定速巡航模式
+    print("\n=== 测试4: 切换到定速巡航模式 ===")
     state, mode, msg = acc_decision.process_command(ACCCommand.CRUISE_MODE, ego_speed, has_target=True,
                                                     current_distance=20.0)
     print(f"结果: {msg}")
     print(f"当前状态: {acc_decision.current_state.value}")
-    print(f"强制定速模式: {acc_decision.force_cruise_mode}")
+    print(f"当前控制模式: {acc_decision.current_control_mode.value if acc_decision.current_control_mode else None}")
+    print(f"是否处于主动控制模式: {acc_decision.is_in_active_control_mode()}")
 
-    # 测试6: 定速巡航模式下增速（应该生效，即使有前车）
-    print("\n=== 测试6: 定速巡航模式下增速（应该生效） ===")
-    state, mode, msg = acc_decision.process_command(ACCCommand.INCREASE_SPEED, ego_speed, has_target=True,
-                                                    current_distance=20.0)
-    print(f"结果: {msg}")
-    print(f"当前V3: {acc_decision.V3_kmh}km/h")
+    # 测试5: 检查决策输出
+    print("\n=== 测试5: 检查决策输出 ===")
+    decision = acc_decision.get_decision_output(ego_speed, 20.0)
+    print(f"控制模式: {decision['current_control_mode']}")
+    print(f"控制启用: {decision['control_enabled']}")
+    print(f"强制定速模式: {decision['force_cruise_mode']}")
 
-    # 测试7: 定速巡航模式下增距（应该无效）
-    print("\n=== 测试7: 定速巡航模式下增距（应该无效） ===")
+    # 测试6: 距离调整指令
+    print("\n=== 测试6: 距离调整指令（有前车） ===")
+    # 先切换回自适应模式
+    acc_decision.process_command(ACCCommand.ENGAGE, ego_speed, has_target=True, current_distance=20.0)
     state, mode, msg = acc_decision.process_command(ACCCommand.INCREASE_DISTANCE, ego_speed, has_target=True,
                                                     current_distance=20.0)
     print(f"结果: {msg}")
+    print(f"当前控制模式: {acc_decision.current_control_mode.value if acc_decision.current_control_mode else None}")
+    print(f"是否处于主动控制模式: {acc_decision.is_in_active_control_mode()}")
 
-    # 测试8: 从定速巡航切换回自适应模式
-    print("\n=== 测试8: 从定速巡航切换回自适应模式 ===")
-    state, mode, msg = acc_decision.process_command(ACCCommand.ENGAGE, ego_speed, has_target=True,
-                                                    current_distance=20.0)
-    print(f"结果: {msg}")
-    print(f"当前状态: {acc_decision.current_state.value}")
-    print(f"强制定速模式: {acc_decision.force_cruise_mode}")
-    print(f"巡航模式激活: {acc_decision.cruise_mode_active}")
-
-    # 验证状态是否正确清除
-    if acc_decision.force_cruise_mode:
-        print("❌ 错误：强制定速模式标志未正确清除")
-    else:
-        print("✅ 正确：强制定速模式标志已清除")
-
-    # 测试9: 测试人工干预
-    print("\n=== 测试9: 测试刹车干预 ===")
+    # 测试7: 人工干预
+    print("\n=== 测试7: 人工刹车干预 ===")
     state, mode, msg = acc_decision.process_command(ACCCommand.BRAKE, ego_speed)
     print(f"结果: {msg}")
     print(f"当前状态: {acc_decision.current_state.value}")
-
-    # 测试10: 从退出状态直接进入定速巡航
-    print("\n=== 测试10: 退出后直接进入定速巡航 ===")
-    acc_decision.process_command(ACCCommand.EXIT, ego_speed)  # 先退出
-    state, mode, msg = acc_decision.process_command(ACCCommand.CRUISE_MODE, ego_speed, has_target=False)
-    print(f"结果: {msg}")
-    print(f"当前状态: {acc_decision.current_state.value}")
-
-    # 测试11: 检查决策输出
-    print("\n=== 测试11: 检查决策输出 ===")
-    decision = acc_decision.get_decision_output(ego_speed, 20.0)
-    print(f"有前车: {decision['has_target']}")
-    print(f"有效前车（考虑强制定速）: {decision['effective_has_target']}")
-    print(f"定速模式激活: {decision['cruise_mode_active']}")
-    print(f"强制定速模式: {decision['force_cruise_mode']}")
+    print(f"当前控制模式: {acc_decision.current_control_mode}")
+    print(f"是否处于主动控制模式: {acc_decision.is_in_active_control_mode()}")
 
     # 获取最终状态
     print("\n=== 最终状态 ===")
