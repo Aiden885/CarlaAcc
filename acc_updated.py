@@ -55,6 +55,7 @@ class acc:
         # === 控制状态 ===
         self.acc_control_active = False
         self.manual_control_active = True
+        self.current_cruise_speed_kmh = 50.0  # 当前巡航速度 (km/h)
         self.throttle = 0.0
         self.brake = 0.0
         self.steer = 0.0
@@ -352,22 +353,30 @@ class acc:
         target_distance = self.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
         has_target = target_distance < 50.0
 
-        # === 新增：直接处理增速/减速指令 ===
+        # === 直接处理增速/减速指令 ===
         if command == ACCCommand.INCREASE_SPEED and self.acc_control_active:
+            # 增加巡航速度
+            old_speed = self.current_cruise_speed_kmh
+            self.current_cruise_speed_kmh = min(120.0, self.current_cruise_speed_kmh + 1.0)
+
+            # 更新ACC控制器的目标速度
             if hasattr(self, 'acc_controller') and self.acc_controller:
-                current_target = self.acc_controller.target_speed * 3.6  # 转换为km/h
-                new_target = min(120.0, current_target + 1.0)  # 增加1 km/h
-                self.acc_controller.target_speed = new_target / 3.6  # 转换回m/s
-                print(f"🎯 增速: {current_target:.1f} → {new_target:.1f} km/h")
-                return
+                self.acc_controller.target_speed = self.current_cruise_speed_kmh / 3.6  # 转换为m/s
+
+            print(f"🎯 增速: {old_speed:.1f} → {self.current_cruise_speed_kmh:.1f} km/h")
+            return
 
         elif command == ACCCommand.DECREASE_SPEED and self.acc_control_active:
+            # 减少巡航速度
+            old_speed = self.current_cruise_speed_kmh
+            self.current_cruise_speed_kmh = max(20.0, self.current_cruise_speed_kmh - 1.0)
+
+            # 更新ACC控制器的目标速度
             if hasattr(self, 'acc_controller') and self.acc_controller:
-                current_target = self.acc_controller.target_speed * 3.6  # 转换为km/h
-                new_target = max(20.0, current_target - 1.0)  # 减少1 km/h，最低20km/h
-                self.acc_controller.target_speed = new_target / 3.6  # 转换回m/s
-                print(f"🎯 减速: {current_target:.1f} → {new_target:.1f} km/h")
-                return
+                self.acc_controller.target_speed = self.current_cruise_speed_kmh / 3.6  # 转换为m/s
+
+            print(f"🎯 减速: {old_speed:.1f} → {self.current_cruise_speed_kmh:.1f} km/h")
+            return
 
         # === 调试：处理指令前的状态 ===
         print(f"\n🔍 处理ACC指令调试:")
@@ -411,17 +420,12 @@ class acc:
             print(f"🎯 当前巡航速度: {current_cruise_speed:.1f} km/h")
 
     def get_system_info(self):
-        """获取系统状态信息，用于显示"""
+        """获取系统状态信息，用于显示 """
         ego_speed = self.get_vehicle_speed(self.ego_vehicle)
         target_distance = self.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
         has_target = target_distance < 50.0
         acc_params = self.acc_decision.get_current_parameters()
         acc_status = self.acc_decision.get_status_info()
-
-        # 获取当前巡航速度
-        cruise_speed_kmh = 0.0
-        if hasattr(self, 'acc_controller') and self.acc_controller:
-            cruise_speed_kmh = self.acc_controller.target_speed * 3.6
 
         return {
             'ego_speed': ego_speed,
@@ -430,15 +434,14 @@ class acc:
             'acc_active': self.acc_control_active,
             'acc_state': acc_status['state_description'],
             'cruise_mode': acc_params.get('cruise_mode_active', False),
-            'cruise_speed_kmh': cruise_speed_kmh,  # 新增：当前巡航速度
-            'V3_kmh': acc_params['V3_kmh'],  # 保留：最大速度限制
+            'cruise_speed_kmh': self.current_cruise_speed_kmh,  # 修改：使用统一的巡航速度
+            'V3_kmh': acc_params['V3_kmh'],
             'G1_m': acc_params['G1_m'],
             'G2_s': acc_params['G2_s'],
             'throttle': self.throttle,
             'brake': self.brake,
             'steer': self.steer
         }
-    # === 以下是原有的传感器回调和处理函数 ===
 
     def get_vehicle_speed(self, vehicle):
         velocity = vehicle.get_velocity()
@@ -596,14 +599,14 @@ class acc:
 
     def generate_target(self):
         """主循环 - 完整集成ACC决策、控制和显示"""
-        # 创建ACC控制器
+        # 创建ACC控制器 - 使用统一的巡航速度
         acc_controller = ACCPlanningControl(
             self.ego_vehicle,
-            target_speed_kmh=80,
+            target_speed_kmh=self.current_cruise_speed_kmh,  # 使用统一的巡航速度
             time_gap=2.0,
             max_follow_distance=self.max_follow_distance
         )
-
+        self.acc_controller = acc_controller  # 保存引用以便后续访问
         try:
             self.get_extrinsic_params(self.radar, self.camera)
             self.start_time = time.time()
@@ -643,6 +646,14 @@ class acc:
                 # 获取ACC决策输出
                 acc_params = self.acc_decision.get_current_parameters()
                 acc_status = self.acc_decision.get_status_info()
+
+                # === 确保ACC控制器的目标速度与当前巡航速度同步 ===
+                if hasattr(self, 'acc_controller') and self.acc_controller and self.acc_control_active:
+                    controller_speed_kmh = self.acc_controller.target_speed * 3.6
+                    if abs(controller_speed_kmh - self.current_cruise_speed_kmh) > 0.1:
+                        print(
+                            f"🔄 同步速度: 控制器{controller_speed_kmh:.1f} → 巡航{self.current_cruise_speed_kmh:.1f} km/h")
+                        self.acc_controller.target_speed = self.current_cruise_speed_kmh / 3.6
 
                 # === OpenCV图像处理（用于雷达和车道检测） ===
                 if self.latest_camera_image is not None:
