@@ -174,7 +174,7 @@ class acc:
     def radar_callback(self, radar_data):
         # print(f"Radar callback triggered, frame: {radar_data.frame}, detections: {len(radar_data)}")
         self.radar_points = []
-        self.filted_points = []
+        self.filtered_points = []
         ego_velocity = self.get_ego_speed(self.ego_vehicle)
         velocity_tolerance = 1.0  # m/s tolerance for static points
         
@@ -194,14 +194,14 @@ class acc:
                 if z > -0.5:
                     self.radar_points.append([x, y, z, vx, vy, vz, velocity])
                     if abs(velocity - expected_static_velocity) > velocity_tolerance:
-                        self.filted_points.append([x, y, z, vx, vy, vz, velocity])
+                        self.filtered_points.append([x, y, z, vx, vy, vz, velocity])
             except AttributeError as e:
                 print(f"AttributeError: {e}. Raw detection: {detection}")
                 break
 
-        if self.filted_points:
+        if self.filtered_points:
             # if cluster_points:
-            self.cluster = self.radar_point_cluster.radar_cluster(self.filted_points)
+            self.cluster = self.radar_point_cluster.radar_cluster(self.filtered_points)
             if self.cluster:
                 # track_id = tracker.update(np.concatenate((np.array(cluster)[:, 0:2], np.array(cluster)[:, 6:8]), axis=1))
                 self.track_id = self.tracker.update(self.cluster)

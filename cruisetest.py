@@ -120,7 +120,7 @@ class CruiseTest:
 
     def radar_callback(self, radar_data):
         self.radar_points = []
-        self.filted_points = []
+        self.filtered_points = []
         ego_velocity = self.get_ego_speed(self.ego_vehicle)
         velocity_tolerance = 1.0
         for detection in radar_data:
@@ -140,11 +140,11 @@ class CruiseTest:
                 if z > -0.5:
                     self.radar_points.append([x, y, z, vx, vy, vz, velocity])
                     if abs(velocity - expected_static_velocity) > velocity_tolerance:
-                        self.filted_points.append([x, y, z, vx, vy, vz, velocity])
+                        self.filtered_points.append([x, y, z, vx, vy, vz, velocity])
             except AttributeError as e:
                 print(f"AttributeError: {e}. Raw detection: {detection}")
-        if self.filted_points:
-            self.cluster = self.radar_point_cluster.radar_cluster(self.filted_points)
+        if self.filtered_points:
+            self.cluster = self.radar_point_cluster.radar_cluster(self.filtered_points)
             if self.cluster:
                 self.track_id = self.tracker.update(self.cluster)
                 for track in self.track_id:
