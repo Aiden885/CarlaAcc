@@ -1,12 +1,16 @@
 import numpy as np
 import time
+import matlab.engine
+import threading
 
 
 class SPPVTLongitudinalController:
     """
-    SPPVT纵向控制器
+    SPPVT纵向控制器 - 混合Python-Simulink实现
     与PID控制器接口完全一致，可直接替换
     支持距离跟踪和速度跟踪两种模式
+
+    核心计算功能由Simulink模型提供，Python负责接口和状态管理
     """
 
     def __init__(self, control_mode='distance'):
@@ -18,6 +22,7 @@ class SPPVTLongitudinalController:
 
         # 控制模式：'distance' 或 'speed'
         self.control_mode = control_mode
+        self.control_mode_flag = 1.0 if control_mode == 'distance' else 2.0
 
         # 输出限制
         self.max_accel = 2.0
@@ -26,6 +31,7 @@ class SPPVTLongitudinalController:
         # 控制状态
         self.stage = 1  # 当前阶式级数 i
         self.target_stages = {}  # 各级目标值 V_i
+        self.current_stage_offset = 0.0  # 当前级差
 
         # 历史状态（用于计算导数）
         self.prev_error = 0.0  # 上次误差值
@@ -37,7 +43,61 @@ class SPPVTLongitudinalController:
         self.last_upgrade_time = 0
 
         # 调试标志
-        self.debug = False
+        self.debug = True
+
+        # MATLAB引擎和Simulink模型
+        self.matlab_engine = None
+        self.model_name = 'sppvt_control_model'
+        self.engine_lock = threading.Lock()
+
+        # 初始化MATLAB引擎
+        self._init_matlab_engine()
+
+    def _init_matlab_engine(self):
+        """初始化MATLAB引擎和加载Simulink模型"""
+        try:
+            if self.debug:
+                print("正在启动MATLAB引擎...")
+
+            # 启动MATLAB引擎
+            self.matlab_engine = matlab.engine.start_matlab()
+
+            # 添加模型路径到MATLAB路径
+            self.matlab_engine.addpath(self.matlab_engine.pwd(), nargout=0)
+
+            # 检查模型文件是否存在
+            model_exists = self.matlab_engine.exist(f'{self.model_name}.slx', 'file')
+            if model_exists == 0:
+                raise FileNotFoundError(f"找不到Simulink模型文件: {self.model_name}.slx")
+
+            # 加载模型
+            self.matlab_engine.load_system(self.model_name, nargout=0)
+
+            # 配置模型参数
+            self.matlab_engine.set_param(self.model_name, 'StopTime', '0.05', nargout=0)
+            self.matlab_engine.set_param(self.model_name, 'FixedStep', '0.001', nargout=0)
+            self.matlab_engine.set_param(self.model_name, 'LoadExternalInput', 'on', nargout=0)
+            self.matlab_engine.set_param(self.model_name, 'ExternalInput', '[external_input_data]', nargout=0)
+            self.matlab_engine.set_param(self.model_name, 'SaveOutput', 'on', nargout=0)
+            self.matlab_engine.set_param(self.model_name, 'OutputSaveName', 'yout', nargout=0)
+            self.matlab_engine.set_param(self.model_name, 'SaveFormat', 'StructureWithTime', nargout=0)
+
+            if self.debug:
+                print(f"MATLAB引擎启动成功，Simulink模型 {self.model_name} 已加载")
+
+        except Exception as e:
+            print(f"警告: MATLAB引擎初始化失败: {e}")
+            print("将使用纯Python实现作为后备方案")
+            self.matlab_engine = None
+
+    def __del__(self):
+        """析构函数，清理MATLAB引擎"""
+        if self.matlab_engine is not None:
+            try:
+                self.matlab_engine.close_system(self.model_name, 0, nargout=0)
+                self.matlab_engine.quit()
+            except:
+                pass
 
     def set_sppvt_parameters(self, kp=None, delta=None, eta=None, rho=None, control_mode=None):
         """动态调整SPPVT参数"""
@@ -51,14 +111,92 @@ class SPPVTLongitudinalController:
             self.sppvt_rho = max(0.01, min(0.49, rho))  # 限制在(0, 0.5)范围内
         if control_mode is not None:
             self.control_mode = control_mode
+            self.control_mode_flag = 1.0 if control_mode == 'distance' else 2.0
 
         if self.debug:
             print(f"SPPVT参数更新: Kp={self.sppvt_kp}, δ={self.sppvt_delta}, "
                   f"η={self.sppvt_eta}, ρ={self.sppvt_rho}, 模式={self.control_mode}")
 
+    def _run_simulink_model(self, error_value, dt):
+        """
+        运行Simulink模型进行核心计算
+
+        返回:
+        (control_output, velocity, acceleration, jerk, should_upgrade)
+        """
+        with self.engine_lock:
+            try:
+                # 创建时间向量
+                time_points = np.linspace(0, 0.05, 51)
+
+                # 准备输入数据
+                input_values = [
+                    float(error_value),
+                    float(dt),
+                    float(self.current_stage_offset),
+                    float(self.sppvt_kp),
+                    float(self.max_accel),
+                    float(self.max_decel),
+                    float(self.prev_error),
+                    float(self.prev_velocity),
+                    float(self.prev_accel),
+                    float(self.sppvt_delta),
+                    float(self.sppvt_eta),
+                    float(self.control_mode_flag)
+                ]
+
+                # 创建输入数据矩阵
+                input_data = []
+                for t in time_points:
+                    row = [float(t)] + input_values
+                    input_data.append(row)
+
+                # 转换为MATLAB数组
+                matlab_input = matlab.double(input_data)
+
+                # 将数据传入工作空间
+                self.matlab_engine.workspace['external_input_data'] = matlab_input
+
+                # 运行仿真
+                self.matlab_engine.eval(f"simOut = sim('{self.model_name}');", nargout=0)
+
+                # 检查simOut是否存在
+                if not self.matlab_engine.exist('simOut', 'var'):
+                    raise RuntimeError("仿真未能生成输出")
+
+                # 从simOut获取yout - 使用eval方式访问
+                self.matlab_engine.eval("yout = simOut.yout;", nargout=0)
+
+                # 确认yout存在
+                if not self.matlab_engine.exist('yout', 'var'):
+                    # 尝试其他方式
+                    self.matlab_engine.eval("yout = get(simOut, 'yout');", nargout=0)
+
+                # 使用eval获取输出值
+                control_output = float(self.matlab_engine.eval("yout.signals(1).values(end)"))
+                velocity = float(self.matlab_engine.eval("yout.signals(2).values(end)"))
+                acceleration = float(self.matlab_engine.eval("yout.signals(3).values(end)"))
+                jerk = float(self.matlab_engine.eval("yout.signals(4).values(end)"))
+                should_upgrade_value = float(self.matlab_engine.eval("yout.signals(5).values(end)"))
+                should_upgrade = should_upgrade_value > 0.5
+
+                if self.debug:
+                    print(f"Simulink输出: control={control_output:.3f}, vel={velocity:.3f}, "
+                          f"acc={acceleration:.3f}, jerk={jerk:.3f}, upgrade={should_upgrade}")
+
+                return control_output, velocity, acceleration, jerk, should_upgrade
+
+            except Exception as e:
+                if self.debug:
+                    print(f"Simulink模型运行失败: {e}")
+                    import traceback
+                    traceback.print_exc()
+                # 返回None表示失败，将使用Python后备实现
+                return None
+
     def compute_derivatives(self, error_value, dt):
         """
-        计算误差的一阶和二阶导数
+        计算误差的一阶和二阶导数（Python后备实现）
 
         参数:
         error_value: 当前误差值（距离误差或速度误差）
@@ -81,16 +219,11 @@ class SPPVTLongitudinalController:
         # 计算三阶导数（误差变化加加速度）
         jerk = (acceleration - self.prev_accel) / dt
 
-        # 更新历史状态
-        self.prev_error = error_value
-        self.prev_velocity = velocity
-        self.prev_accel = acceleration
-
         return velocity, acceleration, jerk
 
     def check_upgrade_condition(self, jerk, acceleration, velocity, control_error):
         """
-        检查升级条件 - 根据控制模式使用不同的升级条件
+        检查升级条件（Python后备实现）
 
         距离跟踪模式: (加速度 < 0) & (速度 <= δ) & (控制差 > η)
         速度跟踪模式: (加加速度 < 0) & (加速度 <= δ) & (控制差 > η)
@@ -163,6 +296,7 @@ class SPPVTLongitudinalController:
             new_offset = prev_offset + self.sppvt_rho * error_value
 
         self.target_stages[self.stage] = new_offset
+        self.current_stage_offset = new_offset
 
         if self.debug:
             direction = "减少" if self.control_mode == 'distance' else "增加"
@@ -186,9 +320,43 @@ class SPPVTLongitudinalController:
         # 如果是第一级且没有设置级差，则设置初始级差为0
         if self.stage == 1 and self.stage not in self.target_stages:
             self.target_stages[1] = 0.0  # 第一级级差为0
+            self.current_stage_offset = 0.0
 
+        # 尝试使用Simulink模型
+        if self.matlab_engine is not None:
+            result = self._run_simulink_model(error_value, dt)
+
+            if result is not None:
+                # Simulink运行成功
+                control_output, velocity, acceleration, jerk, should_upgrade = result
+
+                # 更新历史状态
+                self.prev_error = error_value
+                self.prev_velocity = velocity
+                self.prev_accel = acceleration
+
+                # 检查是否需要升级（使用Simulink的判断结果）
+                if should_upgrade:
+                    # 防止频繁升级
+                    current_time = time.time()
+                    if current_time - self.last_upgrade_time >= 0.5:
+                        self.upgrade_stage(error_value)
+
+                # 调试输出
+                if self.debug:
+                    error_type = "距离误差" if self.control_mode == 'distance' else "速度误差"
+                    print(f"SPPVT Stage {self.stage}({self.control_mode})[Simulink]: "
+                          f"原始{error_type}={error_value:.2f}, "
+                          f"级差={self.current_stage_offset:.2f}, "
+                          f"扩大误差={error_value + self.current_stage_offset:.2f}, "
+                          f"控制输出={control_output:.2f}m/s²")
+
+                return control_output
+
+        # Simulink不可用或运行失败，使用Python后备实现
         # 获取当前级的级差
         current_stage_offset = self.target_stages.get(self.stage, 0.0)
+        self.current_stage_offset = current_stage_offset
 
         # 计算导数
         velocity, acceleration, jerk = self.compute_derivatives(error_value, dt)
@@ -201,7 +369,13 @@ class SPPVTLongitudinalController:
             self.upgrade_stage(error_value)
             # 更新当前级级差
             current_stage_offset = self.target_stages.get(self.stage, 0.0)
+            self.current_stage_offset = current_stage_offset
             enhanced_error = error_value + current_stage_offset
+
+        # 更新历史状态
+        self.prev_error = error_value
+        self.prev_velocity = velocity
+        self.prev_accel = acceleration
 
         # 计算控制输出
         # 使用比例控制，基于扩大后的误差
@@ -213,7 +387,7 @@ class SPPVTLongitudinalController:
         # 调试输出
         if self.debug:
             error_type = "距离误差" if self.control_mode == 'distance' else "速度误差"
-            print(f"SPPVT Stage {self.stage}({self.control_mode}): "
+            print(f"SPPVT Stage {self.stage}({self.control_mode})[Python]: "
                   f"原始{error_type}={error_value:.2f}, "
                   f"级差={current_stage_offset:.2f}, "
                   f"扩大误差={enhanced_error:.2f}, "
@@ -221,12 +395,11 @@ class SPPVTLongitudinalController:
 
         return control_output
 
-
-
     def reset(self):
         """重置控制器状态"""
         self.stage = 1
         self.target_stages = {}
+        self.current_stage_offset = 0.0
         self.prev_error = 0.0
         self.prev_velocity = 0.0
         self.prev_accel = 0.0
@@ -243,6 +416,7 @@ class SPPVTLongitudinalController:
             'upgrade_count': self.upgrade_count,
             'target_stages': self.target_stages.copy(),
             'control_mode': self.control_mode,
+            'matlab_engine_status': 'active' if self.matlab_engine is not None else 'inactive',
             'parameters': {
                 'kp': self.sppvt_kp,
                 'delta': self.sppvt_delta,
@@ -319,4 +493,9 @@ def get_sppvt_status():
 SPPVT原理：
 - 距离跟踪：逐步降低目标距离，增强控制作用
 - 速度跟踪：逐步提高目标速度，增强控制作用
+
+混合实现说明：
+- 优先使用Simulink模型进行核心计算（导数计算、升级判断、控制输出）
+- 如果MATLAB引擎不可用，自动切换到纯Python实现
+- 所有外部接口保持不变，确保向后兼容
 """
