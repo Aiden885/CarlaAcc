@@ -735,52 +735,98 @@ class acc:
                     f"7. 综合判断结果: {self.acc_control_active and decision_output['control_enabled'] and self.acc_decision.is_in_active_control_mode()}")
                 print("=== 调试结束 ===\n")
 
-                # === 重要：只有在非手动控制模式下才执行ACC控制 ===
+                # === 检查是否为扭矩仲裁模式 ===
+                is_torque_arbitration = decision_output.get('torque_arbitration_active', False)
+                
+                # === 重要：分别处理扭矩仲裁和正常ACC控制 ===
                 if (self.acc_control_active and
                         decision_output['control_enabled'] and
-                        self.acc_decision.is_in_active_control_mode() and
-                        not self.manual_control_active):  # 新增条件：确保不在手动控制模式
-                    # ACC控制模式 - 只有在主动控制模式下才执行
-                    print("✅ 进入ACC控制执行分支")
-                    try:
-                        lane_offset = (lane_center - 510) / 150
+                        self.acc_decision.is_in_active_control_mode()):
+                    
+                    if is_torque_arbitration:
+                        # === 扭矩仲裁模式：人工油门与ACC系统协同控制 ===
+                        print("🔧 进入扭矩仲裁模式执行分支")
+                        try:
+                            lane_offset = (lane_center - 510) / 150
+                            
+                            # 获取ACC系统的控制输出
+                            if decision_output['force_cruise_mode']:
+                                print("🚗 ACC定速巡航控制 (忽略前车)")
+                                acc_control = acc_controller.cruise_control(lane_offset, None)
+                            else:
+                                print(f"🚗 ACC自适应控制 (使用前车信息: {target_info is not None})")
+                                acc_control = acc_controller.cruise_control(lane_offset, target_info)
+                            
+                            # 获取人工输入的油门值
+                            manual_throttle = self.throttle
+                            acc_throttle = acc_control.throttle
+                            
+                            # 扭矩仲裁：取较大值
+                            final_throttle = max(manual_throttle, acc_throttle)
+                            
+                            # 创建最终控制指令
+                            final_control = carla.VehicleControl()
+                            final_control.throttle = final_throttle
+                            final_control.brake = acc_control.brake if acc_control.brake > 0.01 else 0  # 使用ACC的刹车控制
+                            final_control.steer = acc_control.steer  # 使用ACC的转向控制
+                            final_control.hand_brake = False
+                            
+                            # 应用最终控制指令
+                            self.ego_vehicle.apply_control(final_control)
+                            
+                            print(f"🎮 扭矩仲裁: 人工油门={manual_throttle:.3f}, ACC油门={acc_throttle:.3f}, 最终油门={final_throttle:.3f}")
+                            
+                        except Exception as e:
+                            print(f"❌ 扭矩仲裁控制错误:")
+                            print(f"   错误类型: {type(e).__name__}")
+                            print(f"   错误消息: {str(e)}")
+                            import traceback
+                            traceback.print_exc()
+                    
+                    elif not self.manual_control_active:
+                        # === 正常ACC控制模式（非手动控制时） ===
+                        print("✅ 进入正常ACC控制执行分支")
+                        try:
+                            lane_offset = (lane_center - 510) / 150
 
-                        # === 调试target_info ===
-                        print(f"🎯 target_info调试:")
-                        print(f"   target_info类型: {type(target_info)}")
-                        print(f"   target_info值: {target_info}")
-                        if target_info is not None:
-                            print(
-                                f"   target_info长度: {len(target_info) if hasattr(target_info, '__len__') else 'No length'}")
-                        print(f"   force_cruise_mode: {decision_output['force_cruise_mode']}")
+                            # === 调试target_info ===
+                            print(f"🎯 target_info调试:")
+                            print(f"   target_info类型: {type(target_info)}")
+                            print(f"   target_info值: {target_info}")
+                            if target_info is not None:
+                                print(
+                                    f"   target_info长度: {len(target_info) if hasattr(target_info, '__len__') else 'No length'}")
+                            print(f"   force_cruise_mode: {decision_output['force_cruise_mode']}")
 
-                        # 根据定速巡航模式决定是否使用目标信息
-                        if decision_output['force_cruise_mode']:
-                            # 定速巡航模式：忽略前车
-                            print("🚗 执行定速巡航控制 (忽略前车)")
-                            control = acc_controller.cruise_control(lane_offset, None)
-                        else:
-                            # 正常ACC模式：使用前车信息
-                            print(f"🚗 执行自适应ACC控制 (使用前车信息: {target_info is not None})")
-                            control = acc_controller.cruise_control(lane_offset, target_info)
+                            # 根据定速巡航模式决定是否使用目标信息
+                            if decision_output['force_cruise_mode']:
+                                # 定速巡航模式：忽略前车
+                                print("🚗 执行定速巡航控制 (忽略前车)")
+                                control = acc_controller.cruise_control(lane_offset, None)
+                            else:
+                                # 正常ACC模式：使用前车信息
+                                print(f"🚗 执行自适应ACC控制 (使用前车信息: {target_info is not None})")
+                                control = acc_controller.cruise_control(lane_offset, target_info)
 
-                        if control.brake < 0.01:
-                            control.brake = 0
-                        self.ego_vehicle.apply_control(control)
+                            if control.brake < 0.01:
+                                control.brake = 0
+                            self.ego_vehicle.apply_control(control)
 
-                        # 显示当前控制模式
-                        current_mode = decision_output.get('current_control_mode', 'Unknown')
-                        print(f"🎮 ACC executing control mode: {current_mode}")
+                            # 显示当前控制模式
+                            current_mode = decision_output.get('current_control_mode', 'Unknown')
+                            print(f"🎮 ACC executing control mode: {current_mode}")
 
-                    except Exception as e:
-                        print(f"❌ ACC control error详细信息:")
-                        print(f"   错误类型: {type(e).__name__}")
-                        print(f"   错误消息: {str(e)}")
-                        print(f"   target_info: {target_info}")
-                        print(f"   lane_offset: {(lane_center - 510) / 150}")
-                        import traceback
-                        print(f"   完整错误堆栈:")
-                        traceback.print_exc()
+                        except Exception as e:
+                            print(f"❌ ACC control error详细信息:")
+                            print(f"   错误类型: {type(e).__name__}")
+                            print(f"   错误消息: {str(e)}")
+                            print(f"   target_info: {target_info}")
+                            print(f"   lane_offset: {(lane_center - 510) / 150}")
+                            import traceback
+                            print(f"   完整错误堆栈:")
+                            traceback.print_exc()
+                    else:
+                        print("⚠️ ACC激活但处于手动控制模式，跳过ACC控制")
 
                 else:
                     # 不满足控制条件时的提示

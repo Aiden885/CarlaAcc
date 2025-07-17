@@ -46,6 +46,7 @@ class ACCControlMode(Enum):
     DISTANCE_DECREASE = "DIST_DEC"  # 距离降低
     DISTANCE_INCREASE = "DIST_INC"  # 距离增加
     CRUISE_MODE_ENGAGE = "CRUISE_ENGAGE"  # 进入定速巡航模式
+    TORQUE_ARBITRATION = "TORQUE_ARB"  # 扭矩仲裁模式
 
 
 class ACCDecisionModule:
@@ -124,7 +125,7 @@ class ACCDecisionModule:
             (ACCState.IN_CONTROL, ACCCommand.INCREASE_DISTANCE): (ACCState.IN_CONTROL,
                                                                   ACCControlMode.DISTANCE_INCREASE),
             (ACCState.IN_CONTROL, ACCCommand.CRUISE_MODE): (ACCState.CRUISE_ONLY, ACCControlMode.CRUISE_MODE_ENGAGE),
-            (ACCState.IN_CONTROL, ACCCommand.THROTTLE): (ACCState.ADAPTIVE_HISTORY_STANDBY, None),
+            (ACCState.IN_CONTROL, ACCCommand.THROTTLE): (ACCState.IN_CONTROL, ACCControlMode.TORQUE_ARBITRATION),
             (ACCState.IN_CONTROL, ACCCommand.BRAKE): (ACCState.ADAPTIVE_HISTORY_STANDBY, None),
             (ACCState.IN_CONTROL, ACCCommand.EXIT): (ACCState.SYSTEM_EXIT, None),
 
@@ -353,6 +354,12 @@ class ACCDecisionModule:
                 self._update_three_mode_parameters()
                 return f"距离增加: 新G1={self.G1_m:.1f}m（车距控制）"
 
+            elif control_mode == ACCControlMode.TORQUE_ARBITRATION:
+                # 新增：扭矩仲裁模式处理
+                # 记录进入扭矩仲裁的时间
+                self.torque_arbitration_start_time = time.time()
+                return f"扭矩仲裁: 人工油门与ACC系统协同控制（取较大值）"
+
             # 记录控制开始时间
             self.last_control_time = time.time()
 
@@ -510,7 +517,8 @@ class ACCDecisionModule:
             'cruise_mode_active': self.cruise_mode_active,
             'force_cruise_mode': self.force_cruise_mode,
             'pending_distance_adjustment': self.pending_distance_adjustment,
-            'current_control_mode': self.current_control_mode.value if self.current_control_mode else None
+            'current_control_mode': self.current_control_mode.value if self.current_control_mode else None,
+            'torque_arbitration_active': self.current_control_mode == ACCControlMode.TORQUE_ARBITRATION  # 新增：扭矩仲裁状态
         }
 
         return decision
@@ -545,7 +553,8 @@ class ACCDecisionModule:
             ACCControlMode.TARGET_INCREASE,
             ACCControlMode.DISTANCE_DECREASE,
             ACCControlMode.DISTANCE_INCREASE,
-            ACCControlMode.CRUISE_MODE_ENGAGE
+            ACCControlMode.CRUISE_MODE_ENGAGE,
+            ACCControlMode.TORQUE_ARBITRATION  # 新增：扭矩仲裁也是主动控制模式
         ]
 
         return self.current_control_mode in active_modes
