@@ -1,0 +1,60 @@
+%implements "chartSource" "C"
+%function ChartConfig(block, system) void
+  %createrecord chartConfiguration { ...
+          executeAtInitialization  0 ...
+  }
+  %return chartConfiguration
+%endfunction
+%function ChartDataMap(block, system) void
+  %createrecord ChartDataElements {\
+    NumChartData   6 \
+    ChartDataDefaults {\
+      RecordType   "ChartData"\
+      Dimensions   []\
+      IsTestPoint  0\
+    }\
+    ChartData {\
+      Name         "history_V3_kmh"\
+      Description  "ChartLocal"\
+      SFName       ""\
+      Path         "history_V3_kmh"\
+      SrcLocation  ""\
+    }\
+    ChartData {\
+      Name         "history_G1_m"\
+      Description  "ChartLocal"\
+      SFName       ""\
+      Path         "history_G1_m"\
+      SrcLocation  ""\
+    }\
+    ChartData {\
+      Name         "history_G2_s"\
+      Description  "ChartLocal"\
+      SFName       ""\
+      Path         "history_G2_s"\
+      SrcLocation  ""\
+    }\
+    ChartData {\
+      Name         "pending_adj"\
+      Description  "ChartLocal"\
+      SFName       ""\
+      Path         "pending_adj"\
+      SrcLocation  ""\
+    }\
+    ChartData {\
+      Name         "is_active_c3_acc_decision_md"\
+      Description  "StateIsActive"\
+      SFName       ""\
+      Path         ""\
+      SrcLocation  ""\
+    }\
+    ChartData {\
+      Name         "is_during_"\
+      Description  "StateActiveChild"\
+      SFName       ""\
+      Path         "during_"\
+      SrcLocation  ""\
+    }\
+  }
+  %return ChartDataElements
+%endfunction
