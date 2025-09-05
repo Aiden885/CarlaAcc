@@ -1,16 +1,16 @@
 function configure_decision_md_stateflow()
 % =========================================================================
-% configure_decision_md_stateflow (版本 12.0 - 简化默认转移逻辑修复版)
+% configure_decision_md_stateflow (版本 13.0 - 修复转移parent参数版)
 %
 % 核心修复：
-% 1. 移除复杂的Junction逻辑，改为简单的默认转移到S3状态
-% 2. 系统启动时总是进入S3(低速状态)，然后依靠自动转移机制判断
-% 3. 自动转移根据车速和has_history状态决定进入S1或S2
-% 4. 修改reset_all_parameters函数，重置时也进入S3状态
+% 1. 修复所有状态转移的parent参数，从错误的状态改为正确的superstate
+% 2. 保持简化的默认转移到S3状态的逻辑
+% 3. 保持S3状态只在低速时处理指令的设计初衷
+% 4. 修复reset_all_parameters函数，重置时也进入S3状态
 %
 % 重点修改位置：
-% - create_conditional_default_transitions函数：移除Junction，改为直接默认转移到S3
-% - reset_all_parameters函数：重置时设置current_state = 3
+% - create_internal_transitions函数：修复所有转移的第一个参数从状态改为superstate
+% - 所有create_transition调用：parent从s0/s1/s2/s3改为superstate
 % =========================================================================
 
     model_name = 'acc_decision_md';
@@ -257,7 +257,7 @@ function create_internal_transitions(superstate, s0, s1, s2, s3)
         exec_order);
     exec_order = exec_order + 1;
 
-    % ===== S3 (低速) 状态下的转移 =====
+    % ===== S3 (低速) 状态下的转移 - 恢复速度条件，保持设计初衷 =====
     create_transition(s3, s3, s3, ...
         'command_input >= 0 && command_input <= 6 && ego_speed_kmh < V1_KMH', ...
         'control_mode = 8; message_code = 400 + command_input;', ...
