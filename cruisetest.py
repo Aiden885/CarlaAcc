@@ -8,7 +8,7 @@ import radar_cluster
 import pygame
 import threading
 import time
-from acc_planning_control import ACCPlanningControl, ACCMode
+from acc_planning_control import ACCPlanningControl
 
 #用于单独测试Cuise mode功能
 

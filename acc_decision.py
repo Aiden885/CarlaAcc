@@ -14,16 +14,18 @@ from three_mode_controller import set_three_mode_parameters, get_three_mode_stat
 
 
 class ACCCommand(Enum):
-    """ACC指令枚举"""
+    """ACC指令枚举 - 根据decision.md逻辑"""
     DECREASE_SPEED = "I0"  # 降速
     INCREASE_SPEED = "I1"  # 增速
     DECREASE_DISTANCE = "I2"  # 降距
     INCREASE_DISTANCE = "I3"  # 增距
-    ENGAGE = "I4"  # 开启
-    THROTTLE = "I5"  # 油门
-    BRAKE = "I6"  # 刹车
-    EXIT = "I7"  # 退出
-    CRUISE_MODE = "I8"  # 一键定速巡航
+    THROTTLE = "I4"  # 油门 (人驾优先)
+    BRAKE = "I5"  # 刹车 (人驾优先) 
+    CANCEL = "I6"  # 取消
+    # 保留旧接口兼容性
+    ENGAGE = "I4"  # 兼容性: 映射到THROTTLE
+    EXIT = "I6"  # 兼容性: 映射到CANCEL
+    CRUISE_MODE = "I8"  # 兼容性: 保留定速巡航
 
 
 class ACCState(Enum):
@@ -38,15 +40,19 @@ class ACCState(Enum):
 
 
 class ACCControlMode(Enum):
-    """ACC控制模式"""
-    CONTINUE_CONTROL = "CONTINUE"  # 继续控制
-    NO_CONTINUE_CONTROL = "NO_CONTINUE"  # 无继控制
-    TARGET_DECREASE = "TARGET_DEC"  # 目标减量
-    TARGET_INCREASE = "TARGET_INC"  # 目标增量
-    DISTANCE_DECREASE = "DIST_DEC"  # 距离降低
-    DISTANCE_INCREASE = "DIST_INC"  # 距离增加
-    CRUISE_MODE_ENGAGE = "CRUISE_ENGAGE"  # 进入定速巡航模式
-    TORQUE_ARBITRATION = "TORQUE_ARB"  # 扭矩仲裁模式
+    """ACC控制模式 - 根据decision.md的R1-R8决策"""
+    SPEED_DECREASE = "R1"  # R1: 速度降低
+    SPEED_INCREASE = "R2"  # R2: 速度增加  
+    DISTANCE_DECREASE = "R3"  # R3: 时距降低
+    DISTANCE_INCREASE = "R4"  # R4: 时距增加
+    NO_CONTINUE_CONTROL = "R5"  # R5: 无继控制
+    CONTINUE_CONTROL = "R6"  # R6: 继承控制
+    TORQUE_ARBITRATION = "R7"  # R7: 扭矩仲裁
+    SYSTEM_STANDBY = "R8"  # R8: 系统待命
+    # 保留旧接口兼容性
+    TARGET_DECREASE = "R1"  # 兼容性: 映射到SPEED_DECREASE
+    TARGET_INCREASE = "R2"  # 兼容性: 映射到SPEED_INCREASE
+    CRUISE_MODE_ENGAGE = "CRUISE_ENGAGE"  # 兼容性: 保留定速巡航
 
 
 class ACCDecisionModule:
@@ -67,8 +73,8 @@ class ACCDecisionModule:
             initial_G1_m: 初始G1距离 (m) - 三模式控制的最小安全距离
             initial_time_gap: 初始时间间隔 (s) - 对应三模式的G2
         """
-        # 当前系统状态
-        self.current_state = ACCState.SYSTEM_EXIT
+        # 当前系统状态 - 默认进入适速无史待命状态（符合decision.md逻辑）
+        self.current_state = ACCState.ADAPTIVE_NO_HISTORY_STANDBY
         self.previous_state = None
 
         # === 新增：当前控制模式追踪 ===
@@ -81,7 +87,7 @@ class ACCDecisionModule:
         self.G2_s = initial_time_gap  # 时距参数
 
         # 固定的三模式参数
-        self.V1_kmh = 0 # 最低激活速度
+        self.V1_kmh = 0 # 适速/低速界限速度（用户可设置）
         self.V2_kmh = 30.0  # 车距/时距切换速度
 
         # 调整步长
@@ -115,61 +121,44 @@ class ACCDecisionModule:
         print(f"初始参数: V3={self.V3_kmh}km/h, G1={self.G1_m}m, G2={self.G2_s}s")
 
     def _initialize_transition_table(self):
-        """初始化状态转移表"""
+        """根据decision.md初始化状态转移表 - 4个核心状态的逻辑"""
         self.transition_table = {
-            # 在控状态的转移
-            (ACCState.IN_CONTROL, ACCCommand.DECREASE_SPEED): (ACCState.IN_CONTROL, ACCControlMode.TARGET_DECREASE),
-            (ACCState.IN_CONTROL, ACCCommand.INCREASE_SPEED): (ACCState.IN_CONTROL, ACCControlMode.TARGET_INCREASE),
-            (ACCState.IN_CONTROL, ACCCommand.DECREASE_DISTANCE): (ACCState.IN_CONTROL,
-                                                                  ACCControlMode.DISTANCE_DECREASE),
-            (ACCState.IN_CONTROL, ACCCommand.INCREASE_DISTANCE): (ACCState.IN_CONTROL,
-                                                                  ACCControlMode.DISTANCE_INCREASE),
-            (ACCState.IN_CONTROL, ACCCommand.CRUISE_MODE): (ACCState.CRUISE_ONLY, ACCControlMode.CRUISE_MODE_ENGAGE),
-            (ACCState.IN_CONTROL, ACCCommand.THROTTLE): (ACCState.IN_CONTROL, ACCControlMode.TORQUE_ARBITRATION),
-            (ACCState.IN_CONTROL, ACCCommand.BRAKE): (ACCState.ADAPTIVE_HISTORY_STANDBY, None),
-            (ACCState.IN_CONTROL, ACCCommand.EXIT): (ACCState.SYSTEM_EXIT, None),
-
-            # 适速有史待命状态的转移
-            (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCCommand.ENGAGE): (ACCState.IN_CONTROL,
-                                                                     ACCControlMode.CONTINUE_CONTROL),
-            (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCCommand.CRUISE_MODE): (ACCState.CRUISE_ONLY,
-                                                                          ACCControlMode.CRUISE_MODE_ENGAGE),
-            (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCCommand.THROTTLE): (ACCState.SYSTEM_STANDBY, None),
-            (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCCommand.BRAKE): (ACCState.SYSTEM_STANDBY, None),
-            (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCCommand.EXIT): (ACCState.SYSTEM_EXIT, None),
-
-            # 适速无史待命状态的转移
-            (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCCommand.ENGAGE): (ACCState.IN_CONTROL,
-                                                                        ACCControlMode.NO_CONTINUE_CONTROL),
-            (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCCommand.CRUISE_MODE): (ACCState.CRUISE_ONLY,
-                                                                             ACCControlMode.CRUISE_MODE_ENGAGE),
-            (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCCommand.THROTTLE): (ACCState.SYSTEM_STANDBY, None),
-            (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCCommand.BRAKE): (ACCState.SYSTEM_STANDBY, None),
-            (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCCommand.EXIT): (ACCState.SYSTEM_EXIT, None),
-
-            # 纯定速巡航状态的转移
-            (ACCState.CRUISE_ONLY, ACCCommand.DECREASE_SPEED): (ACCState.CRUISE_ONLY, ACCControlMode.TARGET_DECREASE),
-            (ACCState.CRUISE_ONLY, ACCCommand.INCREASE_SPEED): (ACCState.CRUISE_ONLY, ACCControlMode.TARGET_INCREASE),
-            (ACCState.CRUISE_ONLY, ACCCommand.ENGAGE): (ACCState.IN_CONTROL, ACCControlMode.CONTINUE_CONTROL),
-            # 切换回自适应模式
-            (ACCState.CRUISE_ONLY, ACCCommand.THROTTLE): (ACCState.ADAPTIVE_HISTORY_STANDBY, None),
-            (ACCState.CRUISE_ONLY, ACCCommand.BRAKE): (ACCState.ADAPTIVE_HISTORY_STANDBY, None),
-            (ACCState.CRUISE_ONLY, ACCCommand.EXIT): (ACCState.SYSTEM_EXIT, None),
-
-            # 低速状态的转移
-            (ACCState.LOW_SPEED, ACCCommand.ENGAGE): (ACCState.IN_CONTROL, ACCControlMode.NO_CONTINUE_CONTROL),
-            (ACCState.LOW_SPEED, ACCCommand.CRUISE_MODE): (ACCState.CRUISE_ONLY, ACCControlMode.CRUISE_MODE_ENGAGE),
-            (ACCState.LOW_SPEED, ACCCommand.EXIT): (ACCState.SYSTEM_EXIT, None),
-
-            # 系统待命状态的转移（可以重新激活）
-            (ACCState.SYSTEM_STANDBY, ACCCommand.ENGAGE): (ACCState.ADAPTIVE_HISTORY_STANDBY, None),
-            (ACCState.SYSTEM_STANDBY, ACCCommand.CRUISE_MODE): (ACCState.CRUISE_ONLY,
-                                                                ACCControlMode.CRUISE_MODE_ENGAGE),
-            (ACCState.SYSTEM_STANDBY, ACCCommand.EXIT): (ACCState.SYSTEM_EXIT, None),
-
-            # === 系统退出状态的转移 ===
-            (ACCState.SYSTEM_EXIT, ACCCommand.ENGAGE): (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, None),
-            (ACCState.SYSTEM_EXIT, ACCCommand.CRUISE_MODE): (ACCState.CRUISE_ONLY, ACCControlMode.CRUISE_MODE_ENGAGE),
+            # === S0 在控状态的转移 ===
+            (ACCState.IN_CONTROL, ACCCommand.DECREASE_SPEED): (ACCState.IN_CONTROL, ACCControlMode.SPEED_DECREASE),  # I0→R1
+            (ACCState.IN_CONTROL, ACCCommand.INCREASE_SPEED): (ACCState.IN_CONTROL, ACCControlMode.SPEED_INCREASE),   # I1→R2
+            (ACCState.IN_CONTROL, ACCCommand.DECREASE_DISTANCE): (ACCState.IN_CONTROL, ACCControlMode.DISTANCE_DECREASE), # I2→R3
+            (ACCState.IN_CONTROL, ACCCommand.INCREASE_DISTANCE): (ACCState.IN_CONTROL, ACCControlMode.DISTANCE_INCREASE), # I3→R4
+            (ACCState.IN_CONTROL, ACCCommand.THROTTLE): (ACCState.IN_CONTROL, ACCControlMode.TORQUE_ARBITRATION),    # I4→R7
+            (ACCState.IN_CONTROL, ACCCommand.BRAKE): (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCControlMode.SYSTEM_STANDBY), # I5→R8→S1
+            (ACCState.IN_CONTROL, ACCCommand.CANCEL): (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCControlMode.SYSTEM_STANDBY), # I6→R8→S1
+            
+            # === S1 适速有史待命状态的转移 ===
+            (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCCommand.INCREASE_SPEED): (ACCState.IN_CONTROL, ACCControlMode.CONTINUE_CONTROL), # I1→R6→S0
+            (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCCommand.DECREASE_SPEED): (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCControlMode.NO_CONTINUE_CONTROL), # I0→R5→S1
+            (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCCommand.DECREASE_DISTANCE): (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCControlMode.SYSTEM_STANDBY), # I2→R8→S1
+            (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCCommand.INCREASE_DISTANCE): (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCControlMode.SYSTEM_STANDBY), # I3→R8→S1
+            (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCCommand.THROTTLE): (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCControlMode.SYSTEM_STANDBY), # I4→R8→S1
+            (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCCommand.BRAKE): (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCControlMode.SYSTEM_STANDBY), # I5→R8→S1
+            (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCCommand.CANCEL): (ACCState.ADAPTIVE_HISTORY_STANDBY, ACCControlMode.SYSTEM_STANDBY), # I6→R8→S1
+            
+            # === S2 适速无史待命状态的转移 ===
+            (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCCommand.DECREASE_SPEED): (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCControlMode.NO_CONTINUE_CONTROL), # I0→R5→S2
+            (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCCommand.INCREASE_SPEED): (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCControlMode.SYSTEM_STANDBY), # I1→R8→S2
+            (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCCommand.DECREASE_DISTANCE): (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCControlMode.SYSTEM_STANDBY), # I2→R8→S2
+            (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCCommand.INCREASE_DISTANCE): (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCControlMode.SYSTEM_STANDBY), # I3→R8→S2
+            (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCCommand.THROTTLE): (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCControlMode.SYSTEM_STANDBY), # I4→R8→S2
+            (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCCommand.BRAKE): (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCControlMode.SYSTEM_STANDBY), # I5→R8→S2
+            (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCCommand.CANCEL): (ACCState.ADAPTIVE_NO_HISTORY_STANDBY, ACCControlMode.SYSTEM_STANDBY), # I6→R8→S2
+            
+            # === S3 低速状态的转移 ===
+            (ACCState.LOW_SPEED, ACCCommand.DECREASE_SPEED): (ACCState.LOW_SPEED, ACCControlMode.SYSTEM_STANDBY), # I0→R8→S3
+            (ACCState.LOW_SPEED, ACCCommand.INCREASE_SPEED): (ACCState.LOW_SPEED, ACCControlMode.SYSTEM_STANDBY), # I1→R8→S3
+            (ACCState.LOW_SPEED, ACCCommand.DECREASE_DISTANCE): (ACCState.LOW_SPEED, ACCControlMode.SYSTEM_STANDBY), # I2→R8→S3
+            (ACCState.LOW_SPEED, ACCCommand.INCREASE_DISTANCE): (ACCState.LOW_SPEED, ACCControlMode.SYSTEM_STANDBY), # I3→R8→S3
+            (ACCState.LOW_SPEED, ACCCommand.THROTTLE): (ACCState.LOW_SPEED, ACCControlMode.SYSTEM_STANDBY), # I4→R8→S3
+            (ACCState.LOW_SPEED, ACCCommand.BRAKE): (ACCState.LOW_SPEED, ACCControlMode.SYSTEM_STANDBY), # I5→R8→S3
+            (ACCState.LOW_SPEED, ACCCommand.CANCEL): (ACCState.LOW_SPEED, ACCControlMode.SYSTEM_STANDBY), # I6→R8→S3
+            
         }
 
     def _update_three_mode_parameters(self):
@@ -227,24 +216,22 @@ class ACCDecisionModule:
         self.previous_state = self.current_state
         self.previous_control_mode = self.current_control_mode
 
-        # === 特殊逻辑：增速/减速指令的条件检查 ===
-        if command in [ACCCommand.INCREASE_SPEED, ACCCommand.DECREASE_SPEED]:
-            # 在纯定速巡航模式下，增速/减速始终有效
-            if self.current_state == ACCState.CRUISE_ONLY:
-                pass  # 允许执行
-            elif has_target and not self.force_cruise_mode:
-                return self.current_state, None, f"存在前车时，{command.value}指令无效（由三模式前两阶段控制）。使用定速巡航模式可忽略前车。"
-
-        # === 特殊逻辑：增距/减距指令的条件检查 ===
-        if command in [ACCCommand.INCREASE_DISTANCE, ACCCommand.DECREASE_DISTANCE]:
-            # 在纯定速巡航模式下，增距/减距指令无效
-            if self.current_state == ACCState.CRUISE_ONLY:
-                return self.current_state, None, f"纯定速巡航模式下，{command.value}指令无效（忽略前车距离）"
-            elif not has_target:
-                # 无前车时，先存储调整量
-                adjustment = self.distance_step if command == ACCCommand.INCREASE_DISTANCE else -self.distance_step
-                self.pending_distance_adjustment += adjustment
-                return self.current_state, None, f"无前车时，{command.value}指令已存储（调整量: {self.pending_distance_adjustment:+.1f}m）"
+        # 上层系统激活处理：从退出或待命状态激活时，根据速度决定进入的状态
+        if self.current_state in [ACCState.SYSTEM_EXIT, ACCState.SYSTEM_STANDBY]:
+            target_state = self.determine_state_from_speed(ego_speed_kmh)
+            control_mode = ACCControlMode.NO_CONTINUE_CONTROL if not self.has_history else ACCControlMode.CONTINUE_CONTROL
+            
+            self.previous_state = self.current_state
+            self.current_state = target_state
+            self.current_control_mode = control_mode
+            
+            success_msg = self._execute_state_transition(target_state, control_mode, command, ego_speed_kmh, has_target, current_distance)
+            
+            if self.debug:
+                print(f"上层系统激活: {self.previous_state.value} -> {target_state.value}")
+                print(f"控制模式: {control_mode.value}")
+            
+            return target_state, control_mode, f"系统激活进入 {target_state.value}: {success_msg}"
 
         # 查找状态转移
         transition_key = (self.current_state, command)
@@ -325,34 +312,29 @@ class ACCDecisionModule:
                 self._update_three_mode_parameters()
                 return f"无继控制: 使用V3={self.V3_kmh:.1f}km/h, G1={self.G1_m:.1f}m {adjustment_msg}"
 
-            elif control_mode == ACCControlMode.TARGET_DECREASE:
-                # 减速：直接调整巡航速度
-                self.cruise_target_speed_kmh = getattr(self, 'cruise_target_speed_kmh', 50.0)
-                self.cruise_target_speed_kmh = max(20.0, self.cruise_target_speed_kmh - self.speed_step)
-                self.target_speed_changed = True
-                return f"减速: 巡航速度调至{self.cruise_target_speed_kmh:.1f}km/h"
+            elif control_mode == ACCControlMode.SPEED_DECREASE:
+                # R1: 速度降低
+                self.V3_kmh = max(self.V2_kmh + 1, self.V3_kmh - self.speed_step)
+                self._update_three_mode_parameters()
+                return f"R1-速度降低: 新V3={self.V3_kmh:.1f}km/h"
 
-            elif control_mode == ACCControlMode.TARGET_INCREASE:
-                # 增速：在定速巡航模式下始终有效，或无前车时有效
-                self.cruise_target_speed_kmh = getattr(self, 'cruise_target_speed_kmh', 50.0)  # 默认50
-                self.cruise_target_speed_kmh = min(120.0, self.cruise_target_speed_kmh + self.speed_step)
-
-                # 通知主循环更新ACC控制器
-                self.target_speed_changed = True
-
-                return f"增速: 巡航速度调至{self.cruise_target_speed_kmh:.1f}km/h"
+            elif control_mode == ACCControlMode.SPEED_INCREASE:
+                # R2: 速度增加
+                self.V3_kmh = min(120.0, self.V3_kmh + self.speed_step)
+                self._update_three_mode_parameters()
+                return f"R2-速度增加: 新V3={self.V3_kmh:.1f}km/h"
 
             elif control_mode == ACCControlMode.DISTANCE_DECREASE:
-                # 减距：仅在有前车时有效（在process_command中已检查）
+                # R3: 时距降低
                 self.G1_m = max(5.0, self.G1_m - self.distance_step)
                 self._update_three_mode_parameters()
-                return f"距离降低: 新G1={self.G1_m:.1f}m（车距控制）"
+                return f"R3-时距降低: 新G1={self.G1_m:.1f}m"
 
             elif control_mode == ACCControlMode.DISTANCE_INCREASE:
-                # 增距：仅在有前车时有效（在process_command中已检查）
+                # R4: 时距增加
                 self.G1_m = min(50.0, self.G1_m + self.distance_step)
                 self._update_three_mode_parameters()
-                return f"距离增加: 新G1={self.G1_m:.1f}m（车距控制）"
+                return f"R4-时距增加: 新G1={self.G1_m:.1f}m"
 
             elif control_mode == ACCControlMode.TORQUE_ARBITRATION:
                 # 新增：扭矩仲裁模式处理
@@ -363,30 +345,12 @@ class ACCDecisionModule:
             # 记录控制开始时间
             self.last_control_time = time.time()
 
-        elif new_state == ACCState.CRUISE_ONLY:
-            if control_mode == ACCControlMode.CRUISE_MODE_ENGAGE:
-                # 进入纯定速巡航状态
-                self.cruise_mode_active = True
-                self.force_cruise_mode = True
-                # 应用待存储的距离调整（虽然定速模式不用，但保持一致性）
-                if self.pending_distance_adjustment != 0:
-                    self.G1_m = max(5.0, self.G1_m + self.pending_distance_adjustment)
-                    self.pending_distance_adjustment = 0.0
-                self._update_three_mode_parameters()
-                return f"纯定速巡航: 忽略前车，按V3={self.V3_kmh:.1f}km/h巡航"
-            elif control_mode == ACCControlMode.TARGET_INCREASE:
-                # 定速巡航模式下增速
-                self.V3_kmh = min(120.0, self.V3_kmh + self.speed_step)
-                self._update_three_mode_parameters()
-                return f"目标增量: 新V3={self.V3_kmh:.1f}km/h（纯定速巡航）"
-            elif control_mode == ACCControlMode.TARGET_DECREASE:
-                # 定速巡航模式下减速
-                self.V3_kmh = max(self.V2_kmh + 1, self.V3_kmh - self.speed_step)
-                self._update_three_mode_parameters()
-                return f"目标减量: 新V3={self.V3_kmh:.1f}km/h（纯定速巡航）"
-
-            # 记录控制开始时间
-            self.last_control_time = time.time()
+        elif new_state == ACCState.SYSTEM_STANDBY:
+            # R8: 系统待命
+            if control_mode == ACCControlMode.SYSTEM_STANDBY:
+                # 保存当前设定作为历史
+                self._save_history()
+                return f"R8-系统待命: 人工操作优先，ACC暂停"
 
         elif new_state == ACCState.ADAPTIVE_HISTORY_STANDBY or new_state == ACCState.ADAPTIVE_NO_HISTORY_STANDBY:
             # 进入待命状态（通常是从系统退出状态转移而来）

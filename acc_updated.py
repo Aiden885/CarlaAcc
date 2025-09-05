@@ -1,3 +1,4 @@
+import os
 import carla
 import math
 import numpy as np
@@ -9,6 +10,11 @@ import kalman_filter
 import radar_cluster
 import threading
 
+
+# export http_proxy="http://127.0.0.1:7890"
+# export https_proxy="http://127.0.0.1:7890"
+# export all_proxy="socks5://127.0.0.1:7891"
+
 # Pygame相关
 import pygame
 from pygame.locals import *
@@ -17,6 +23,15 @@ from pygame.locals import *
 from acc_planning_control import ACCPlanningControl
 from sinusoidal_speed_controller import SinusoidalSpeedController
 from three_mode_controller import calculate_three_mode_desired_distance, set_three_mode_parameters, get_three_mode_status
+
+# 决策模块导入 - 支持MATLAB和Python版本
+try:
+    from decision_factory import DecisionModuleFactory, UnifiedDecisionModule, DecisionBackend
+    DECISION_FACTORY_AVAILABLE = True
+except ImportError:
+    print("⚠️ decision_factory不可用，使用原始Python决策模块")
+    DECISION_FACTORY_AVAILABLE = False
+    
 from acc_decision import ACCDecisionModule, ACCCommand, ACCState
 
 # 导入显示管理器
@@ -48,8 +63,34 @@ class acc:
         self.csv_writer = None
         self.target_speed_controller = None
 
-        # === ACC决策模块 ===
-        self.acc_decision = ACCDecisionModule(initial_V3_kmh=50.0, initial_G1_m=15.0, initial_time_gap=2.0)
+        # === ACC决策模块初始化 - 支持MATLAB/Python切换 ===
+        if DECISION_FACTORY_AVAILABLE:
+            # 可以通过环境变量DECISION_BACKEND设置后端: python, matlab, auto
+            backend_env = os.environ.get('DECISION_BACKEND', 'auto').lower()
+            if backend_env == 'python':
+                preferred_backend = DecisionBackend.PYTHON
+            elif backend_env == 'matlab':
+                preferred_backend = DecisionBackend.MATLAB  
+            else:
+                preferred_backend = DecisionBackend.AUTO
+            
+            print(f"🧠 初始化决策模块，首选后端: {preferred_backend.value}")
+            try:
+                self.acc_decision = UnifiedDecisionModule(
+                    preferred_backend=preferred_backend,
+                    initial_V3_kmh=50.0, 
+                    initial_G1_m=15.0, 
+                    initial_time_gap=2.0
+                )
+                self.unified_decision = True
+            except Exception as e:
+                print(f"⚠️ 统一决策模块创建失败，使用Python版本: {e}")
+                self.acc_decision = ACCDecisionModule(initial_V3_kmh=50.0, initial_G1_m=15.0, initial_time_gap=2.0)
+                self.unified_decision = False
+        else:
+            self.acc_decision = ACCDecisionModule(initial_V3_kmh=50.0, initial_G1_m=15.0, initial_time_gap=2.0)
+            self.unified_decision = False
+            
         self.acc_decision.set_debug(True)
 
         # === 控制状态 ===
@@ -317,16 +358,43 @@ class acc:
                     debug_state = not self.acc_decision.debug
                     self.acc_decision.set_debug(debug_state)
                     print(f"ACC调试模式: {'开启' if debug_state else '关闭'}")
+                
+                # === 决策后端切换快捷键 ===
+                elif event_data == K_F1 and DECISION_FACTORY_AVAILABLE and self.unified_decision:
+                    try:
+                        self.acc_decision.switch_backend(DecisionBackend.PYTHON)
+                        print("🐍 已切换到Python决策模块")
+                    except Exception as e:
+                        print(f"❌ 切换到Python失败: {e}")
+                
+                elif event_data == K_F2 and DECISION_FACTORY_AVAILABLE and self.unified_decision:
+                    try:
+                        self.acc_decision.switch_backend(DecisionBackend.MATLAB)
+                        print("🚀 已切换到MATLAB决策模块")
+                    except Exception as e:
+                        print(f"❌ 切换到MATLAB失败: {e}")
+                
+                elif event_data == K_F3 and DECISION_FACTORY_AVAILABLE and self.unified_decision:
+                    backend_info = self.acc_decision.get_backend_info()
+                    print(f"📋 决策后端信息:")
+                    print(f"  当前后端: {backend_info['current_backend']}")
+                    print(f"  可用后端: {backend_info['available_backends']}")
+                    print(f"  有备用模块: {backend_info['has_fallback']}")
+                elif event_data == K_F3 and not self.unified_decision:
+                    print("📋 当前使用Python决策模块（统一模块不可用）")
 
-                # ACC控制
+                # ACC控制 - 根据decision.md的7种指令
                 elif event_data == K_1:
-                    self._process_acc_command(ACCCommand.ENGAGE)
+                    # 激活系统 - 通过THROTTLE指令激活
+                    self._process_acc_command(ACCCommand.THROTTLE)
 
                 elif event_data == K_2:
-                    self._process_acc_command(ACCCommand.EXIT)
+                    # 取消系统 - 使用CANCEL指令
+                    self._process_acc_command(ACCCommand.CANCEL)
 
                 elif event_data == K_3:
-                    self._process_acc_command(ACCCommand.CRUISE_MODE)
+                    # 人工刹车介入
+                    self._process_acc_command(ACCCommand.BRAKE)
 
                 elif event_data == K_q:
                     if self.acc_control_active:
@@ -913,6 +981,24 @@ class acc:
 
 
 def main():
+    """
+    主函数 - ACC系统启动
+    
+    环境变量设置:
+        DECISION_BACKEND=python|matlab|auto  设置决策模块后端
+    
+    运行时快捷键:
+        F1: 切换到Python决策模块
+        F2: 切换到MATLAB决策模块
+        F3: 显示当前决策后端信息
+        
+    ACC控制键:
+        1: 激活系统(THROTTLE)
+        2: 取消系统(CANCEL)
+        3: 人工刹车(BRAKE)
+        Q/E: 增速/减速
+        R/T: 增距/降距
+    """
     acc_actor = acc()
 
     # 创建传感器监听线程

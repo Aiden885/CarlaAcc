@@ -28,7 +28,7 @@ class DirectPerceptionControl:
         self.world = self.client.load_world('Town04')
 
         # 导入并初始化acc类 - 这将创建车辆和传感器
-        from acc import acc
+        from acc_updated import acc
         self.perception = acc()
 
         # 使用感知模块的车辆

@@ -7,7 +7,6 @@ import threading
 class SPPVTLongitudinalController:
     """
     SPPVT纵向控制器 - 混合Python-Simulink实现
-    与PID控制器接口完全一致，可直接替换
     支持距离跟踪和速度跟踪两种模式
 
     核心计算功能由Simulink模型提供，Python负责接口和状态管理
