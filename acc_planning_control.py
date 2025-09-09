@@ -5,7 +5,7 @@ import math
 # 导入SPPVT控制器
 from sppvt_longitudinal_control import sppvt_longitudinal_control
 # 在文件顶部添加导入
-from three_mode_controller import three_mode_control, three_mode_control_with_force_mode, get_force_mode_recommendation
+from three_mode_controller import two_mode_control, three_mode_control_with_force_mode, get_force_mode_recommendation
 import time
 
 
@@ -182,7 +182,7 @@ class ACCPlanningControl:
         if effective_target_info is not None:
             # 有前车的情况
             current_distance = float(effective_target_info[0])
-            print(f"📏 传递给三模式: 距离={current_distance:.1f}m, 速度={ego_speed * 3.6:.1f}km/h")
+            print(f"📏 传递给两模式: 距离={current_distance:.1f}m, 速度={ego_speed * 3.6:.1f}km/h")
             print(f"📏 effective_target_info长度: {len(effective_target_info)}")
             print(f"📏 effective_target_info内容: {effective_target_info[:3]}...")  # 只显示前3个元素
 
@@ -230,25 +230,25 @@ class ACCPlanningControl:
                 self.force_control_start_time = None
                 print(f"📍 前车持续丢失，清除强制控制状态")
 
-        # === 使用三模式控制（使用effective_target_info）===
+        # === 使用两模式控制（使用effective_target_info）===
         if effective_target_info is not None and len(effective_target_info) >= 8 and all(
                 np.isfinite(effective_target_info)):
             current_distance = float(effective_target_info[0])
 
             if force_control_active and force_mode:
-                # 使用强制模式的三模式控制
+                # 使用强制模式的两模式控制
                 accel, control_info = three_mode_control_with_force_mode(
                     ego_speed, current_distance, self.target_speed, force_mode=force_mode
                 )
                 print(f"🛡️ Force-Mode: {control_info['mode']} - {control_info['message']}")
             else:
-                # 使用正常的三模式控制
-                accel, control_info = three_mode_control(ego_speed, current_distance, self.target_speed)
-                print(f"Three-Mode: {control_info['mode']} - {control_info['message']}")
+                # 使用正常的两模式控制
+                accel, control_info = two_mode_control(ego_speed, current_distance, self.target_speed)
+                print(f"Two-Mode: {control_info['mode']} - {control_info['message']}")
 
         else:
             # 没有目标，使用速度控制模式
-            accel, control_info = three_mode_control(ego_speed, None, self.target_speed)
+            accel, control_info = two_mode_control(ego_speed, None, self.target_speed)
             print(f"No Target: {control_info['mode']} - {control_info['message']}")
 
         # 横向控制：基于车道偏移的PD控制

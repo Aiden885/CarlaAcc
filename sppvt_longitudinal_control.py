@@ -1,7 +1,16 @@
 import numpy as np
 import time
-import matlab.engine
 import threading
+
+# 尝试导入MATLAB引擎，如果失败则设置为None
+try:
+    import matlab.engine
+    MATLAB_AVAILABLE = True
+except ImportError as e:
+    matlab = None
+    MATLAB_AVAILABLE = False
+    print(f"警告: MATLAB引擎不可用: {e}")
+    print("将使用纯Python实现作为后备方案")
 
 
 class SPPVTLongitudinalController:
@@ -55,6 +64,12 @@ class SPPVTLongitudinalController:
 
     def _init_matlab_engine(self):
         """初始化MATLAB引擎和加载Simulink模型"""
+        # 如果MATLAB不可用，直接返回
+        if not MATLAB_AVAILABLE:
+            if self.debug:
+                print("MATLAB引擎不可用，将使用纯Python实现")
+            return
+            
         try:
             if self.debug:
                 print("正在启动MATLAB引擎...")

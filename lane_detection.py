@@ -153,12 +153,12 @@ class LaneDetector:
         histogram = np.sum(binary_warped[binary_warped.shape[0] // 2:, :], axis=0)
 
         # Find the peak of the left and right halves
-        midpoint = np.int(histogram.shape[0] // 2)
+        midpoint = int(histogram.shape[0] // 2)
         leftx_base = np.argmax(histogram[:midpoint])
         rightx_base = np.argmax(histogram[midpoint:]) + midpoint
 
         # Set height of windows
-        window_height = np.int(binary_warped.shape[0] // nwindows)
+        window_height = int(binary_warped.shape[0] // nwindows)
 
         # Identify the x and y positions of all nonzero pixels
         nonzero = binary_warped.nonzero()
@@ -243,10 +243,10 @@ class LaneDetector:
             rightx_current = cur_best_fit_right
 
             if minpix < len(good_left_inds) < maxpix:
-                leftx_current = np.int(np.mean(nonzerox[good_left_inds]))
+                leftx_current = int(np.mean(nonzerox[good_left_inds]))
                 find_left = 1
             if minpix < len(good_right_inds) < maxpix:
-                rightx_current = np.int(np.mean(nonzerox[good_right_inds]))
+                rightx_current = int(np.mean(nonzerox[good_right_inds]))
                 find_right = 1
 
             if find_left and find_right and (rightx_current - leftx_current) < 650:

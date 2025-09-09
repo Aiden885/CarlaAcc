@@ -16,7 +16,7 @@ from pygame.locals import *
 # ACC相关模块
 from acc_planning_control import ACCPlanningControl
 from sinusoidal_speed_controller import SinusoidalSpeedController
-from three_mode_controller import calculate_three_mode_desired_distance, set_three_mode_parameters, get_three_mode_status
+from three_mode_controller import calculate_two_mode_desired_distance, set_two_mode_parameters, get_two_mode_status
 from acc_decision import ACCDecisionModule, ACCCommand, ACCState
 
 # 导入显示管理器
@@ -49,7 +49,7 @@ class acc:
         self.target_speed_controller = None
 
         # === ACC决策模块 ===
-        self.acc_decision = ACCDecisionModule(initial_V3_kmh=50.0, initial_G1_m=15.0, initial_time_gap=2.0)
+        self.acc_decision = ACCDecisionModule(initial_target_speed_kmh=50.0, initial_time_gap=2.0)
         self.acc_decision.set_debug(True)
 
         # === 控制状态 ===
@@ -67,8 +67,8 @@ class acc:
         self.init_carla()
         self.init_csv()
 
-        # 初始化三模式参数
-        self._sync_three_mode_parameters()
+        # 初始化两模式参数
+        self._sync_two_mode_parameters()
 
     def init_carla(self):
         # 初始化 Carla 客户端
@@ -203,8 +203,8 @@ class acc:
             'Lane_Offset',
             'ACC_State',
             'ACC_Active',
-            'V3_Setting',
-            'G1_Setting',
+            'V_target_Setting',
+            'V_min_Setting',
             'G2_Setting',
             'Cruise_Mode',
             'Manual_Throttle',
@@ -212,15 +212,13 @@ class acc:
             'Manual_Steer'
         ])
 
-    def _sync_three_mode_parameters(self):
-        """同步ACC决策参数到三模式控制器"""
+    def _sync_two_mode_parameters(self):
+        """同步ACC决策参数到两模式控制器"""
         acc_params = self.acc_decision.get_current_parameters()
-        set_three_mode_parameters(
-            V1_kmh=0,
-            V2_kmh=30,
-            V3_kmh=acc_params['V3_kmh'],
-            G1_m=acc_params['G1_m'],
-            G2_s=acc_params['G2_s']
+        set_two_mode_parameters(
+            V_threshold_kmh=acc_params['V_target_kmh'],
+            G2_s=acc_params['G2_s'],
+            target_speed_kmh=acc_params['V_target_kmh']
         )
 
     def handle_keyboard_input(self):
@@ -409,7 +407,7 @@ class acc:
 
         # 同步参数（但不包括增速/减速，因为那些直接修改了target_speed）
         if command not in [ACCCommand.INCREASE_SPEED, ACCCommand.DECREASE_SPEED]:
-            self._sync_three_mode_parameters()
+            self._sync_two_mode_parameters()
 
         print(f"ACC指令 {command.value}: {msg}")
         print(f"🎯 当前速度: {ego_speed:.1f} km/h, ACC激活: {self.acc_control_active}")
@@ -435,8 +433,8 @@ class acc:
             'acc_state': acc_status['state_description'],
             'cruise_mode': acc_params.get('cruise_mode_active', False),
             'cruise_speed_kmh': self.current_cruise_speed_kmh,  # 修改：使用统一的巡航速度
-            'V3_kmh': acc_params['V3_kmh'],
-            'G1_m': acc_params['G1_m'],
+            'V_target_kmh': acc_params['V_target_kmh'],
+            'V_min_kmh': acc_params['V_min_kmh'],
             'G2_s': acc_params['G2_s'],
             'throttle': self.throttle,
             'brake': self.brake,
@@ -450,9 +448,9 @@ class acc:
         return speed_kmh
 
     def calculate_desired_following_distance(self, ego_speed_kmh, time_gap=2.0, min_distance=5.0):
-        """使用三模式控制计算期望跟车距离"""
+        """使用两模式控制计算期望跟车距离"""
         ego_speed_ms = ego_speed_kmh / 3.6
-        desired_distance, control_mode = calculate_three_mode_desired_distance(ego_speed_ms)
+        desired_distance, control_mode = calculate_two_mode_desired_distance(ego_speed_ms)
         return desired_distance, control_mode
 
     def radar_callback(self, radar_data):
@@ -812,8 +810,8 @@ class acc:
                     self.get_lane_offset(),
                     acc_status['state_description'],
                     self.acc_control_active,
-                    acc_params['V3_kmh'],
-                    acc_params['G1_m'],
+                    acc_params['V_target_kmh'],
+                    acc_params['V_min_kmh'],
                     acc_params['G2_s'],
                     acc_params.get('cruise_mode_active', False),
                     self.throttle,

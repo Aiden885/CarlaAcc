@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-ACC自适应巡航控制决策模块 - 完整版（修改版）
+ACC自适应巡航控制决策模块 - 两模式版本
 实现ACC系统的指令处理、状态管理和状态转移逻辑
-支持基于三模式控制的增速/减速和增距/减距逻辑
+支持基于两模式控制（时距控制+定速控制）的增速/减速和增距/减距逻辑
 支持一键定速巡航功能
 添加了当前控制模式追踪
 """
@@ -10,7 +10,7 @@ ACC自适应巡航控制决策模块 - 完整版（修改版）
 from enum import Enum
 import time
 import math
-from three_mode_controller import set_three_mode_parameters, get_three_mode_status
+from three_mode_controller import set_two_mode_parameters, get_two_mode_status
 
 
 class ACCCommand(Enum):
@@ -50,21 +50,21 @@ class ACCControlMode(Enum):
 
 class ACCDecisionModule:
     """
-    ACC决策模块 - 完整版（修改版）
+    ACC决策模块 - 两模式版本
     负责处理ACC指令、管理状态转移和输出控制决策
-    支持基于三模式控制的速度和距离调整逻辑
+    支持基于两模式控制（时距控制+定速控制）的速度和距离调整逻辑
     支持一键定速巡航功能
     添加了当前控制模式追踪
     """
 
-    def __init__(self, initial_V3_kmh=50.0, initial_G1_m=15.0, initial_time_gap=2.0):
+    def __init__(self, initial_min_speed_kmh=30.0, initial_target_speed_kmh=50.0, initial_time_gap=2.0):
         """
         初始化ACC决策模块
 
         Args:
-            initial_V3_kmh: 初始V3速度 (km/h) - 三模式控制的最高速度
-            initial_G1_m: 初始G1距离 (m) - 三模式控制的最小安全距离
-            initial_time_gap: 初始时间间隔 (s) - 对应三模式的G2
+            initial_min_speed_kmh: 最低速度要求 (km/h) - 低速模式判断阈值
+            initial_target_speed_kmh: 目标速度 (km/h) - 两模式控制的切换速度和目标速度
+            initial_time_gap: 初始时间间隔 (s) - 对应两模式的G2
         """
         # 当前系统状态
         self.current_state = ACCState.SYSTEM_EXIT
@@ -74,18 +74,14 @@ class ACCDecisionModule:
         self.current_control_mode = None
         self.previous_control_mode = None
 
-        # === 三模式控制参数 ===
-        self.V3_kmh = initial_V3_kmh  # 最高速度限制（用户可调）
-        self.G1_m = initial_G1_m  # 最小安全车距（用户可调）
+        # === 两模式控制参数 ===
+        self.V_min_kmh = initial_min_speed_kmh  # 最低速度要求（低速判断阈值）
+        self.V_target_kmh = initial_target_speed_kmh  # 目标速度（模式切换阈值和目标速度）
         self.G2_s = initial_time_gap  # 时距参数
 
-        # 固定的三模式参数
-        self.V1_kmh = 0 # 最低激活速度
-        self.V2_kmh = 30.0  # 车距/时距切换速度
-
         # 调整步长
-        self.speed_step = 1.0  # V3调整步长：1 km/h per command
-        self.distance_step = 1.0  # G1调整步长：1 m per command
+        self.speed_step = 1.0  # 速度调整步长：1 km/h per command
+        self.distance_step = 2.0  # 距离调整步长：2 m per command
 
         # === 定速巡航模式控制 ===
         self.cruise_mode_active = False  # 是否处于纯定速巡航模式
@@ -93,8 +89,7 @@ class ACCDecisionModule:
 
         # 历史状态管理
         self.has_history = False
-        self.history_V3_kmh = None
-        self.history_G1_m = None
+        self.history_V_target_kmh = None
         self.history_G2_s = None
         self.last_control_time = None
 
@@ -107,11 +102,11 @@ class ACCDecisionModule:
         # 调试模式
         self.debug = False
 
-        # 初始化三模式参数
-        self._update_three_mode_parameters()
+        # 初始化两模式参数
+        self._update_two_mode_parameters()
 
         print("ACC决策模块初始化完成")
-        print(f"初始参数: V3={self.V3_kmh}km/h, G1={self.G1_m}m, G2={self.G2_s}s")
+        print(f"初始参数: V_min={self.V_min_kmh}km/h, V_target={self.V_target_kmh}km/h, G2={self.G2_s}s")
 
     def _initialize_transition_table(self):
         """初始化状态转移表"""
@@ -171,20 +166,16 @@ class ACCDecisionModule:
             (ACCState.SYSTEM_EXIT, ACCCommand.CRUISE_MODE): (ACCState.CRUISE_ONLY, ACCControlMode.CRUISE_MODE_ENGAGE),
         }
 
-    def _update_three_mode_parameters(self):
-        """更新三模式控制器的参数"""
-        set_three_mode_parameters(
-            V1_kmh=self.V1_kmh,
-            V2_kmh=self.V2_kmh,
-            V3_kmh=self.V3_kmh,
-            G1_m=self.G1_m,
+    def _update_two_mode_parameters(self):
+        """更新两模式控制器的参数"""
+        set_two_mode_parameters(
+            V_threshold_kmh=self.V_target_kmh,  # 使用目标速度作为模式切换阈值
             G2_s=self.G2_s,
-            target_speed_kmh=self.V3_kmh  # 目标速度设为V3
+            target_speed_kmh=self.V_target_kmh  # 目标速度
         )
 
         if self.debug:
-            print(
-                f"三模式参数更新: V1={self.V1_kmh}, V2={self.V2_kmh}, V3={self.V3_kmh}, G1={self.G1_m}, G2={self.G2_s}")
+            print(f"两模式参数更新: V_target={self.V_target_kmh}km/h, G2={self.G2_s}s")
 
     def determine_state_from_speed(self, ego_speed_kmh):
         """
@@ -196,7 +187,7 @@ class ACCDecisionModule:
         Returns:
             适合的状态类型
         """
-        if ego_speed_kmh < self.V1_kmh:
+        if ego_speed_kmh < self.V_min_kmh:
             return ACCState.LOW_SPEED
         elif self.has_history:
             return ACCState.ADAPTIVE_HISTORY_STANDBY
@@ -232,7 +223,7 @@ class ACCDecisionModule:
             if self.current_state == ACCState.CRUISE_ONLY:
                 pass  # 允许执行
             elif has_target and not self.force_cruise_mode:
-                return self.current_state, None, f"存在前车时，{command.value}指令无效（由三模式前两阶段控制）。使用定速巡航模式可忽略前车。"
+                return self.current_state, None, f"存在前车时，{command.value}指令无效（由两模式控制器自动控制）。使用定速巡航模式可忽略前车。"
 
         # === 特殊逻辑：增距/减距指令的条件检查 ===
         if command in [ACCCommand.INCREASE_DISTANCE, ACCCommand.DECREASE_DISTANCE]:
@@ -293,65 +284,70 @@ class ACCDecisionModule:
                     msg_suffix = ""
 
                 # 恢复历史设定
-                if self.history_V3_kmh:
-                    self.V3_kmh = self.history_V3_kmh
-                if self.history_G1_m:
-                    self.G1_m = self.history_G1_m
+                if self.history_V_target_kmh:
+                    self.V_target_kmh = self.history_V_target_kmh
                 if self.history_G2_s:
                     self.G2_s = self.history_G2_s
 
-                # 应用待存储的距离调整
+                # 应用待存储的距离调整（直接调整G2_s）
                 if self.pending_distance_adjustment != 0:
-                    self.G1_m = max(5.0, self.G1_m + self.pending_distance_adjustment)
-                    adjustment_msg = f"应用待存储距离调整: {self.pending_distance_adjustment:+.1f}m"
+                    # 将距离调整转换为时距调整（假设当前速度为50km/h作为基准）
+                    base_speed_ms = 50.0 / 3.6
+                    time_adjustment = self.pending_distance_adjustment / base_speed_ms
+                    self.G2_s = max(1.0, self.G2_s + time_adjustment)
+                    adjustment_msg = f"应用待存储距离调整: {self.pending_distance_adjustment:+.1f}m -> G2调整{time_adjustment:+.1f}s"
                     self.pending_distance_adjustment = 0.0
                 else:
                     adjustment_msg = ""
 
-                self._update_three_mode_parameters()
-                return f"继续控制: 恢复V3={self.V3_kmh:.1f}km/h, G1={self.G1_m:.1f}m {adjustment_msg}{msg_suffix}"
+                self._update_two_mode_parameters()
+                return f"继续控制: 恢复目标速度={self.V_target_kmh:.1f}km/h, G2={self.G2_s:.1f}s {adjustment_msg}{msg_suffix}"
 
             elif control_mode == ACCControlMode.NO_CONTINUE_CONTROL:
                 # 使用当前设定开始新的控制
-                # 应用待存储的距离调整
+                # 应用待存储的距离调整（直接调整G2_s）
                 if self.pending_distance_adjustment != 0:
-                    self.G1_m = max(5.0, self.G1_m + self.pending_distance_adjustment)
-                    adjustment_msg = f"应用待存储距离调整: {self.pending_distance_adjustment:+.1f}m"
+                    # 将距离调整转换为时距调整（假设当前速度为50km/h作为基准）
+                    base_speed_ms = 50.0 / 3.6
+                    time_adjustment = self.pending_distance_adjustment / base_speed_ms
+                    self.G2_s = max(1.0, self.G2_s + time_adjustment)
+                    adjustment_msg = f"应用待存储距离调整: {self.pending_distance_adjustment:+.1f}m -> G2调整{time_adjustment:+.1f}s"
                     self.pending_distance_adjustment = 0.0
                 else:
                     adjustment_msg = ""
 
-                self._update_three_mode_parameters()
-                return f"无继控制: 使用V3={self.V3_kmh:.1f}km/h, G1={self.G1_m:.1f}m {adjustment_msg}"
+                self._update_two_mode_parameters()
+                return f"无继控制: 使用目标速度={self.V_target_kmh:.1f}km/h, G2={self.G2_s:.1f}s {adjustment_msg}"
 
             elif control_mode == ACCControlMode.TARGET_DECREASE:
-                # 减速：直接调整巡航速度
-                self.cruise_target_speed_kmh = getattr(self, 'cruise_target_speed_kmh', 50.0)
-                self.cruise_target_speed_kmh = max(20.0, self.cruise_target_speed_kmh - self.speed_step)
-                self.target_speed_changed = True
-                return f"减速: 巡航速度调至{self.cruise_target_speed_kmh:.1f}km/h"
+                # 减速：直接调整目标速度
+                self.V_target_kmh = max(self.V_min_kmh + 1, self.V_target_kmh - self.speed_step)
+                self._update_two_mode_parameters()
+                return f"减速: 目标速度调至{self.V_target_kmh:.1f}km/h"
 
             elif control_mode == ACCControlMode.TARGET_INCREASE:
-                # 增速：在定速巡航模式下始终有效，或无前车时有效
-                self.cruise_target_speed_kmh = getattr(self, 'cruise_target_speed_kmh', 50.0)  # 默认50
-                self.cruise_target_speed_kmh = min(120.0, self.cruise_target_speed_kmh + self.speed_step)
-
-                # 通知主循环更新ACC控制器
-                self.target_speed_changed = True
-
-                return f"增速: 巡航速度调至{self.cruise_target_speed_kmh:.1f}km/h"
+                # 增速：直接调整目标速度
+                self.V_target_kmh = min(120.0, self.V_target_kmh + self.speed_step)
+                self._update_two_mode_parameters()
+                return f"增速: 目标速度调至{self.V_target_kmh:.1f}km/h"
 
             elif control_mode == ACCControlMode.DISTANCE_DECREASE:
-                # 减距：仅在有前车时有效（在process_command中已检查）
-                self.G1_m = max(5.0, self.G1_m - self.distance_step)
-                self._update_three_mode_parameters()
-                return f"距离降低: 新G1={self.G1_m:.1f}m（车距控制）"
+                # 减距：直接调整时距参数G2_s（减少时距）
+                # 将距离调整转换为时距调整（假设当前速度为50km/h作为基准）
+                base_speed_ms = 50.0 / 3.6
+                time_adjustment = -self.distance_step / base_speed_ms  # 减距对应减少时距
+                self.G2_s = max(1.0, self.G2_s + time_adjustment)
+                self._update_two_mode_parameters()
+                return f"距离降低: G2调整{time_adjustment:.2f}s，新G2={self.G2_s:.2f}s（时距控制）"
 
             elif control_mode == ACCControlMode.DISTANCE_INCREASE:
-                # 增距：仅在有前车时有效（在process_command中已检查）
-                self.G1_m = min(50.0, self.G1_m + self.distance_step)
-                self._update_three_mode_parameters()
-                return f"距离增加: 新G1={self.G1_m:.1f}m（车距控制）"
+                # 增距：直接调整时距参数G2_s（增加时距）
+                # 将距离调整转换为时距调整（假设当前速度为50km/h作为基准）
+                base_speed_ms = 50.0 / 3.6
+                time_adjustment = self.distance_step / base_speed_ms  # 增距对应增加时距
+                self.G2_s = max(1.0, self.G2_s + time_adjustment)
+                self._update_two_mode_parameters()
+                return f"距离增加: G2调整{time_adjustment:.2f}s，新G2={self.G2_s:.2f}s（时距控制）"
 
             # 记录控制开始时间
             self.last_control_time = time.time()
@@ -361,22 +357,24 @@ class ACCDecisionModule:
                 # 进入纯定速巡航状态
                 self.cruise_mode_active = True
                 self.force_cruise_mode = True
-                # 应用待存储的距离调整（虽然定速模式不用，但保持一致性）
+                # 应用待存储的距离调整（转换为时距调整）
                 if self.pending_distance_adjustment != 0:
-                    self.G1_m = max(5.0, self.G1_m + self.pending_distance_adjustment)
+                    base_speed_ms = 50.0 / 3.6
+                    time_adjustment = self.pending_distance_adjustment / base_speed_ms
+                    self.G2_s = max(1.0, self.G2_s + time_adjustment)
                     self.pending_distance_adjustment = 0.0
-                self._update_three_mode_parameters()
-                return f"纯定速巡航: 忽略前车，按V3={self.V3_kmh:.1f}km/h巡航"
+                self._update_two_mode_parameters()
+                return f"纯定速巡航: 忽略前车，按V_target={self.V_target_kmh:.1f}km/h巡航"
             elif control_mode == ACCControlMode.TARGET_INCREASE:
                 # 定速巡航模式下增速
-                self.V3_kmh = min(120.0, self.V3_kmh + self.speed_step)
-                self._update_three_mode_parameters()
-                return f"目标增量: 新V3={self.V3_kmh:.1f}km/h（纯定速巡航）"
+                self.V_target_kmh = min(120.0, self.V_target_kmh + self.speed_step)
+                self._update_two_mode_parameters()
+                return f"目标增量: 新V_target={self.V_target_kmh:.1f}km/h（纯定速巡航）"
             elif control_mode == ACCControlMode.TARGET_DECREASE:
                 # 定速巡航模式下减速
-                self.V3_kmh = max(self.V2_kmh + 1, self.V3_kmh - self.speed_step)
-                self._update_three_mode_parameters()
-                return f"目标减量: 新V3={self.V3_kmh:.1f}km/h（纯定速巡航）"
+                self.V_target_kmh = max(self.V_min_kmh + 1, self.V_target_kmh - self.speed_step)
+                self._update_two_mode_parameters()
+                return f"目标减量: 新V_target={self.V_target_kmh:.1f}km/h（纯定速巡航）"
 
             # 记录控制开始时间
             self.last_control_time = time.time()
@@ -409,19 +407,17 @@ class ACCDecisionModule:
     def _save_history(self):
         """保存当前设定为历史"""
         self.has_history = True
-        self.history_V3_kmh = self.V3_kmh
-        self.history_G1_m = self.G1_m
+        self.history_V_target_kmh = self.V_target_kmh
         self.history_G2_s = self.G2_s
 
         if self.debug:
             print(
-                f"保存历史: V3={self.history_V3_kmh:.1f}km/h, G1={self.history_G1_m:.1f}m, G2={self.history_G2_s:.1f}s")
+                f"保存历史: V_target={self.history_V_target_kmh:.1f}km/h, G2={self.history_G2_s:.1f}s")
 
     def _clear_history(self):
         """清除历史设定"""
         self.has_history = False
-        self.history_V3_kmh = None
-        self.history_G1_m = None
+        self.history_V_target_kmh = None
         self.history_G2_s = None
         self.last_control_time = None
         self.pending_distance_adjustment = 0.0  # 清除待存储调整
@@ -466,8 +462,8 @@ class ACCDecisionModule:
             dict: 当前参数字典
         """
         return {
-            'V3_kmh': self.V3_kmh,
-            'G1_m': self.G1_m,
+            'V_target_kmh': self.V_target_kmh,
+            'V_min_kmh': self.V_min_kmh,
             'G2_s': self.G2_s,
             'state': self.current_state.value,
             'has_history': self.has_history,
@@ -498,9 +494,9 @@ class ACCDecisionModule:
 
         decision = {
             'acc_active': self.current_state in [ACCState.IN_CONTROL, ACCState.CRUISE_ONLY],
-            'V3_kmh': self.V3_kmh,
-            'V3_ms': self.V3_kmh / 3.6,
-            'G1_m': self.G1_m,
+            'V_target_kmh': self.V_target_kmh,
+            'V_target_ms': self.V_target_kmh / 3.6,
+            'V_min_kmh': self.V_min_kmh,
             'G2_s': self.G2_s,
             'state': self.current_state.value,
             'state_description': self._get_state_description(),
@@ -570,12 +566,11 @@ class ACCDecisionModule:
             'previous_state': self.previous_state.value if self.previous_state else None,
             'current_control_mode': self.current_control_mode.value if self.current_control_mode else None,
             'previous_control_mode': self.previous_control_mode.value if self.previous_control_mode else None,
-            'V3_kmh': self.V3_kmh,
-            'G1_m': self.G1_m,
+            'V_target_kmh': self.V_target_kmh,
+            'V_min_kmh': self.V_min_kmh,
             'G2_s': self.G2_s,
             'has_history': self.has_history,
-            'history_V3_kmh': self.history_V3_kmh,
-            'history_G1_m': self.history_G1_m,
+            'history_V_target_kmh': self.history_V_target_kmh,
             'history_G2_s': self.history_G2_s,
             'last_control_time': self.last_control_time,
             'state_description': self._get_state_description(),
@@ -591,14 +586,14 @@ def test_acc_decision_logic():
     print("=== ACC决策模块逻辑测试（包含控制模式追踪） ===")
 
     # 创建决策模块
-    acc_decision = ACCDecisionModule(initial_V3_kmh=50.0, initial_G1_m=15.0)
+    acc_decision = ACCDecisionModule(initial_target_speed_kmh=50.0, initial_time_gap=2.0)
     acc_decision.set_debug(True)
 
     ego_speed = 35.0  # km/h
 
     print(f"\n初始状态: {acc_decision.current_state.value}")
     print(f"初始控制模式: {acc_decision.current_control_mode}")
-    print(f"初始参数: V3={acc_decision.V3_kmh}km/h, G1={acc_decision.G1_m}m")
+    print(f"初始参数: V_target={acc_decision.V_target_kmh}km/h, G2={acc_decision.G2_s}s")
 
     # 测试1: 从退出状态开启ACC
     print("\n=== 测试1: 从退出状态开启ACC ===")
