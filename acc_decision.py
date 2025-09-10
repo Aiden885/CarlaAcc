@@ -9,7 +9,6 @@ ACC自适应巡航控制决策模块 - 两模式版本
 
 from enum import Enum
 import time
-import math
 from three_mode_controller import set_two_mode_parameters, get_two_mode_status
 
 

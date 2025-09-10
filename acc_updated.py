@@ -13,6 +13,10 @@ import threading
 import pygame
 from pygame.locals import *
 
+# $env:HTTP_PROXY = "http://127.0.0.1:7890"
+# $env:HTTPS_PROXY = "http://127.0.0.1:7890"
+# $env:ALL_PROXY = "socks5://127.0.0.1:7891"
+
 # ACC相关模块
 from acc_planning_control import ACCPlanningControl
 from sinusoidal_speed_controller import SinusoidalSpeedController
@@ -73,7 +77,7 @@ class acc:
     def init_carla(self):
         # 初始化 Carla 客户端
         self.client = carla.Client('localhost', 2000)
-        self.client.set_timeout(30.0)
+        self.client.set_timeout(60.0)
         try:
             self.world = self.client.get_world()
             self.world = self.client.load_world('Town05', carla.MapLayer.Buildings | carla.MapLayer.ParkedVehicles)
