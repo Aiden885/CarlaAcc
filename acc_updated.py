@@ -20,7 +20,7 @@ from pygame.locals import *
 # ACC相关模块
 from acc_planning_control import ACCPlanningControl
 from sinusoidal_speed_controller import SinusoidalSpeedController
-from three_mode_controller import calculate_two_mode_desired_distance, set_two_mode_parameters, get_two_mode_status
+from two_mode_controller import calculate_two_mode_desired_distance, set_two_mode_parameters, get_two_mode_status
 from acc_decision import ACCDecisionModule, ACCCommand, ACCState
 
 # 导入显示管理器
@@ -320,34 +320,66 @@ class acc:
                     self.acc_decision.set_debug(debug_state)
                     print(f"ACC调试模式: {'开启' if debug_state else '关闭'}")
 
-                # ACC控制
-                elif event_data == K_1:
-                    self._process_acc_command(ACCCommand.ENGAGE)
+                # === ACC系统总开关 ===
+                elif event_data == K_SPACE:
+                    self.acc_control_active = not self.acc_control_active
+                    status = "开启" if self.acc_control_active else "关闭"
+                    print(f"🔄 ACC系统总开关: {status}")
+                    if not self.acc_control_active:
+                        # 关闭ACC时重置决策模块
+                        self.acc_decision.reset()
 
-                elif event_data == K_2:
-                    self._process_acc_command(ACCCommand.EXIT)
-
-                elif event_data == K_3:
-                    self._process_acc_command(ACCCommand.CRUISE_MODE)
-
+                # === ACC功能指令（基于新决策文档） ===
                 elif event_data == K_q:
                     if self.acc_control_active:
-                        self._process_acc_command(ACCCommand.INCREASE_SPEED)
+                        self._process_acc_command(ACCCommand.INCREASE_SPEED)  # I_1 增速/继承启控
 
                 elif event_data == K_e:
                     if self.acc_control_active:
-                        self._process_acc_command(ACCCommand.DECREASE_SPEED)
+                        self._process_acc_command(ACCCommand.DECREASE_SPEED)  # I_0 降速/当速启控
 
                 elif event_data == K_r:
                     if self.acc_control_active:
-                        self._process_acc_command(ACCCommand.INCREASE_DISTANCE)
+                        self._process_acc_command(ACCCommand.INCREASE_DISTANCE)  # I_3 增距
 
                 elif event_data == K_t:
                     if self.acc_control_active:
-                        self._process_acc_command(ACCCommand.DECREASE_DISTANCE)
+                        self._process_acc_command(ACCCommand.DECREASE_DISTANCE)  # I_2 减距
+
+                elif event_data == K_c:
+                    if self.acc_control_active:
+                        self._process_acc_command(ACCCommand.CANCEL)  # I_6 取消ACC
+
+                # === 人工干预指令（WASD） ===
+                elif event_data == K_w:
+                    if self.acc_control_active:
+                        self._process_acc_command(ACCCommand.THROTTLE)  # I_4 油门
+
+                elif event_data == K_s:
+                    if self.acc_control_active:
+                        self._process_acc_command(ACCCommand.BRAKE)  # I_5 刹车
+
+                elif event_data == K_a:
+                    # 向左转向辅助
+                    self._manual_steering(-0.3)
+
+                elif event_data == K_d:
+                    # 向右转向辅助
+                    self._manual_steering(0.3)
+
+    def _manual_steering(self, steer_value):
+        """手动转向辅助"""
+        if self.ego_vehicle:
+            control = carla.VehicleControl()
+            control.steer = steer_value
+            control.throttle = 0.0
+            control.brake = 0.0
+            self.ego_vehicle.apply_control(control)
+            direction = "左" if steer_value < 0 else "右"
+            print(f"🔄 手动转向: {direction} ({steer_value:.1f})")
 
     def _process_acc_command(self, command):
-        """处理ACC指令"""
+        """处理ACC指令 - 基于新决策文档"""
         if not self.ego_vehicle:
             return
 
@@ -355,47 +387,38 @@ class acc:
         target_distance = self.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
         has_target = target_distance < 50.0
 
-        # === 直接处理增速/减速指令 ===
-        if command == ACCCommand.INCREASE_SPEED and self.acc_control_active:
-            # 增加巡航速度
-            old_speed = self.current_cruise_speed_kmh
-            self.current_cruise_speed_kmh = min(120.0, self.current_cruise_speed_kmh + 1.0)
-
-            # 更新ACC控制器的目标速度
-            if hasattr(self, 'acc_controller') and self.acc_controller:
-                self.acc_controller.target_speed = self.current_cruise_speed_kmh / 3.6  # 转换为m/s
-
-            print(f"🎯 增速: {old_speed:.1f} → {self.current_cruise_speed_kmh:.1f} km/h")
-            return
-
-        elif command == ACCCommand.DECREASE_SPEED and self.acc_control_active:
-            # 减少巡航速度
-            old_speed = self.current_cruise_speed_kmh
-            self.current_cruise_speed_kmh = max(20.0, self.current_cruise_speed_kmh - 1.0)
-
-            # 更新ACC控制器的目标速度
-            if hasattr(self, 'acc_controller') and self.acc_controller:
-                self.acc_controller.target_speed = self.current_cruise_speed_kmh / 3.6  # 转换为m/s
-
-            print(f"🎯 减速: {old_speed:.1f} → {self.current_cruise_speed_kmh:.1f} km/h")
-            return
-
         # === 调试：处理指令前的状态 ===
-        print(f"\n🔍 处理ACC指令调试:")
-        print(f"   指令: {command.value}")
-        print(f"   处理前状态: {self.acc_decision.current_state.value}")
-        print(f"   处理前控制模式: {self.acc_decision.current_control_mode}")
-        print(f"   当前速度: {ego_speed:.1f} km/h")
-        print(f"   有前车: {has_target}")
+        if self.acc_decision.debug:
+            print(f"\n🔍 处理ACC指令调试:")
+            print(f"   指令: {command.value}")
+            print(f"   处理前状态: {self.acc_decision.current_state.value}")
+            print(f"   当前速度: {ego_speed:.1f} km/h")
+            print(f"   有前车: {has_target} (距离: {target_distance:.1f}m)")
 
-        # === 其他指令继续用原来的决策模块逻辑 ===
-        state, mode, msg = self.acc_decision.process_command(
+        # === 所有指令都通过决策模块处理 ===
+        state, decision, msg = self.acc_decision.process_command(
             command, ego_speed, has_target, target_distance if has_target else None)
 
+        # === 显示处理结果 ===
+        command_names = {
+            'I0': '降速/当速启控',
+            'I1': '增速/继承启控', 
+            'I2': '减距',
+            'I3': '增距',
+            'I4': '油门',
+            'I5': '刹车',
+            'I6': '取消ACC'
+        }
+        
+        command_name = command_names.get(command.value, command.value)
+        print(f"📋 {command_name}: {msg}")
+
         # === 调试：处理指令后的状态 ===
-        print(f"   处理后状态: {state.value}")
-        print(f"   处理后控制模式: {mode.value if mode else None}")
-        print(f"   状态转移消息: {msg}")
+        if self.acc_decision.debug:
+            print(f"   处理后状态: {state.value}")
+            print(f"   执行决策: {decision.value if decision else None}")
+            print(f"   状态转移消息: {msg}")
+            print("🔍 调试结束\n")
 
         acc_params = self.acc_decision.get_current_parameters()
         self.acc_control_active = acc_params['is_active']
@@ -726,22 +749,26 @@ class acc:
                 decision_output = self.acc_decision.get_decision_output(ego_speed, vehicle_distance)
 
                 # === 调试输出：检查每个判断条件 ===
-                print(f"\n=== ACC控制判断调试 ===")
-                print(f"1. acc_control_active: {self.acc_control_active}")
-                print(f"2. decision_output['control_enabled']: {decision_output['control_enabled']}")
-                print(f"3. is_in_active_control_mode(): {self.acc_decision.is_in_active_control_mode()}")
-                print(f"4. current_state: {self.acc_decision.current_state.value}")
-                print(f"5. current_control_mode: {decision_output.get('current_control_mode', 'None')}")
-                print(f"6. manual_control_active: {self.manual_control_active}")
-                print(
-                    f"7. 综合判断结果: {self.acc_control_active and decision_output['control_enabled'] and self.acc_decision.is_in_active_control_mode()}")
-                print("=== 调试结束 ===\n")
+                if self.acc_decision.debug:
+                    print(f"\n=== ACC控制判断调试 ===")
+                    print(f"1. acc_control_active: {self.acc_control_active}")
+                    print(f"2. decision_output['control_enabled']: {decision_output['control_enabled']}")
+                    print(f"3. is_in_active_control_mode(): {self.acc_decision.is_in_active_control_mode()}")
+                    print(f"4. current_state: {self.acc_decision.current_state.value}")
+                    print(f"5. current_decision: {decision_output.get('current_decision', 'None')}")
+                    print(f"6. torque_arbitration_active: {decision_output.get('torque_arbitration_active', False)}")
+                    print(f"7. manual_control_active: {self.manual_control_active}")
+                    print("=== 调试结束 ===\n")
 
-                # === 重要：只有在非手动控制模式下才执行ACC控制 ===
-                if (self.acc_control_active and
-                        decision_output['control_enabled'] and
-                        self.acc_decision.is_in_active_control_mode() and
-                        not self.manual_control_active):  # 新增条件：确保不在手动控制模式
+                # === 扭矩仲裁处理（油门指令时） ===
+                torque_arbitration = decision_output.get('torque_arbitration_active', False)
+                
+                # === ACC控制执行条件判断 ===
+                acc_should_control = (self.acc_control_active and
+                                    decision_output['control_enabled'] and
+                                    not self.manual_control_active)
+
+                if acc_should_control:
                     # ACC控制模式 - 只有在主动控制模式下才执行
                     print("✅ 进入ACC控制执行分支")
                     try:

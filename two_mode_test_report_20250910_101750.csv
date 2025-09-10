@@ -1,0 +1,7 @@
+测试项目,成功率(%),状态,备注
+模式切换逻辑,100.0,PASS,"[{'speed_kmh': 20, 'detected_mode': 'TIME', 'expected_mode': 'TIME', 'desired_distance': 11.11111111..."
+距离计算,100.0,PASS,"[{'speed_kmh': 30, 'mode': 'TIME', 'calculated_distance': 16.666666666666668, 'expected_distance': 1..."
+ACC决策集成,100.0,PASS,"[{'description': 'ACC开启', 'command': 'I4', 'input_speed': 40.0, 'has_target': False, 'resulting_stat..."
+性能仿真,0.0,FAIL,"{'simulation_duration': 0.003513336181640625, 'avg_speed_error_kmh': 49.18361215216428, 'max_speed_e..."
+
+总体评估,75.0,FAIL,3/4项测试通过

@@ -5,7 +5,7 @@ import math
 # 导入SPPVT控制器
 from sppvt_longitudinal_control import sppvt_longitudinal_control
 # 在文件顶部添加导入
-from three_mode_controller import two_mode_control, three_mode_control_with_force_mode, get_force_mode_recommendation
+from two_mode_controller import two_mode_control, three_mode_control_with_force_mode, get_force_mode_recommendation
 import time
 
 
