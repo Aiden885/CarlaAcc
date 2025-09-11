@@ -1,6 +1,10 @@
 import math
 from sppvt_longitudinal_control import sppvt_longitudinal_control, set_sppvt_parameters, reset_sppvt_controller
 
+# 核心职责:
+# 1.模式选择: 基于速度阈值的TIME / SPEED模式切换
+# 2.算法调用: 调用SPPVT控制器
+# 3.参数管理: 两模式参数设置和状态跟踪
 
 class TwoModeController:
     """
@@ -240,15 +244,16 @@ def get_two_mode_status():
     """获取两模式状态"""
     return _global_two_mode_controller.get_status()
 
-def three_mode_control_with_force_mode(ego_speed, current_distance, target_speed, force_mode=None):
+def target_redetection_safety_control(ego_speed, current_distance, target_speed, force_mode=None):
         """
-        带强制模式的三模式控制
+        前车重检测安全控制
+        当前车丢失后重新检测到时，提供强制安全控制策略
 
         Args:
             ego_speed: 当前速度 (m/s)
             current_distance: 前车距离 (m)，None表示无前车
             target_speed: 目标速度 (m/s)
-            force_mode: 强制模式 "distance"/"time_gap"/None
+            force_mode: 强制模式 "time_gap"/None
 
         Returns:
             (accel, control_info): 加速度和控制信息
@@ -271,10 +276,6 @@ def three_mode_control_with_force_mode(ego_speed, current_distance, target_speed
             # 如果获取参数失败，使用默认值
             V_threshold_ms = 50.0 / 3.6
             G2_s = 2.0
-
-        if force_mode == "distance":
-            # 将距离控制转换为时距控制（兼容性）
-            force_mode = "time_gap"
 
         if force_mode == "time_gap":
             # 强制时距控制
@@ -314,9 +315,10 @@ def three_mode_control_with_force_mode(ego_speed, current_distance, target_speed
 
         return accel, control_info
 
-def get_force_mode_recommendation(ego_speed, current_distance, speed_increase_threshold=2.8):
+def get_safety_control_mode_recommendation(ego_speed, current_distance, speed_increase_threshold=2.8):
         """
-        根据当前状态推荐强制模式类型
+        根据当前状态推荐安全控制模式类型
+        用于前车重检测时的强制控制策略
 
         Args:
             ego_speed: 当前速度 (m/s)
@@ -324,7 +326,7 @@ def get_force_mode_recommendation(ego_speed, current_distance, speed_increase_th
             speed_increase_threshold: 速度增加阈值 (m/s)
 
         Returns:
-            推荐的强制模式: "distance"/"time_gap"/None
+            推荐的安全控制模式: "time_gap"/None
         """
 
         if current_distance is None:

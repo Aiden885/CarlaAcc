@@ -5,8 +5,16 @@ import math
 # 导入SPPVT控制器
 from sppvt_longitudinal_control import sppvt_longitudinal_control
 # 在文件顶部添加导入
-from two_mode_controller import two_mode_control, three_mode_control_with_force_mode, get_force_mode_recommendation
+from two_mode_controller import two_mode_control, target_redetection_safety_control, get_safety_control_mode_recommendation
 import time
+
+# 功能说明：
+# 1.CARLA集成: 车辆状态获取、世界地图交互
+# 2.传感器融合: 多帧雷达数据平均、目标历史管理
+# 3.横向控制: 车道偏移检测、转向控制
+# 4.安全策略: 前车重检测逻辑、强制控制模式
+# 5.控制平滑: 平滑滤波、控制输出限制
+# 6.接口转换: 加速度→油门 / 刹车转换
 
 
 class ACCPlanningControl:
@@ -196,14 +204,14 @@ class ACCPlanningControl:
                     if self.force_control_start_time is None:
                         self.force_control_start_time = time.time()
                         # 根据距离情况选择强制模式
-                        force_mode = get_force_mode_recommendation(ego_speed, current_distance)
+                        force_mode = get_safety_control_mode_recommendation(ego_speed, current_distance)
                         print(f"🚨 前车重新检测，速度增加{speed_increase * 3.6:.1f}km/h，启动强制{force_mode}控制")
 
                     # 检查是否还在强制控制期间
                     force_duration = time.time() - self.force_control_start_time
                     if force_duration < self.force_control_duration:
                         # 继续使用之前确定的强制模式
-                        force_mode = get_force_mode_recommendation(ego_speed, current_distance)
+                        force_mode = get_safety_control_mode_recommendation(ego_speed, current_distance)
                         force_control_active = True
                         print(f"🛡️ 强制{force_mode}控制中 ({force_duration:.1f}/{self.force_control_duration:.1f}秒)")
                     else:
@@ -237,7 +245,7 @@ class ACCPlanningControl:
 
             if force_control_active and force_mode:
                 # 使用强制模式的两模式控制
-                accel, control_info = three_mode_control_with_force_mode(
+                accel, control_info = target_redetection_safety_control(
                     ego_speed, current_distance, self.target_speed, force_mode=force_mode
                 )
                 print(f"🛡️ Force-Mode: {control_info['mode']} - {control_info['message']}")

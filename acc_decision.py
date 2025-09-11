@@ -342,19 +342,27 @@ class ACCDecisionModule:
             'current_decision': self.current_decision.value if self.current_decision else None
         }
 
-    def get_decision_output(self, ego_speed_kmh, current_distance=None):
+    def get_decision_output(self, ego_speed_kmh, current_distance=None, manual_throttle_active=False):
         """
         获取决策输出，供控制模块使用 - 基于新决策文档
 
         Args:
             ego_speed_kmh: 当前车速 (km/h)
             current_distance: 当前目标距离 (m, 可选)
+            manual_throttle_active: 是否正在手动按油门 (bool, 用于扭矩仲裁状态管理)
 
         Returns:
             dict: 决策输出
         """
         # 根据速度自动更新状态
         self.update_state_by_speed(ego_speed_kmh)
+
+        # === 扭矩仲裁状态管理 ===
+        # 如果当前在扭矩仲裁状态，但没有持续按油门，则重置仲裁状态
+        if self.torque_arbitration_active and not manual_throttle_active:
+            self.torque_arbitration_active = False
+            if self.debug:
+                print("Torque arbitration auto reset: no continuous throttle input")
 
         # 检查是否有前车
         has_target = current_distance is not None and current_distance < 100.0
