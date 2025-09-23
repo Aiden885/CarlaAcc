@@ -505,6 +505,7 @@ def test_acc_decision_logic():
     return acc_decision
 
 
+
 def test_decision_md_compliance():
     """全面测试决策系统与decision.md文档的一致性"""
     print("\n" + "="*80)

@@ -29,7 +29,8 @@ class SPPVTLongitudinalController:
         self.sppvt_eta = 0.2  # 定速控制精度
         self.sppvt_rho = 0.25  # 惩罚系数 (0 < ρ < 0.5)
 
-        # 控制模式：'distance' 或 'speed'
+        # 控制模式：'distance'(实际处理时间误差) 或 'speed'
+        # 注意：'distance'模式现在实际处理时间误差（秒），保持接口兼容性
         self.control_mode = control_mode
         self.control_mode_flag = 1.0 if control_mode == 'distance' else 2.0
 
@@ -46,6 +47,9 @@ class SPPVTLongitudinalController:
         self.prev_error = 0.0  # 上次误差值
         self.prev_velocity = 0.0  # 上次速度（一阶导数）
         self.prev_accel = 0.0  # 上次加速度（二阶导数）
+
+        # 误差符号跟踪（用于检测符号变化）
+        self.prev_error_sign = 0  # 上次误差符号：1(正), -1(负), 0(零)
 
         # 升级历史
         self.upgrade_count = 0
@@ -284,6 +288,45 @@ class SPPVTLongitudinalController:
 
         return should_upgrade
 
+    def _check_error_sign_change(self, error_value):
+        """
+        检查误差符号变化，如果符号变化则重置状态到初始级
+
+        参数:
+        error_value: 当前误差值
+
+        返回:
+        sign_changed: 是否发生符号变化
+        """
+        # 计算当前误差符号
+        if abs(error_value) < 1e-6:  # 接近零的值
+            current_sign = 0
+        elif error_value > 0:
+            current_sign = 1
+        else:
+            current_sign = -1
+
+        # 检查符号变化（只有从非零符号变为另一个非零符号才算符号变化）
+        sign_changed = False
+        if self.prev_error_sign != 0 and current_sign != 0 and self.prev_error_sign != current_sign:
+            sign_changed = True
+            if self.debug:
+                sign_names = {-1: "负", 0: "零", 1: "正"}
+                print(f"检测到误差符号变化: {sign_names[self.prev_error_sign]} → {sign_names[current_sign]}, 重置到初始级")
+
+            # 重置状态到初始级
+            self.stage = 1
+            self.target_stages = {1: 0.0}  # 初始级差为0
+            self.current_stage_offset = 0.0
+            self.upgrade_count = 0
+            self.last_upgrade_time = 0
+
+        # 更新误差符号历史
+        if current_sign != 0:  # 只有非零误差才更新符号
+            self.prev_error_sign = current_sign
+
+        return sign_changed
+
     def upgrade_stage(self, error_value):
         """
         执行阶段升级
@@ -302,20 +345,22 @@ class SPPVTLongitudinalController:
         else:
             prev_offset = 0.0  # 第一级级差为0
 
-        # 根据控制模式计算新的级差
-        if self.control_mode == 'distance':
-            # 距离跟踪：增加负级差，让控制更积极（距离误差为负时，加上负级差让误差更负）
-            new_offset = -(prev_offset + self.sppvt_rho * error_value)
-        else:  # speed mode
-            # 速度跟踪：增加正级差，让控制更积极（速度误差为正时，加上正级差让误差更正）
-            new_offset = prev_offset + self.sppvt_rho * error_value
+        # 根据误差符号计算新的级差（修改：基于误差符号而非控制模式）
+        # SPPVT原理：升级时增大误差的绝对值，让控制更积极
+        if error_value > 0:
+            # 正误差：增加正级差，让误差绝对值更大
+            new_offset = prev_offset + self.sppvt_rho * abs(error_value)
+        else:
+            # 负误差：增加负级差，让误差绝对值更大
+            new_offset = prev_offset - self.sppvt_rho * abs(error_value)
 
         self.target_stages[self.stage] = new_offset
         self.current_stage_offset = new_offset
 
         if self.debug:
-            direction = "减少" if self.control_mode == 'distance' else "增加"
-            print(f"升级到第{self.stage}级: {direction}级差 {prev_offset:.3f} → {new_offset:.3f}, "
+            error_direction = "正" if error_value > 0 else "负"
+            offset_direction = "正" if new_offset >= prev_offset else "负"
+            print(f"升级到第{self.stage}级: {error_direction}误差({error_value:.3f}) → 增加{offset_direction}级差 {prev_offset:.3f} → {new_offset:.3f}, "
                   f"增量={abs(new_offset - prev_offset):.3f}, 总升级次数={self.upgrade_count}")
 
     def sppvt_longitudinal_control(self, error_value, dt=0.05):
@@ -332,6 +377,9 @@ class SPPVTLongitudinalController:
         返回:
         control_output: 控制输出（加速度）
         """
+        # 检查误差符号变化，如果变化则重置状态
+        self._check_error_sign_change(error_value)
+
         # 如果是第一级且没有设置级差，则设置初始级差为0
         if self.stage == 1 and self.stage not in self.target_stages:
             self.target_stages[1] = 0.0  # 第一级级差为0
@@ -359,11 +407,12 @@ class SPPVTLongitudinalController:
 
                 # 调试输出
                 if self.debug:
-                    error_type = "距离误差" if self.control_mode == 'distance' else "速度误差"
+                    error_type = "时间误差" if self.control_mode == 'distance' else "速度误差"
+                    error_unit = "s" if self.control_mode == 'distance' else "m/s"
                     print(f"SPPVT Stage {self.stage}({self.control_mode})[Simulink]: "
-                          f"原始{error_type}={error_value:.2f}, "
-                          f"级差={self.current_stage_offset:.2f}, "
-                          f"扩大误差={error_value + self.current_stage_offset:.2f}, "
+                          f"原始{error_type}={error_value:.3f}{error_unit}, "
+                          f"级差={self.current_stage_offset:.3f}{error_unit}, "
+                          f"扩大误差={error_value + self.current_stage_offset:.3f}{error_unit}, "
                           f"控制输出={control_output:.2f}m/s²")
 
                 return control_output
@@ -401,11 +450,12 @@ class SPPVTLongitudinalController:
 
         # 调试输出
         if self.debug:
-            error_type = "距离误差" if self.control_mode == 'distance' else "速度误差"
+            error_type = "时间误差" if self.control_mode == 'distance' else "速度误差"
+            error_unit = "s" if self.control_mode == 'distance' else "m/s"
             print(f"SPPVT Stage {self.stage}({self.control_mode})[Python]: "
-                  f"原始{error_type}={error_value:.2f}, "
-                  f"级差={current_stage_offset:.2f}, "
-                  f"扩大误差={enhanced_error:.2f}, "
+                  f"原始{error_type}={error_value:.3f}{error_unit}, "
+                  f"级差={current_stage_offset:.3f}{error_unit}, "
+                  f"扩大误差={enhanced_error:.3f}{error_unit}, "
                   f"控制输出={control_output:.2f}m/s²")
 
         return control_output
@@ -418,6 +468,7 @@ class SPPVTLongitudinalController:
         self.prev_error = 0.0
         self.prev_velocity = 0.0
         self.prev_accel = 0.0
+        self.prev_error_sign = 0  # 重置误差符号跟踪
         self.upgrade_count = 0
         self.last_upgrade_time = 0
 
@@ -505,9 +556,11 @@ def get_sppvt_status():
 - 距离跟踪模式: (加速度 < 0) & (速度 <= δ) & (控制差 > η)
 - 速度跟踪模式: (加加速度 < 0) & (加速度 <= δ) & (控制差 > η)
 
-SPPVT原理：
-- 距离跟踪：逐步降低目标距离，增强控制作用
-- 速度跟踪：逐步提高目标速度，增强控制作用
+SPPVT原理（修正版）：
+- 阶段递进控制：满足升级条件时，根据误差符号增大误差绝对值
+- 正误差：增加正级差，让正误差更大，控制更积极
+- 负误差：增加负级差，让负误差更小（绝对值更大），控制更积极
+- 符号变化检测：误差符号由正转负或由负转正时，自动重置到初始级
 
 混合实现说明：
 - 优先使用Simulink模型进行核心计算（导数计算、升级判断、控制输出）

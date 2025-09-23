@@ -1,0 +1,70 @@
+{Error using test_bus_output (line 33)
+Error due to multiple causes.
+Caused by:
+    Error using test_bus_output (line 33)
+    Invalid setting in 'ACC_Decision_SPPVT_Integrated/Input' for parameter 'OutDataTypeStr'.
+        Error using test_bus_output (line 33)
+        Error evaluating parameter 'OutDataTypeStr' in 'ACC_Decision_SPPVT_Integrated/Input'
+            Error using test_bus_output (line 33)
+            Cannot resolve variable 'DecisionSPPVTInput'
+                Error using test_bus_output (line 33)
+                Variable 'DecisionSPPVTInput' has been deleted from base workspace.
+                Suggested Actions:
+                    • Load a file into base workspace. - Fix
+                    • Create a new variable. - Fix
+    Error using test_bus_output (line 33)
+    Expression 'DecisionSPPVTInput' for type of data <a href="matlab:sfprivate('sfOpenObjectBySId','ACC_Decision_SPPVT_Integrated:3:::input')">'input'</a> did not evaluate to a valid
+    type.
+        Error using test_bus_output (line 33)
+        Invalid setting in '<a href="matlab:sf('Open', 23)">Decision_Function</a>' for parameter 'Datatype'
+            Error using test_bus_output (line 33)
+            Error evaluating MATLAB Function parameter data 'Datatype' in its parent workspace.
+                Error using test_bus_output (line 33)
+                Unrecognized function or variable 'DecisionSPPVTInput'.
+                    Error using test_bus_output (line 33)
+                    Variable 'DecisionSPPVTInput' has been deleted from base workspace.
+                    Suggested Actions:
+                        • Load a file into base workspace. - Fix
+                        • Create a new variable. - Fix
+    Error using test_bus_output (line 33)
+    Expression 'DecisionSPPVTInput' for type of data <a href="matlab:sfprivate('sfOpenObjectBySId','ACC_Decision_SPPVT_Integrated:2:::raw_input')">'raw_input'</a> did not evaluate to
+    a valid type.
+        Error using test_bus_output (line 33)
+        Invalid setting in '<a href="matlab:sf('Open', 29)">Input_Validator</a>' for parameter 'Datatype'
+            Error using test_bus_output (line 33)
+            Error evaluating MATLAB Function parameter data 'Datatype' in its parent workspace.
+                Error using test_bus_output (line 33)
+                Unrecognized function or variable 'DecisionSPPVTInput'.
+                    Error using test_bus_output (line 33)
+                    Variable 'DecisionSPPVTInput' has been deleted from base workspace.
+                    Suggested Actions:
+                        • Load a file into base workspace. - Fix
+                        • Create a new variable. - Fix
+    Error using test_bus_output (line 33)
+    Expression 'DecisionSPPVTOutput' for type of data <a href="matlab:sfprivate('sfOpenObjectBySId','ACC_Decision_SPPVT_Integrated:5:::integrated_output')">'integrated_output'</a> did
+    not evaluate to a valid type.
+        Error using test_bus_output (line 33)
+        Invalid setting in '<a href="matlab:sf('Open', 35)">Output_Formatter</a>' for parameter 'Datatype'
+            Error using test_bus_output (line 33)
+            Error evaluating MATLAB Function parameter data 'Datatype' in its parent workspace.
+                Error using test_bus_output (line 33)
+                Unrecognized function or variable 'DecisionSPPVTOutput'.
+                    Error using test_bus_output (line 33)
+                    Variable 'DecisionSPPVTOutput' has been deleted from base workspace.
+                    Suggested Actions:
+                        • Load a file into base workspace. - Fix
+                        • Create a new variable. - Fix
+    Error using test_bus_output (line 33)
+    Invalid setting in 'ACC_Decision_SPPVT_Integrated/integrated_output' for parameter 'OutDataTypeStr'.
+        Error using test_bus_output (line 33)
+        Error evaluating parameter 'OutDataTypeStr' in 'ACC_Decision_SPPVT_Integrated/integrated_output'
+            Error using test_bus_output (line 33)
+            Cannot resolve variable 'DecisionSPPVTOutput'
+                Error using test_bus_output (line 33)
+                Variable 'DecisionSPPVTOutput' has been deleted from base workspace.
+                Suggested Actions:
+                    • Load a file into base workspace. - Fix
+                    • Create a new variable. - Fix
+} 
+[Warning: Unable to close the model 'ACC_Decision_SPPVT_Integrated' because it has been changed. To save changes, use
+close_system('ACC_Decision_SPPVT_Integrated',1). To discard changes, use close_system('ACC_Decision_SPPVT_Integrated',0).] 

@@ -20,8 +20,9 @@ from pygame.locals import *
 # ACC相关模块
 from acc_planning_control import ACCPlanningControl
 from sinusoidal_speed_controller import SinusoidalSpeedController
-from two_mode_controller import calculate_two_mode_desired_distance, set_two_mode_parameters, get_two_mode_status
-from acc_decision import ACCDecisionModule, ACCCommand, ACCState
+from two_mode_controller import calculate_two_mode_desired_distance, set_two_mode_parameters, get_two_mode_status, two_mode_control, enhanced_two_mode_control
+from acc_decision_sppvt_interface import ACCDecisionSPPVTInterface
+from acc_decision import ACCCommand, ACCState  # 保留命令和状态定义
 
 # 导入显示管理器
 from display_manager import DisplayManager
@@ -52,9 +53,12 @@ class acc:
         self.csv_writer = None
         self.target_speed_controller = None
 
-        # === ACC决策模块 ===
-        self.acc_decision = ACCDecisionModule(initial_target_speed_kmh=50.0, initial_time_gap=2.0)
-        self.acc_decision.set_debug(True)
+        # === ACC决策+SPPVT一体化模块 ===
+        self.acc_decision_sppvt = ACCDecisionSPPVTInterface(initial_target_speed_kmh=50.0, initial_time_gap=2.0)
+        self.acc_decision_sppvt.set_debug(True)
+        
+        # === 保持原有决策接口兼容性 ===
+        self.acc_decision = self.acc_decision_sppvt  # 兼容性别名
 
         # === 控制状态 ===
         self.acc_system_enabled = False  # ACC系统开关（空格键）
@@ -78,6 +82,10 @@ class acc:
 
         # 初始化两模式参数
         self._sync_two_mode_parameters()
+        
+        # 初始化一体化接口的两模式控制器
+        if hasattr(self.acc_decision_sppvt, 'init_two_mode_controller'):
+            self.acc_decision_sppvt.init_two_mode_controller()
 
     def init_carla(self):
         # 初始化 Carla 客户端
@@ -229,6 +237,14 @@ class acc:
             G2_s=acc_params['G2_s'],
             target_speed_kmh=acc_params['V_target_kmh']
         )
+        
+        # 同时同步到一体化接口
+        if hasattr(self.acc_decision_sppvt, 'update_two_mode_parameters'):
+            self.acc_decision_sppvt.update_two_mode_parameters(
+                V_threshold_kmh=acc_params['V_target_kmh'],
+                G2_s=acc_params['G2_s'],
+                target_speed_kmh=acc_params['V_target_kmh']
+            )
 
     def handle_keyboard_input(self):
         """处理键盘输入"""
@@ -419,7 +435,7 @@ class acc:
             print(f"🔄 手动转向: {direction} ({steer_value:.1f})")
 
     def _process_acc_command(self, command):
-        """处理ACC指令 - 基于新决策文档"""
+        """处理ACC指令 - 基于新决策文档，兼容一体化接口"""
         if not self.ego_vehicle:
             return
 
@@ -435,9 +451,15 @@ class acc:
             print(f"   当前速度: {ego_speed:.1f} km/h")
             print(f"   有前车: {has_target} (距离: {target_distance:.1f}m)")
 
-        # === 所有指令都通过决策模块处理 ===
-        state, decision, msg = self.acc_decision.process_command(
-            command, ego_speed, has_target, target_distance if has_target else None)
+        # === 通过一体化接口处理指令 ===
+        if hasattr(self.acc_decision_sppvt, 'process_command'):
+            # 使用一体化接口的指令处理
+            state, decision, msg = self.acc_decision_sppvt.process_command(
+                command, ego_speed, has_target, target_distance if has_target else None)
+        else:
+            # 回退到传统决策模块
+            state, decision, msg = self.acc_decision.process_command(
+                command, ego_speed, has_target, target_distance if has_target else None)
 
         # === 显示处理结果 ===
         command_names = {
@@ -715,9 +737,24 @@ class acc:
                 vehicle_distance = self.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
                 has_target = vehicle_distance < 50.0
 
-                # 获取ACC决策输出
+                # === 使用一体化接口获取决策和控制输出 ===
                 acc_params = self.acc_decision.get_current_parameters()
                 acc_status = self.acc_decision.get_status_info()
+                
+                # 为一体化接口准备输入数据
+                ego_speed_ms = ego_speed / 3.6
+                lane_offset = self.get_lane_offset()
+                
+                # 获取增强两模式控制信息用于Simulink接口
+                if has_target:
+                    current_distance = vehicle_distance
+                    enhanced_two_mode_output = enhanced_two_mode_control(ego_speed_ms, current_distance, acc_params['V_target_kmh'] / 3.6)
+                    control_error = enhanced_two_mode_output['control_error']
+                    control_mode_flag = enhanced_two_mode_output['control_mode_flag']
+                else:
+                    enhanced_two_mode_output = enhanced_two_mode_control(ego_speed_ms, None, acc_params['V_target_kmh'] / 3.6)
+                    control_error = enhanced_two_mode_output['control_error']
+                    control_mode_flag = enhanced_two_mode_output['control_mode_flag']
 
                 # === 确保ACC控制器的目标速度与当前巡航速度同步 ===
                 if hasattr(self, 'acc_controller') and self.acc_controller and self.acc_system_enabled:
@@ -792,10 +829,43 @@ class acc:
                         cv2.waitKey(1)
 
                 # === 车辆控制 ===
-                # 检查是否应该进行ACC控制 - 基于控制模式
+                # === 使用一体化接口进行决策和控制计算 ===
                 # 传递手动油门状态用于扭矩仲裁管理
                 manual_throttle_active = hasattr(self, 'manual_throttle_input') and self.manual_throttle_input > 0
-                decision_output = self.acc_decision.get_decision_output(ego_speed, vehicle_distance, manual_throttle_active)
+                
+                # 准备一体化接口输入数据
+                unified_input = {
+                    'ego_speed_kmh': ego_speed,
+                    'ego_speed_ms': ego_speed_ms,
+                    'command_type': 0,  # 暂时设为NONE，实际应该从当前命令获取
+                    'command_active': self.acc_system_enabled,
+                    'manual_throttle_active': manual_throttle_active,
+                    'control_error': control_error,
+                    'control_mode_flag': control_mode_flag,
+                    'V_target_kmh': acc_params['V_target_kmh'],
+                    'V_min_kmh': acc_params['V_min_kmh'],
+                    'G2_s': acc_params['G2_s'],
+                    'timestamp': time.time()
+                }
+                
+                # 调用一体化接口获取决策+SPPVT输出
+                try:
+                    unified_output = self.acc_decision_sppvt.process_decision_and_control(unified_input)
+                    # 为了向后兼容，从统一输出中提取传统的决策输出格式
+                    decision_output = {
+                        'control_enabled': unified_output['control_enabled'],
+                        'current_control_mode': f"SPPVT_{unified_output['sppvt_stage']}",
+                        'current_decision': unified_output['current_decision'],
+                        'torque_arbitration_active': unified_output['torque_arbitration_active']
+                    }
+                    # 保存SPPVT目标加速度用于后续使用
+                    sppvt_target_accel = unified_output['target_accel']
+                    
+                except Exception as e:
+                    print(f"⚠️ 一体化接口调用失败，使用传统模式: {e}")
+                    # 回退到传统决策模式
+                    decision_output = self.acc_decision.get_decision_output(ego_speed, vehicle_distance, manual_throttle_active)
+                    sppvt_target_accel = None
 
                 # === 调试输出：检查每个判断条件 ===
                 if self.acc_decision.debug:
@@ -834,33 +904,67 @@ class acc:
 
                         # 根据控制激活状态决定控制方式
                         if decision_output.get('control_enabled', False):
-                            # ACC控制激活：使用目标信息进行控制
-                            print(f"🚗 执行ACC控制 (使用前车信息: {target_info is not None})")
-                            acc_control = acc_controller.cruise_control(lane_offset, target_info)
-                            
-                            # === 扭矩仲裁处理 ===
-                            if torque_arbitration and hasattr(self, 'manual_throttle_input'):
-                                print(f"⚖️ 执行扭矩仲裁")
-                                print(f"   ACC油门输出: {acc_control.throttle:.3f}")
-                                print(f"   驾驶员油门输入: {self.manual_throttle_input:.3f}")
+                            # ACC控制激活
+                            if sppvt_target_accel is not None:
+                                # 使用一体化接口的SPPVT输出
+                                print(f"🚗 使用一体化SPPVT控制 (目标加速度: {sppvt_target_accel:.3f} m/s²)")
                                 
-                                # 取最大油门开度（协调控制）
-                                final_throttle = max(acc_control.throttle, self.manual_throttle_input)
-                                
-                                # 创建协调后的控制命令
+                                # 将SPPVT加速度转换为车辆控制命令
                                 control = carla.VehicleControl()
-                                control.throttle = final_throttle
-                                control.brake = acc_control.brake  # ACC刹车逻辑
-                                control.steer = acc_control.steer  # ACC转向逻辑
-                                control.manual_gear_shift = acc_control.manual_gear_shift
-                                control.gear = acc_control.gear
+                                control.manual_gear_shift = False
+                                control.gear = 1
                                 
-                                print(f"   协调后油门输出: {final_throttle:.3f}")
-                                print(f"   仲裁模式: 取最大值(驾驶员={self.manual_throttle_input:.3f} vs ACC={acc_control.throttle:.3f})")
+                                if sppvt_target_accel > 0:
+                                    control.throttle = min(sppvt_target_accel / 2.0, 1.0)  # 归一化到[0,1]
+                                    control.brake = 0.0
+                                else:
+                                    control.throttle = 0.0
+                                    control.brake = min(-sppvt_target_accel / 4.0, 1.0)  # 归一化到[0,1]
                                 
+                                # 横向控制使用现有逻辑
+                                control.steer = np.clip(lane_offset * 0.04, -0.4, 0.4)  # 简化转向控制
+                                
+                                # === 扭矩仲裁处理 ===
+                                if torque_arbitration and hasattr(self, 'manual_throttle_input'):
+                                    print(f"⚖️ 执行扭矩仲裁")
+                                    print(f"   SPPVT油门输出: {control.throttle:.3f}")
+                                    print(f"   驾驶员油门输入: {self.manual_throttle_input:.3f}")
+                                    
+                                    # 取最大油门开度（协调控制）
+                                    final_throttle = max(control.throttle, self.manual_throttle_input)
+                                    control.throttle = final_throttle
+                                    
+                                    print(f"   协调后油门输出: {final_throttle:.3f}")
+                                    print(f"   仲裁模式: 取最大值(驾驶员={self.manual_throttle_input:.3f} vs SPPVT={control.throttle:.3f})")
+                                    
                             else:
-                                # 正常ACC控制
-                                control = acc_control
+                                # 回退到传统ACC控制
+                                print(f"🚗 回退传统ACC控制 (使用前车信息: {target_info is not None})")
+                                acc_control = acc_controller.cruise_control(lane_offset, target_info)
+                                
+                                # === 扭矩仲裁处理 ===
+                                if torque_arbitration and hasattr(self, 'manual_throttle_input'):
+                                    print(f"⚖️ 执行扭矩仲裁")
+                                    print(f"   ACC油门输出: {acc_control.throttle:.3f}")
+                                    print(f"   驾驶员油门输入: {self.manual_throttle_input:.3f}")
+                                    
+                                    # 取最大油门开度（协调控制）
+                                    final_throttle = max(acc_control.throttle, self.manual_throttle_input)
+                                    
+                                    # 创建协调后的控制命令
+                                    control = carla.VehicleControl()
+                                    control.throttle = final_throttle
+                                    control.brake = acc_control.brake  # ACC刹车逻辑
+                                    control.steer = acc_control.steer  # ACC转向逻辑
+                                    control.manual_gear_shift = acc_control.manual_gear_shift
+                                    control.gear = acc_control.gear
+                                    
+                                    print(f"   协调后油门输出: {final_throttle:.3f}")
+                                    print(f"   仲裁模式: 取最大值(驾驶员={self.manual_throttle_input:.3f} vs ACC={acc_control.throttle:.3f})")
+                                    
+                                else:
+                                    # 正常ACC控制
+                                    control = acc_control
                                 
                         else:
                             # ACC未激活：不执行控制或使用巡航模式
@@ -872,8 +976,14 @@ class acc:
                         self.ego_vehicle.apply_control(control)
 
                         # 显示当前控制模式
-                        current_mode = decision_output.get('current_control_mode', 'Unknown')
-                        print(f"🎮 ACC executing control mode: {current_mode}")
+                        if sppvt_target_accel is not None:
+                            current_mode = f"UNIFIED_SPPVT_{unified_output.get('sppvt_stage', 'Unknown')}"
+                            print(f"🎮 一体化SPPVT控制模式: {current_mode}")
+                            print(f"   决策状态: {unified_output.get('current_state', 'Unknown')}")
+                            print(f"   目标加速度: {sppvt_target_accel:.3f} m/s²")
+                        else:
+                            current_mode = decision_output.get('current_control_mode', 'Unknown')
+                            print(f"🎮 传统ACC控制模式: {current_mode}")
 
                     except Exception as e:
                         print(f"❌ ACC control error详细信息:")
@@ -881,6 +991,8 @@ class acc:
                         print(f"   错误消息: {str(e)}")
                         print(f"   target_info: {target_info}")
                         print(f"   lane_offset: {(lane_center - 510) / 150}")
+                        print(f"   sppvt_target_accel: {sppvt_target_accel if 'sppvt_target_accel' in locals() else 'Not available'}")
+                        print(f"   unified_input: {unified_input if 'unified_input' in locals() else 'Not available'}")
                         import traceback
                         print(f"   完整错误堆栈:")
                         traceback.print_exc()

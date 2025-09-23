@@ -4,13 +4,22 @@
 
 基于CARLA仿真器的ACC（Adaptive Cruise Control）自适应巡航控制系统，实现了完整的自动驾驶ACC功能，包括智能跟车、定速巡航、传感器融合和人机交互。
 
-### 核心特性
-- 🚗 **智能ACC控制**: 两模式控制（时距控制+定速巡航）
+### 🎯 核心特性
+- 🚗 **智能时距控制**: 直接控制时距（秒），更精确的跟车逻辑
 - 📡 **多传感器融合**: 雷达、相机、激光雷达
 - 🎮 **实时人机交互**: Pygame界面 + OpenCV视觉反馈
 - 🧠 **智能决策系统**: 状态机管理 + 人工介入检测
+- 🎛️ **SPPVT控制算法**: 阶段递进速度跟踪控制，符号自适应级差
 - 📊 **数据记录分析**: CSV格式实时数据记录
-- 🔄 **Matlab集成**: 支持Simulink模型协同
+- 🔄 **Python-Simulink混合**: 双重实现确保高可靠性
+
+## 🆕 最新更新 (v4.0)
+
+### **时距控制架构升级**
+- ✅ **直接时间控制**: 从距离控制升级为直接时距控制（秒）
+- ✅ **SPPVT符号自适应**: 基于误差符号的动态级差计算
+- ✅ **误差符号检测**: 自动检测符号变化并重置控制状态
+- ✅ **接口完全兼容**: 保持所有现有代码接口不变
 
 ## 🏗️ 系统架构
 
@@ -141,7 +150,15 @@
    ./CarlaUE4.sh -quality-level=Low
    ```
 
-2. **运行主程序**:
+2. **部署SPPVT集成模型** (v3.0新增):
+   ```matlab
+   % 在MATLAB中运行完整集成部署
+   create_decision_sppvt_bus(); 
+   load_acc_sppvt_parameters(); 
+   build_acc_decision_sppvt_model();
+   ```
+
+3. **运行主程序**:
    ```bash
    python acc_updated.py
    ```
@@ -190,19 +207,33 @@ target_vehicle = 'vehicle.tesla.model3'  # 目标车型号
 
 ```
 CarlaAcc/
-├── acc_updated.py              # 🎯 主程序入口
-├── acc_decision.py             # 🧠 ACC决策模块  
-├── acc_planning_control.py     # 🎮 运动控制模块
-├── two_mode_controller.py      # 🔄 两模式控制器
-├── display_manager.py          # 📺 界面显示管理
-├── lane_detection.py           # 👁️ 车道检测
-├── radar_cluster.py            # 📡 雷达聚类
-├── kalman_filter.py            # 🎯 卡尔曼滤波
-├── sinusoidal_speed_controller.py  # 🌊 前车速度控制
-├── matlab_connect.py           # 🔗 Matlab接口
-├── sppvt_control_model.slx     # 📈 Simulink模型
-├── speed_data_integrated.csv   # 📋 实验数据
-└── README.md                   # 📖 项目文档
+├── acc_updated.py                        # 🎯 主程序入口
+├── acc_decision.py                       # 🧠 ACC决策模块  
+├── acc_planning_control.py               # 🎮 运动控制模块
+├── two_mode_controller.py                # 🔄 两模式控制器
+├── display_manager.py                    # 📺 界面显示管理
+├── lane_detection.py                     # 👁️ 车道检测
+├── radar_cluster.py                      # 📡 雷达聚类
+├── kalman_filter.py                      # 🎯 卡尔曼滤波
+├── sinusoidal_speed_controller.py        # 🌊 前车速度控制
+├── matlab_connect.py                     # 🔗 Matlab接口
+├── sppvt_longitudinal_control.py         # 🎛️ SPPVT纵向控制器
+│
+├── 🆕 SPPVT完整集成模块 (v3.0)
+├── acc_decision_sppvt_interface.py       # 🔗 Python-Simulink统一接口
+├── ACC_Decision_SPPVT_Integrated.slx     # 🏗️ 完整集成Simulink模型
+├── sppvt_control_model.slx               # 📈 现有SPPVT模块 (保持不变)
+├── generate_sppvt_adapter_code.m         # 🔌 SPPVT接口适配器
+├── build_acc_decision_sppvt_model.m      # 🏭 集成模型构建脚本
+├── create_decision_sppvt_bus.m           # 📊 总线定义脚本
+├── load_acc_sppvt_parameters.m           # ⚙️ 参数加载脚本
+├── test_integrated_sppvt_model.m         # 🧪 集成测试脚本
+├── COMPLETE_SPPVT_INTEGRATION_GUIDE.md   # 📋 完整集成使用指南
+├── QUICK_START_GUIDE.md                  # 🚀 快速启动指南
+└── SIMULINK_MODEL_USAGE_GUIDE.md         # 📖 Simulink模型使用指南
+│
+├── speed_data_integrated.csv             # 📋 实验数据
+└── README.md                             # 📖 项目主文档
 ```
 
 ## 🆕 新决策系统特性
@@ -300,7 +331,28 @@ print(f"Current State: {acc_decision.current_state}")
 
 ## 🔄 版本历史
 
-### v2.0 (当前版本) - 2024.09.09
+### v3.0 (当前版本) - 2024.09.12 🎉
+**重大更新: ACC决策+SPPVT完整一体化集成**
+- ✅ **完整SPPVT集成**: 将现有独立SPPVT模块集成到统一Simulink架构
+- ✅ **Model Reference架构**: 使用高效的Model Reference方式保持模块完整性
+- ✅ **Python-Simulink一体化**: 实现决策模块与SPPVT控制的紧密集成
+- ✅ **MATLAB 2024b兼容**: 修复所有兼容性问题，支持最新MATLAB版本
+- ✅ **双重架构支持**: 同时支持简化版和完整版两种集成方案
+- ✅ **完整调试系统**: 集成版调试码(3000+)，完整的监控和测试工具
+
+**新增核心文件**:
+- `ACC_Decision_SPPVT_Integrated.slx` - 完整集成Simulink模型
+- `generate_sppvt_adapter_code.m` - SPPVT接口适配器
+- `acc_decision_sppvt_interface.py` - 统一Python接口
+- `COMPLETE_SPPVT_INTEGRATION_GUIDE.md` - 完整集成使用指南
+
+**技术突破**:
+- 🔧 解决MATLAB Function Script参数设置问题
+- 🔗 实现Model Reference自动集成
+- 📊 建立完整的输入输出适配机制
+- 🐛 修复所有MATLAB 2024b兼容性问题
+
+### v2.0 - 2024.09.09
 - ✅ 三模式控制简化为二模式控制
 - ✅ 降低系统计算负荷
 - ✅ 优化ACC决策逻辑
@@ -330,4 +382,4 @@ git commit -m "refactor: 代码重构"
 
 **项目维护**: 持续更新中，欢迎贡献代码和反馈问题
 
-**最后更新**: 2024-09-09
+**最后更新**: 2024-09-12 (v3.0 SPPVT完整集成版本)

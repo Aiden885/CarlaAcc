@@ -62,27 +62,27 @@ class TwoModeController:
         else:
             return 'SPEED'
 
-    def calculate_desired_distance(self, ego_speed):
+    def calculate_desired_time_gap(self, ego_speed):
         """
-        计算期望跟车距离
+        计算期望时距和实际时距
 
         参数:
         ego_speed: 自车速度 (m/s)
 
         返回:
-        desired_distance: 期望跟车距离 (m)
+        desired_time_gap: 期望时距 (s)
         control_mode: 控制模式字符串
         """
         if ego_speed <= self.V_threshold:
-            # 时距控制
-            desired_distance = ego_speed * self.G2
+            # 时距控制模式
+            desired_time_gap = self.G2  # 期望时距固定为G2秒
             control_mode = 'TIME'
         else:
-            # 定速控制模式（参考距离）
-            desired_distance = self.V_threshold * self.G2
+            # 定速控制模式（不使用时距）
+            desired_time_gap = None  # 定速模式不需要时距
             control_mode = 'SPEED'
 
-        return desired_distance, control_mode
+        return desired_time_gap, control_mode
 
     def calculate_control_output(self, ego_speed, current_distance=None, target_speed=None):
         """
@@ -131,20 +131,28 @@ class TwoModeController:
                     'message': f'No target detected, using speed control at {target_speed * 3.6:.1f}km/h'
                 }
             else:
-                # 有目标时正常时距控制
-                desired_distance, _ = self.calculate_desired_distance(ego_speed)
-                distance_error = desired_distance - current_distance
+                # 有目标时正常时距控制 - 修改为时间控制
+                desired_time_gap = self.G2  # 期望时距(秒)
 
-                # 使用SPPVT距离控制
-                set_sppvt_parameters(control_mode='distance')
-                control_output = sppvt_longitudinal_control(- distance_error, 0.05)
+                # 计算实际时距，避免除零错误
+                if ego_speed > 0.1:  # 低于0.36km/h视为静止
+                    actual_time_gap = current_distance / ego_speed
+                else:
+                    actual_time_gap = float('inf')  # 静止时设为无穷大时距
+
+                # 计算时间误差：期望时距 - 实际时距
+                time_error = desired_time_gap - actual_time_gap
+
+                # 使用SPPVT时间控制（将距离模式改为时间模式）
+                set_sppvt_parameters(control_mode='distance')  # 保持distance模式，但处理时间误差
+                control_output = sppvt_longitudinal_control(time_error, 0.05)
 
                 control_info = {
                     'mode': mode,
-                    'error': distance_error,
-                    'reference': desired_distance,
-                    'current': current_distance,
-                    'message': f'{mode} control active'
+                    'error': time_error,
+                    'reference': desired_time_gap,
+                    'current': actual_time_gap,
+                    'message': f'{mode} control: 期望时距{desired_time_gap:.1f}s, 实际时距{actual_time_gap:.1f}s'
                 }
 
         elif mode == 'SPEED':
@@ -201,16 +209,25 @@ _global_two_mode_controller = TwoModeController(target_speed_kmh=50.0)
 
 def calculate_two_mode_desired_distance(ego_speed_ms):
     """
-    计算两模式期望跟车距离的全局函数
+    计算两模式期望跟车距离的全局函数（兼容性函数）
+    注意：内部已改为时距控制，但保持接口兼容
 
     参数:
     ego_speed_ms: 自车速度 (m/s)
 
     返回:
-    desired_distance: 期望跟车距离 (m)
+    desired_distance: 期望跟车距离 (m) - 根据时距计算得出
     control_mode: 控制模式字符串
     """
-    return _global_two_mode_controller.calculate_desired_distance(ego_speed_ms)
+    desired_time_gap, control_mode = _global_two_mode_controller.calculate_desired_time_gap(ego_speed_ms)
+    if desired_time_gap is not None:
+        # 将时距转换为距离以保持接口兼容
+        desired_distance = ego_speed_ms * desired_time_gap
+    else:
+        # SPEED模式，使用阈值速度计算参考距离
+        desired_distance = _global_two_mode_controller.V_threshold * _global_two_mode_controller.G2
+
+    return desired_distance, control_mode
 
 
 def two_mode_control(ego_speed_ms, current_distance=None, target_speed_ms=None):
@@ -348,3 +365,75 @@ def get_safety_control_mode_recommendation(ego_speed, current_distance, speed_in
         # 距离较远，可能不需要强制控制
         else:
             return "time_gap"  # 保守起见，还是用时距控制
+
+
+def enhanced_two_mode_control(ego_speed_ms, current_distance=None, target_speed_ms=None):
+    """
+    增强的两模式控制函数，为Simulink一体化接口提供标准化输出
+    
+    参数:
+    ego_speed_ms: 自车速度 (m/s)
+    current_distance: 当前跟车距离 (m, 可选)
+    target_speed_ms: 目标速度 (m/s, 可选)
+    
+    返回:
+    enhanced_output: 增强的控制信息字典，包含:
+        - control_error: 控制误差 (float)
+        - control_mode_flag: 控制模式标志 (int, 1=distance, 2=speed)
+        - mode_description: 模式描述 (str)
+        - reference_value: 参考值 (float)
+        - current_value: 当前值 (float)
+        - desired_distance: 期望距离 (float, 仅在时距模式下有效)
+        - target_speed: 实际使用的目标速度 (float)
+    """
+    # 调用基础两模式控制
+    control_output, basic_info = two_mode_control(ego_speed_ms, current_distance, target_speed_ms)
+    
+    # 获取当前两模式参数
+    try:
+        params = get_two_mode_status()
+        V_threshold_ms = params['parameters']['V_threshold_kmh'] / 3.6
+        G2_s = params['parameters']['G2_s']
+        default_target_speed = params['parameters']['target_speed_kmh'] / 3.6
+    except:
+        # 使用默认参数
+        V_threshold_ms = 50.0 / 3.6
+        G2_s = 2.0
+        default_target_speed = 50.0 / 3.6
+    
+    # 确定实际使用的目标速度
+    if target_speed_ms is None:
+        target_speed_ms = default_target_speed
+    
+    # 标准化输出
+    enhanced_output = {
+        'control_output': control_output,  # 基础控制输出 (m/s²)
+        'control_error': basic_info['error'],  # 控制误差
+        'reference_value': basic_info['reference'],  # 参考值
+        'current_value': basic_info['current'],  # 当前值
+        'target_speed': target_speed_ms,  # 实际使用的目标速度
+        'mode_description': basic_info['mode'],  # 模式描述
+    }
+    
+    # 根据模式设置标志和计算期望距离
+    if 'TIME' in basic_info['mode']:
+        enhanced_output['control_mode_flag'] = 1  # 时距模式
+        enhanced_output['desired_distance'] = ego_speed_ms * G2_s
+    elif 'SPEED' in basic_info['mode']:
+        enhanced_output['control_mode_flag'] = 2  # 速度模式
+        enhanced_output['desired_distance'] = V_threshold_ms * G2_s  # 参考距离
+    else:
+        enhanced_output['control_mode_flag'] = 2  # 默认速度模式
+        enhanced_output['desired_distance'] = V_threshold_ms * G2_s
+    
+    # 添加调试信息
+    enhanced_output['debug_info'] = {
+        'ego_speed_kmh': ego_speed_ms * 3.6,
+        'V_threshold_kmh': V_threshold_ms * 3.6,
+        'G2_s': G2_s,
+        'has_target': current_distance is not None,
+        'current_distance': current_distance,
+        'basic_message': basic_info['message']
+    }
+    
+    return enhanced_output
