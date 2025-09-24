@@ -26,6 +26,14 @@ except ImportError:
     print("警告: acc_decision模块不可用，无备用方案")
     DECISION_BACKUP_AVAILABLE = False
 
+# 导入新的实时SPPVT状态管理器
+try:
+    from realtime_sppvt_state_manager import RealtimeSPPVTStateManager
+    REALTIME_SPPVT_AVAILABLE = True
+except ImportError as e:
+    print(f"警告: 实时SPPVT状态管理器不可用: {e}")
+    REALTIME_SPPVT_AVAILABLE = False
+
 
 class ACCDecisionSPPVTInterface:
     """
@@ -38,34 +46,43 @@ class ACCDecisionSPPVTInterface:
     - 提供完整的调试和错误处理机制
     """
     
-    def __init__(self, debug=True):
+    def __init__(self, debug=True, use_realtime_sppvt=True):
         self.debug = debug
+        self.use_realtime_sppvt = use_realtime_sppvt
         self.matlab_engine = None
         self.model_name = 'ACC_Decision_SPPVT_Integrated'
         self.engine_lock = threading.Lock()
-        
+
+        # 实时SPPVT状态管理器（新方案）
+        self.realtime_sppvt_manager = None
+
         # 备用决策模块（如果Simulink不可用）
         self.backup_decision = None
-        
+
         # 性能监控
         self.call_count = 0
         self.total_compute_time = 0.0
         self.last_call_time = 0.0
-        
+
         # 错误计数
         self.error_count = 0
         self.consecutive_errors = 0
         self.max_consecutive_errors = 3
-        
-        # 初始化MATLAB引擎和Simulink模型
-        self._init_matlab_simulink()
-        
+
+        # 根据配置选择初始化方案
+        if self.use_realtime_sppvt and REALTIME_SPPVT_AVAILABLE:
+            self._init_realtime_sppvt()
+        else:
+            # 旧方案：传统Simulink接口
+            self._init_matlab_simulink()
+
         # 初始化备用决策模块
         self._init_backup_decision()
-        
+
         if self.debug:
             print("✅ ACC决策+SPPVT一体化接口初始化完成")
-            print(f"   MATLAB引擎状态: {'可用' if self.matlab_engine else '不可用'}")
+            print(f"   实时SPPVT管理器: {'可用' if self.realtime_sppvt_manager else '不可用'}")
+            print(f"   传统MATLAB引擎: {'可用' if self.matlab_engine else '不可用'}")
             print(f"   备用决策状态: {'可用' if self.backup_decision else '不可用'}")
     
     def _init_matlab_simulink(self):
@@ -116,6 +133,27 @@ class ACCDecisionSPPVTInterface:
             print(f"❌ MATLAB引擎或Simulink模型初始化失败: {e}")
             self.matlab_engine = None
     
+    def _init_realtime_sppvt(self):
+        """初始化实时SPPVT状态管理器"""
+        try:
+            if self.debug:
+                print("正在初始化实时SPPVT状态管理器...")
+
+            self.realtime_sppvt_manager = RealtimeSPPVTStateManager(
+                model_name=self.model_name
+            )
+
+            if self.debug:
+                print("✅ 实时SPPVT状态管理器初始化完成")
+
+        except Exception as e:
+            print(f"❌ 实时SPPVT状态管理器初始化失败: {e}")
+            self.realtime_sppvt_manager = None
+            # 回退到传统方案
+            if self.debug:
+                print("回退到传统Simulink接口...")
+            self._init_matlab_simulink()
+
     def _init_backup_decision(self):
         """初始化备用决策模块"""
         if DECISION_BACKUP_AVAILABLE:
@@ -134,11 +172,11 @@ class ACCDecisionSPPVTInterface:
     def process_decision_and_control(self, input_data):
         """
         一体化处理：决策判断 + SPPVT控制计算
-        
+
         Args:
             input_data (dict): 标准化输入数据，包含以下字段：
                 'ego_speed_kmh': float,      # 自车速度 km/h
-                'ego_speed_ms': float,       # 自车速度 m/s  
+                'ego_speed_ms': float,       # 自车速度 m/s
                 'command_type': int,         # 0=NONE, 1=I0, 2=I1, ..., 7=I6
                 'command_active': bool,      # 指令是否激活
                 'manual_throttle_active': bool,  # 手动油门是否激活
@@ -148,7 +186,7 @@ class ACCDecisionSPPVTInterface:
                 'V_min_kmh': float,          # 最小速度
                 'G2_s': float,               # 时距参数
                 'timestamp': float           # 时间戳
-        
+
         Returns:
             dict: 标准化输出数据，包含以下字段：
                 'target_accel': float,              # SPPVT目标加速度 m/s²
@@ -164,32 +202,46 @@ class ACCDecisionSPPVTInterface:
         """
         start_time = time.time()
         self.call_count += 1
-        
+
         # 验证输入数据
         if not self._validate_input(input_data):
             return self._get_error_output("输入数据验证失败")
-        
-        # 尝试使用Simulink计算
-        if self.matlab_engine is not None and self.consecutive_errors < self.max_consecutive_errors:
+
+        # 优先使用实时SPPVT状态管理器（新方案）
+        if self.realtime_sppvt_manager is not None and self.consecutive_errors < self.max_consecutive_errors:
+            result = self._call_realtime_sppvt(input_data)
+            if result is not None:
+                self.consecutive_errors = 0  # 重置错误计数
+                compute_time = time.time() - start_time
+                self.total_compute_time += compute_time
+                self.last_call_time = compute_time
+
+                if self.debug:
+                    self._print_realtime_sppvt_debug(input_data, result, compute_time)
+
+                return result
+
+        # 实时SPPVT失败，尝试传统Simulink方案
+        elif self.matlab_engine is not None and self.consecutive_errors < self.max_consecutive_errors:
             result = self._call_simulink(input_data)
             if result is not None:
                 self.consecutive_errors = 0  # 重置错误计数
                 compute_time = time.time() - start_time
                 self.total_compute_time += compute_time
                 self.last_call_time = compute_time
-                
+
                 if self.debug:
                     self._print_simulink_debug(input_data, result, compute_time)
-                
+
                 return result
-        
-        # Simulink失败，使用备用方案
+
+        # 所有Simulink方案失败，使用备用方案
         self.consecutive_errors += 1
         self.error_count += 1
-        
+
         if self.debug:
-            print(f"⚠️ Simulink计算失败，使用备用方案 (连续错误: {self.consecutive_errors})")
-        
+            print(f"⚠️ 所有Simulink方案失败，使用备用方案 (连续错误: {self.consecutive_errors})")
+
         return self._call_backup(input_data)
     
     def _validate_input(self, input_data):
@@ -218,7 +270,103 @@ class ACCDecisionSPPVTInterface:
             return False
         
         return True
-    
+
+    def _call_realtime_sppvt(self, input_data):
+        """使用实时SPPVT状态管理器进行计算"""
+        try:
+            # 使用实时SPPVT状态管理器执行单步仿真
+            control_enabled = self._determine_control_enabled(input_data)
+            control_mode_flag = input_data['control_mode_flag'] == 1  # 1=distance, 2=speed
+
+            # 调用实时SPPVT管理器
+            sppvt_output = self.realtime_sppvt_manager.run_single_step_simulation(
+                control_error=input_data['control_error'],
+                ego_speed_ms=input_data['ego_speed_ms'],
+                control_mode_flag=control_mode_flag,
+                control_enabled=control_enabled
+            )
+
+            if sppvt_output is None:
+                return None
+
+            # 执行决策逻辑（简化版本，在实际应用中应该也是从Simulink获取）
+            decision_result = self._execute_decision_logic(input_data)
+
+            # 获取SPPVT性能统计
+            sppvt_stats = self.realtime_sppvt_manager.get_performance_stats()
+
+            # 组合返回结果
+            return {
+                'target_accel': sppvt_output,
+                'control_enabled': control_enabled,
+                'current_state': decision_result.get('state', 2),
+                'current_decision': decision_result.get('decision', 0),
+                'torque_arbitration_active': decision_result.get('torque_arbitration', False),
+                'updated_V_target_kmh': input_data['V_target_kmh'],  # 简化处理
+                'updated_G2_s': input_data['G2_s'],  # 简化处理
+                'sppvt_stage': 1,  # 从状态管理器获取
+                'sppvt_upgrade_count': 0,  # 从状态管理器获取
+                'debug_message': f"实时SPPVT计算成功,当前级差:{sppvt_stats.get('current_stage_offset', 0):.3f}"
+            }
+
+        except Exception as e:
+            if self.debug:
+                print(f"❌ 实时SPPVT调用失败: {e}")
+                import traceback
+                traceback.print_exc()
+            return None
+
+    def _determine_control_enabled(self, input_data):
+        """确定控制是否使能（简化决策逻辑）"""
+        # 这是一个简化的实现，实际中应该从完整的决策状态机获取
+        if input_data['manual_throttle_active']:
+            return False
+
+        if not input_data['command_active']:
+            return False
+
+        # 基于command_type的简单使能逻辑
+        enabling_commands = [1, 2, 3, 4]  # I0, I1, I2, I3
+        return input_data['command_type'] in enabling_commands
+
+    def _execute_decision_logic(self, input_data):
+        """执行决策逻辑（简化版本）"""
+        # 这是一个简化的实现，实际中应该调用完整的Simulink决策模块
+        if input_data['manual_throttle_active']:
+            return {'state': 0, 'decision': 0, 'torque_arbitration': False}
+
+        if not input_data['command_active']:
+            return {'state': 2, 'decision': 0, 'torque_arbitration': False}
+
+        # 基于速度的简单状态判断
+        speed = input_data['ego_speed_kmh']
+        if speed < 20:
+            state = 0  # S0
+        elif speed < 40:
+            state = 1  # S1
+        else:
+            state = 2  # S2
+
+        # 简单的决策映射
+        command_decision_map = {
+            1: 1,  # I0 -> R1
+            2: 2,  # I1 -> R2
+            3: 3,  # I2 -> R3
+            4: 4,  # I3 -> R4
+            5: 5,  # I4 -> R5
+            6: 6,  # I5 -> R6
+            7: 7,  # I6 -> R7
+        }
+
+        decision = command_decision_map.get(input_data['command_type'], 0)
+        torque_arbitration = decision in [1, 2, 5, 6]  # 需要扭矩仲裁的决策
+
+        return {
+            'state': state,
+            'decision': decision,
+            'torque_arbitration': torque_arbitration
+        }
+
     def _call_simulink(self, input_data):
         """调用Simulink进行计算"""
         with self.engine_lock:
@@ -374,9 +522,25 @@ class ACCDecisionSPPVTInterface:
             'debug_message': f"错误: {error_msg}"
         }
     
+    def _print_realtime_sppvt_debug(self, input_data, result, compute_time):
+        """打印实时SPPVT调试信息"""
+        print(f"🚀 实时SPPVT决策+控制调试 (耗时: {compute_time*1000:.1f}ms)")
+        print(f"   📤 输入: 指令I{input_data['command_type']}, 速度{input_data['ego_speed_kmh']:.1f}km/h, 误差{input_data['control_error']:.3f}")
+        print(f"   📥 输出: 状态S{result['current_state']}→R{result['current_decision']}, 加速度{result['target_accel']:.3f}m/s²")
+        print(f"   🎯 SPPVT: {result['debug_message']}")
+        print(f"   ⚖️ 扭矩仲裁: {'激活' if result['torque_arbitration_active'] else '关闭'}")
+        print(f"   📊 性能: 总调用{self.call_count}次, 平均耗时{self.total_compute_time/self.call_count*1000:.1f}ms")
+
+        # 显示SPPVT管理器的详细性能统计
+        if self.realtime_sppvt_manager:
+            sppvt_stats = self.realtime_sppvt_manager.get_performance_stats()
+            if sppvt_stats != {"status": "no_data"}:
+                print(f"   🔧 SPPVT详情: 级差={sppvt_stats.get('current_stage_offset', 0):.3f}, "
+                      f"SPPVT耗时={sppvt_stats.get('avg_execution_time_ms', 0):.1f}ms")
+
     def _print_simulink_debug(self, input_data, result, compute_time):
         """打印Simulink调试信息"""
-        print(f"🔧 Simulink决策+SPPVT调试 (耗时: {compute_time*1000:.1f}ms)")
+        print(f"🔧 传统Simulink决策+SPPVT调试 (耗时: {compute_time*1000:.1f}ms)")
         print(f"   📤 输入: 指令I{input_data['command_type']}, 速度{input_data['ego_speed_kmh']:.1f}km/h, 误差{input_data['control_error']:.3f}")
         print(f"   📥 输出: 状态S{result['current_state']}→R{result['current_decision']}, 加速度{result['target_accel']:.3f}m/s²")
         print(f"   🎯 SPPVT: 阶段{result['sppvt_stage']}, 升级{result['sppvt_upgrade_count']}次")

@@ -580,6 +580,349 @@ fprintf('SPPVT Debug: Control=%d, Error=%.3f, Output=%.3f\n', ...
 
 ---
 
+# ACC_Decision_SPPVT_Integrated 完整模块架构详细分析
+
+## 模型概述
+
+**模型名称**: `ACC_Decision_SPPVT_Integrated.slx`
+**功能**: ACC决策系统与SPPVT控制算法的完整集成模型
+**架构**: 输入验证 → 决策逻辑 → SPPVT状态管理 → SPPVT控制 → 输出格式化
+**主要模块数**: 17个
+
+## 详细模块分析
+
+### 1. **Input (输入端口)**
+```
+类型: Inport
+输入端口: 0个
+输出端口: 1个
+
+连接关系:
+  输出1 → Input_Validator/输入1
+
+数据类型: Bus: DecisionSPPVTInput
+功能: 接收外部输入数据，包含11个字段的总线信号
+```
+
+### 2. **Input_Validator (输入验证器)**
+```
+类型: SubSystem (MATLAB Function)
+输入端口: 1个
+输出端口: 1个
+
+连接关系:
+  输入1 ← Input/输出1
+  输出1 → Decision_Function/输入1
+  输出1 → SPPVT_Adapter/输入1
+
+内部功能:
+- 数值范围检查 (速度0-200km/h, 目标速度30-120km/h等)
+- 逻辑一致性验证 (V_min < V_target)
+- 数据类型确保和预处理
+```
+
+### 3. **Decision_Function (决策功能)**
+```
+类型: SubSystem (MATLAB Function)
+输入端口: 1个
+输出端口: 1个
+
+连接关系:
+  输入1 ← Input_Validator/输出1
+  输出1 → SPPVT_Adapter/输入2
+  输出1 → Output_Formatter/输入1
+  输出1 → Bus_Selector/输入1
+  输出1 → State_Monitor/输入1
+
+内部功能:
+- ACC状态机决策逻辑 (S0-S3状态)
+- 指令处理 (I0-I6指令映射到R1-R8决策)
+- 控制使能判断
+- 扭矩仲裁处理
+```
+
+### 4. **SPPVT_Adapter (SPPVT接口适配器)**
+```
+类型: SubSystem (MATLAB Function)
+输入端口: 3个
+输出端口: 12个
+
+连接关系:
+  输入1 ← Input_Validator/输出1
+  输入2 ← Decision_Function/输出1
+  输入3 ← Stage_Offset_Delay/输出1 (external_stage_offset)
+  输出1-12 → SPPVT_Control/输入1-12
+
+内部功能:
+- 将总线数据解析为12个独立信号
+- 级差管理 (接收外部stage_offset)
+- 历史状态管理 (prev_error, prev_velocity, prev_accel)
+- 参数配置 (kp=1.0, delta=0.05, eta=0.2)
+- 控制误差处理和模式标志设置
+
+12个输出信号:
+[1] error_value, [2] dt, [3] stage_offset, [4] kp,
+[5] max_accel, [6] max_decel, [7] prev_error_out,
+[8] prev_velocity_out, [9] prev_accel_out, [10] delta,
+[11] eta, [12] mode_flag
+```
+
+### 5. **SPPVT_Control (SPPVT控制核心)**
+```
+类型: ModelReference (引用sppvt_control_model.slx)
+输入端口: 12个
+输出端口: 5个
+
+连接关系:
+  输入1-12 ← SPPVT_Adapter/输出1-12
+  输出1 → Output_Formatter/输入2, Scope/输入1
+  输出2 → Output_Formatter/输入3
+  输出3 → Output_Formatter/输入4
+  输出4 → Output_Formatter/输入5
+  输出5 → Output_Formatter/输入6, Stage_Manager/输入1
+
+内部功能 (基于生成的C代码):
+- 级差增强: enhanced_error = error + stage_offset
+- 比例控制: output = enhanced_error * kp
+- 输出饱和: 限制在[-3.0, 2.0]范围
+- 导数计算: 速度、加速度、急动度
+- 升级条件判断: should_upgrade = |error| > eta
+
+5个输出信号:
+[1] control_output, [2] velocity, [3] acceleration,
+[4] jerk, [5] should_upgrade
+```
+
+### 6. **Stage_Manager (SPPVT状态管理器)**
+```
+类型: SubSystem (MATLAB Function)
+输入端口: 4个
+输出端口: 3个
+
+连接关系:
+  输入1 ← SPPVT_Control/输出5 (should_upgrade)
+  输入2 ← Bus_Selector1/输出1 (error_value)
+  输入3 ← Parameter_Manager/输出2 (sppvt_rho=0.25)
+  输入4 ← Stage_Offset_Delay/输出1 (prev_stage_offset)
+  输出1 → Stage_Offset_Delay/输入1 (new_stage_offset)
+  输出2 → Scope2/输入1 (new_stage)
+  输出3 → Scope3/输入1 (sign_changed)
+
+核心功能:
+- 误差符号变化检测和状态重置
+- SPPVT级差动态计算 (new_offset = prev_offset ± ρ × |error|)
+- 升级条件处理和阶段管理
+- 持久状态管理 (current_stage, prev_error_sign, upgrade_count)
+
+符号变化重置逻辑:
+- 检测正负误差符号变化
+- 符号变化时重置到初始级 (stage=1, offset=0.0)
+- 升级时根据误差符号计算新级差
+```
+
+### 7. **Stage_Offset_Delay (级差延迟块)**
+```
+类型: UnitDelay
+输入端口: 1个
+输出端口: 1个
+
+连接关系:
+  输入1 ← Stage_Manager/输出1
+  输出1 → SPPVT_Adapter/输入3
+  输出1 → Stage_Manager/输入4
+
+配置:
+- Initial condition: 0.0
+- Sample time: -1 (继承)
+
+功能:
+- 解决代数环路问题
+- 提供一个时间步的延迟反馈
+- 确保Stage_Manager和SPPVT_Control的时序正确性
+```
+
+### 8. **Parameter_Manager (参数管理器)**
+```
+类型: SubSystem
+输入端口: 0个
+输出端口: 2个
+
+内部结构:
+├── ACC_Parameters (Constant, Value=50.0)
+├── SPPVT_Rho (Constant, Value=0.25)
+├── Out1 (输出端口1)
+└── Out2 (输出端口2)
+
+连接关系:
+  输出1 → State_Monitor/输入3 (ACC参数)
+  输出2 → Stage_Manager/输入3 (SPPVT rho参数)
+
+功能:
+- 提供ACC系统参数 (目标速度等)
+- 提供SPPVT rho惩罚系数 (0.25)
+- 集中化参数管理
+```
+
+### 9. **Output_Formatter (输出格式化器)**
+```
+类型: SubSystem (MATLAB Function)
+输入端口: 6个
+输出端口: 1个
+
+连接关系:
+  输入1 ← Decision_Function/输出1
+  输入2 ← SPPVT_Control/输出1
+  输入3 ← SPPVT_Control/输出2
+  输入4 ← SPPVT_Control/输出3
+  输入5 ← SPPVT_Control/输出4
+  输入6 ← SPPVT_Control/输出5
+  输出1 → integrated_output/输入1, State_Monitor/输入2
+
+功能:
+- 合并决策和SPPVT输出数据
+- 生成标准化的DecisionSPPVTOutput总线
+- 升级计数管理
+- 调试信息生成 (debug_code = 3000 + stage*10 + count%10)
+```
+
+### 10. **Bus_Selector (总线选择器)**
+```
+类型: BusSelector
+输入端口: 1个
+输出端口: 1个
+
+连接关系:
+  输入1 ← Decision_Function/输出1
+  输出1 → Debug_Display/输入1
+
+配置:
+- 选择字段: debug_message
+- 从DecisionSPPVTOutput总线中提取调试信息
+```
+
+### 11. **Bus_Selector1 (误差值选择器)**
+```
+类型: BusSelector
+输入端口: 1个
+输出端口: 1个
+
+连接关系:
+  输入1 ← Input_Validator/输出1
+  输出1 → Stage_Manager/输入2
+
+配置:
+- 选择字段: control_error
+- 从DecisionSPPVTInput总线中提取控制误差给Stage_Manager
+```
+
+### 12. **integrated_output (集成输出端口)**
+```
+类型: Outport
+输入端口: 1个
+输出端口: 0个
+
+连接关系:
+  输入1 ← Output_Formatter/输出1
+
+数据类型: Bus: DecisionSPPVTOutput
+功能: 输出完整的集成结果数据
+```
+
+### 13. **监控和调试模块**
+
+#### **Debug_Display (调试显示)**
+```
+类型: Display
+输入端口: 1个
+输出端口: 0个
+
+连接关系:
+  输入1 ← Bus_Selector/输出1
+
+配置: Decimation=10 (每10个样本显示一次)
+功能: 显示决策模块的调试信息
+```
+
+#### **State_Monitor (状态监控)**
+```
+类型: Scope
+输入端口: 3个
+输出端口: 0个
+
+连接关系:
+  输入1 ← Decision_Function/输出1
+  输入2 ← Output_Formatter/输出1
+  输入3 ← Parameter_Manager/输出1
+
+功能: 监控系统整体状态和参数
+```
+
+#### **Scope, Scope1, Scope2, Scope3 (示波器)**
+```
+Scope: 监控SPPVT控制输出
+  输入1 ← SPPVT_Control/输出1
+
+Scope1: 监控SPPVT适配器输出
+  输入1 ← SPPVT_Adapter/输出1
+
+Scope2: 监控Stage_Manager阶段输出
+  输入1 ← Stage_Manager/输出2
+
+Scope3: 监控符号变化检测
+  输入1 ← Stage_Manager/输出3
+```
+
+## 数据流架构
+
+### 主要信号流
+```
+Input → Input_Validator → Decision_Function → SPPVT_Adapter → SPPVT_Control → Output_Formatter → integrated_output
+                  ↓                                ↑
+                  └─────────────────────────────────┘
+```
+
+### SPPVT状态管理反馈回路
+```
+SPPVT_Control/should_upgrade → Stage_Manager → Stage_Offset_Delay → SPPVT_Adapter/external_stage_offset
+                   ↑                                   ↓
+                   └──────────── Unit Delay ←─────────┘
+```
+
+### 总线数据类型
+```
+输入总线: DecisionSPPVTInput (11字段)
+- ego_speed_kmh, ego_speed_ms, command_type, command_active
+- manual_throttle_active, control_error, control_mode_flag
+- V_target_kmh, V_min_kmh, G2_s, timestamp
+
+输出总线: DecisionSPPVTOutput (12字段)
+- control_enabled, current_state, current_decision
+- torque_arbitration_active, updated_V_target_kmh, updated_G2_s
+- target_accel, sppvt_stage, sppvt_upgrade_count
+- sppvt_control_output, sppvt_velocity_output, debug_message
+```
+
+## 关键技术特性
+
+### 1. **代数环路解决**
+- 使用Unit Delay打断Stage_Manager和SPPVT_Control之间的即时反馈
+- 确保时序正确性：当前级差基于上一周期的计算结果
+
+### 2. **符号变化检测**
+- Stage_Manager实现完整的误差符号变化检测
+- 符号变化时自动重置SPPVT状态到初始级
+- 与Python实现100%一致的逻辑
+
+### 3. **动态级差计算**
+- 使用rho惩罚系数 (0.25) 进行级差计算
+- 正误差增加正级差，负误差增加负级差
+- 升级条件：|error| > eta && acceleration < 0 && |velocity| <= delta
+
+### 4. **完整的调试支持**
+- 多个Scope监控关键信号
+- Debug_Display显示调试代码
+- Stage_Manager输出详细的printf调试信息
+
 ---
 
 ## 结论
