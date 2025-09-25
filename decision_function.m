@@ -168,13 +168,21 @@ output.torque_arbitration_active = logical(torque_arbitration_active);
 output.updated_V_target_kmh = double(V_target_kmh);
 output.updated_G2_s = double(G2_s);
 
-% 7: 调试信息（必须在SPPVT字段之前赋值）
+% 7-11: SPPVT相关字段的默认值（这些将由后续模块填充）
+% 必须在debug_message之前按总线顺序赋值
+output.sppvt_control_output = 0.0;
+output.sppvt_velocity_output = 0.0;
+output.sppvt_acceleration_output = 0.0;
+output.sppvt_stage_output = 0.0;
+output.sppvt_status_output = 0.0;
+
+% 12: 调试信息（必须在SPPVT字段之后赋值）
 control_flag = int32(control_enabled);
 if mod(debug_counter, 20) == 0 % 每20个周期输出一次调试信息
     % 调试代码: 1000 + 状态*100 + 决策*10 + 控制使能标志
     debug_code = int32(1000 + current_state*100 + current_decision*10 + control_flag);
     output.debug_message = debug_code;
-    
+
     % 添加MATLAB Function调试输出
     fprintf('Decision Function Debug: State=%d, Decision=%d, Control=%d, Active=%d, Cmd=%d, DebugCode=%d\n', ...
             current_state, current_decision, int32(control_enabled), int32(command_active), command_type, debug_code);
@@ -183,12 +191,15 @@ else
     output.debug_message = debug_counter;
 end
 
-% 8-12: SPPVT相关字段的默认值（这些将由后续模块填充）
-output.sppvt_control_output = 0.0;
-output.sppvt_velocity_output = 0.0;
-output.sppvt_acceleration_output = 0.0;
-output.sppvt_stage_output = 0.0;
-output.sppvt_status_output = 0.0;
+%% 新增的3个状态输出字段 - 14/15-field扩展（默认值，由后续模块填充）
+% 13: Stage offset状态 (标量)
+output.new_stage_offset = 0.0;
+
+% 14: Stage Manager状态 (数组) - [new_stage, new_error_sign, new_upgrade_count]
+output.new_stage_manager_states = [0.0; 0.0; 0.0];
+
+% 15: Adapter状态 (数组) - [new_control_error, new_velocity, new_accel]
+output.new_adapter_states = [0.0; 0.0; 0.0];
 
 end
 

@@ -171,10 +171,11 @@ class ACCDecisionSPPVTInterface:
     
     def process_decision_and_control(self, input_data):
         """
-        一体化处理：决策判断 + SPPVT控制计算
+        一体化处理：决策判断 + SPPVT控制计算 (14/15-field版本)
 
         Args:
             input_data (dict): 标准化输入数据，包含以下字段：
+                # 原始11个字段
                 'ego_speed_kmh': float,      # 自车速度 km/h
                 'ego_speed_ms': float,       # 自车速度 m/s
                 'command_type': int,         # 0=NONE, 1=I0, 2=I1, ..., 7=I6
@@ -185,10 +186,15 @@ class ACCDecisionSPPVTInterface:
                 'V_target_kmh': float,       # 目标速度
                 'V_min_kmh': float,          # 最小速度
                 'G2_s': float,               # 时距参数
-                'timestamp': float           # 时间戳
+                'timestamp': float,          # 时间戳
+                # 新增3个外部状态字段 (14-field输入)
+                'external_stage_offset': float,           # 外部级差状态
+                'external_stage_manager_states': list,   # [stage, error_sign, upgrade_count]
+                'external_adapter_states': list          # [prev_error, prev_velocity, prev_accel]
 
         Returns:
             dict: 标准化输出数据，包含以下字段：
+                # 原始输出字段
                 'target_accel': float,              # SPPVT目标加速度 m/s²
                 'control_enabled': bool,            # 控制使能状态
                 'current_state': int,               # 0=S0, 1=S1, 2=S2, 3=S3
@@ -196,9 +202,16 @@ class ACCDecisionSPPVTInterface:
                 'torque_arbitration_active': bool,  # 扭矩仲裁激活
                 'updated_V_target_kmh': float,      # 更新的目标速度
                 'updated_G2_s': float,              # 更新的时距参数
-                'sppvt_stage': int,                 # SPPVT阶段
-                'sppvt_upgrade_count': int,         # SPPVT升级次数
-                'debug_message': str                # 调试信息
+                'sppvt_control_output': float,      # SPPVT控制输出
+                'sppvt_velocity_output': float,     # SPPVT速度输出
+                'sppvt_acceleration_output': float, # SPPVT加速度输出
+                'sppvt_stage_output': float,        # SPPVT阶段输出
+                'sppvt_status_output': float,       # SPPVT状态输出
+                'debug_message': str,               # 调试信息
+                # 新增3个状态外化输出字段 (15-field输出)
+                'new_stage_offset': float,          # 新的级差状态
+                'new_stage_manager_states': list,   # 新的Stage Manager状态
+                'new_adapter_states': list          # 新的Adapter状态
         """
         start_time = time.time()
         self.call_count += 1
@@ -207,11 +220,11 @@ class ACCDecisionSPPVTInterface:
         if not self._validate_input(input_data):
             return self._get_error_output("输入数据验证失败")
 
-        # 优先使用实时SPPVT状态管理器（新方案）
-        if self.realtime_sppvt_manager is not None and self.consecutive_errors < self.max_consecutive_errors:
+        # 强制使用实时SPPVT状态管理器 - 不使用备用方案
+        if self.realtime_sppvt_manager is not None:
             result = self._call_realtime_sppvt(input_data)
             if result is not None:
-                self.consecutive_errors = 0  # 重置错误计数
+                self.consecutive_errors = 0
                 compute_time = time.time() - start_time
                 self.total_compute_time += compute_time
                 self.last_call_time = compute_time
@@ -220,12 +233,16 @@ class ACCDecisionSPPVTInterface:
                     self._print_realtime_sppvt_debug(input_data, result, compute_time)
 
                 return result
+            else:
+                self.consecutive_errors += 1
+                self.error_count += 1
+                raise RuntimeError(f"实时SPPVT状态管理器失败 (错误#{self.consecutive_errors})")
 
-        # 实时SPPVT失败，尝试传统Simulink方案
-        elif self.matlab_engine is not None and self.consecutive_errors < self.max_consecutive_errors:
+        # 如果没有实时SPPVT管理器，尝试传统Simulink方案
+        elif self.matlab_engine is not None:
             result = self._call_simulink(input_data)
             if result is not None:
-                self.consecutive_errors = 0  # 重置错误计数
+                self.consecutive_errors = 0
                 compute_time = time.time() - start_time
                 self.total_compute_time += compute_time
                 self.last_call_time = compute_time
@@ -234,15 +251,14 @@ class ACCDecisionSPPVTInterface:
                     self._print_simulink_debug(input_data, result, compute_time)
 
                 return result
+            else:
+                self.consecutive_errors += 1
+                self.error_count += 1
+                raise RuntimeError(f"传统Simulink接口失败 (错误#{self.consecutive_errors})")
 
-        # 所有Simulink方案失败，使用备用方案
-        self.consecutive_errors += 1
-        self.error_count += 1
-
-        if self.debug:
-            print(f"⚠️ 所有Simulink方案失败，使用备用方案 (连续错误: {self.consecutive_errors})")
-
-        return self._call_backup(input_data)
+        # 没有任何可用的Simulink方案
+        else:
+            raise RuntimeError("没有可用的Simulink方案 - MATLAB引擎或实时SPPVT管理器未初始化")
     
     def _validate_input(self, input_data):
         """验证输入数据格式和范围"""
@@ -295,18 +311,29 @@ class ACCDecisionSPPVTInterface:
             # 获取SPPVT性能统计
             sppvt_stats = self.realtime_sppvt_manager.get_performance_stats()
 
-            # 组合返回结果
+            # 组合返回结果 - 15-field输出格式
             return {
-                'target_accel': sppvt_output,
+                # 原始输出字段 (1-12)
                 'control_enabled': control_enabled,
                 'current_state': decision_result.get('state', 2),
                 'current_decision': decision_result.get('decision', 0),
                 'torque_arbitration_active': decision_result.get('torque_arbitration', False),
-                'updated_V_target_kmh': input_data['V_target_kmh'],  # 简化处理
-                'updated_G2_s': input_data['G2_s'],  # 简化处理
-                'sppvt_stage': 1,  # 从状态管理器获取
-                'sppvt_upgrade_count': 0,  # 从状态管理器获取
-                'debug_message': f"实时SPPVT计算成功,当前级差:{sppvt_stats.get('current_stage_offset', 0):.3f}"
+                'updated_V_target_kmh': input_data['V_target_kmh'],
+                'updated_G2_s': input_data['G2_s'],
+                'sppvt_control_output': sppvt_output,
+                'sppvt_velocity_output': input_data['ego_speed_ms'],
+                'sppvt_acceleration_output': sppvt_output,
+                'sppvt_stage_output': 1.0,
+                'sppvt_status_output': 1.0 if control_enabled else 0.0,
+                'debug_message': f"实时SPPVT计算成功,当前级差:{sppvt_stats.get('current_stage_offset', 0):.3f}",
+
+                # 新增的3个状态外化字段 (13-15)
+                'new_stage_offset': sppvt_stats.get('current_stage_offset', 0.0),
+                'new_stage_manager_states': [1.0, 0.0, 0.0],  # [stage, error_sign, upgrade_count]
+                'new_adapter_states': [input_data['control_error'], input_data['ego_speed_ms'], sppvt_output],
+
+                # 兼容性别名
+                'target_accel': sppvt_output
             }
 
         except Exception as e:
@@ -448,64 +475,7 @@ class ACCDecisionSPPVTInterface:
                 print(f"❌ Simulink输出提取失败: {e}")
             return None
     
-    def _call_backup(self, input_data):
-        """使用备用Python方案"""
-        if self.backup_decision is None:
-            return self._get_error_output("无可用的计算方案")
-        
-        try:
-            # 使用备用决策模块处理指令
-            if input_data['command_active']:
-                command_enum = self._convert_command_type(input_data['command_type'])
-                state, decision, msg = self.backup_decision.process_command(
-                    command_enum, input_data['ego_speed_kmh']
-                )
-            
-            # 获取决策状态
-            decision_output = self.backup_decision.get_decision_output(
-                input_data['ego_speed_kmh'], 
-                None,  # 距离信息在Two Mode中已处理
-                input_data['manual_throttle_active']
-            )
-            
-            # 简单的SPPVT计算（备用方案）
-            if decision_output['control_enabled']:
-                # 简化的比例控制
-                target_accel = max(-3.0, min(2.0, 1.0 * input_data['control_error']))
-            else:
-                target_accel = 0.0
-            
-            return {
-                'target_accel': target_accel,
-                'control_enabled': decision_output['control_enabled'],
-                'current_state': decision_output['state'],
-                'current_decision': decision_output.get('current_decision', 0),
-                'torque_arbitration_active': decision_output['torque_arbitration_active'],
-                'updated_V_target_kmh': decision_output['V_target_kmh'],
-                'updated_G2_s': decision_output['G2_s'],
-                'sppvt_stage': 1,  # 备用方案固定值
-                'sppvt_upgrade_count': 0,
-                'debug_message': "Python备用方案计算"
-            }
-            
-        except Exception as e:
-            if self.debug:
-                print(f"❌ 备用方案计算失败: {e}")
-            return self._get_error_output(f"备用方案失败: {e}")
-    
-    def _convert_command_type(self, command_type):
-        """转换命令类型为枚举"""
-        command_map = {
-            0: None,  # NONE
-            1: ACCCommand.DECREASE_SPEED,  # I0
-            2: ACCCommand.INCREASE_SPEED,  # I1
-            3: ACCCommand.DECREASE_DISTANCE,  # I2
-            4: ACCCommand.INCREASE_DISTANCE,  # I3
-            5: ACCCommand.THROTTLE,  # I4
-            6: ACCCommand.BRAKE,  # I5
-            7: ACCCommand.CANCEL   # I6
-        }
-        return command_map.get(command_type, None)
+    # 备用方案已删除 - 强制使用Simulink
     
     def _get_error_output(self, error_msg):
         """获取错误情况下的默认输出"""
