@@ -267,28 +267,103 @@ class RealtimeSPPVTStateManager:
                         self.logger.debug(f"Element 1 class: {element_class}")
                         self.logger.debug(f"Element 1 properties: {element_props}")
 
-                        # 尝试不同的访问方式
+                        # 尝试不同的Dataset访问方式
                         if self.matlab_eng.eval("isprop(yout{1}, 'Values')"):
-                            # 有Values属性
+                            # 有Values属性 - 这是总线信号
                             values_class = self.matlab_eng.eval("class(yout{1}.Values)")
                             self.logger.debug(f"Values class: {values_class}")
 
-                            # 检查Values的属性
-                            if self.matlab_eng.eval("isprop(yout{1}.Values, 'Data')"):
-                                # 标准Data属性
-                                data_size = self.matlab_eng.eval("size(yout{1}.Values.Data)")
-                                self.logger.debug(f"Data size: {data_size}")
-                                sppvt_output = float(self.matlab_eng.eval("yout{1}.Values.Data(end, 1)"))
-                            elif hasattr(self.matlab_eng.eval("yout{1}.Values"), '__len__'):
-                                # 直接数组访问
-                                sppvt_output = float(self.matlab_eng.eval("yout{1}.Values(end, 1)"))
+                            # 对于总线信号，Values是一个结构体，包含各个字段
+                            if self.matlab_eng.eval("isstruct(yout{1}.Values)"):
+                                # Values是结构体，包含各个总线字段
+                                # 使用MATLAB eval直接获取字段名称
+                                self.logger.debug("Values is a struct, getting field names")
+
+                                # 处理timeseries对象 - Dataset格式中每个字段都是timeseries
+                                try:
+                                    # 获取SPPVT控制输出 - 从timeseries对象获取数据
+                                    sppvt_output_raw = self.matlab_eng.eval("yout{1}.Values.sppvt_control_output.Data(end)")
+                                    sppvt_output = float(sppvt_output_raw)
+                                    self.logger.debug(f"Successfully extracted sppvt_control_output from timeseries: {sppvt_output}")
+
+                                    # 提取状态外化字段
+                                    try:
+                                        new_stage_offset_raw = self.matlab_eng.eval("yout{1}.Values.new_stage_offset.Data(end)")
+                                        new_stage_offset = float(new_stage_offset_raw)
+                                        self.sppvt_state.current_stage_offset = new_stage_offset
+                                        self.logger.debug(f"Updated stage_offset from timeseries: {new_stage_offset}")
+
+                                        # 提取adapter状态 - 3元素向量的最后时刻值
+                                        adapter_data = self.matlab_eng.eval("yout{1}.Values.new_adapter_states.Data(end, :)")
+                                        # 转换为Python列表
+                                        if hasattr(adapter_data, '__len__') and len(adapter_data) >= 3:
+                                            adapter_values = [float(adapter_data[0]), float(adapter_data[1]), float(adapter_data[2])]
+                                        else:
+                                            # 单独提取每个元素
+                                            adapter_values = [
+                                                float(self.matlab_eng.eval("yout{1}.Values.new_adapter_states.Data(end, 1)")),
+                                                float(self.matlab_eng.eval("yout{1}.Values.new_adapter_states.Data(end, 2)")),
+                                                float(self.matlab_eng.eval("yout{1}.Values.new_adapter_states.Data(end, 3)"))
+                                            ]
+
+                                        self.sppvt_state.prev_error = adapter_values[0]
+                                        self.sppvt_state.prev_velocity = adapter_values[1]
+                                        self.sppvt_state.prev_accel = adapter_values[2]
+                                        self.logger.debug(f"Updated adapter states from timeseries: {adapter_values}")
+                                    except Exception as e:
+                                        self.logger.debug(f"Could not extract state fields from timeseries: {e}")
+
+                                except Exception as field_error:
+                                    self.logger.debug(f"Timeseries access failed: {field_error}")
+                                    # 备用方案：尝试其他字段的timeseries数据
+                                    try:
+                                        # 尝试速度输出的timeseries数据
+                                        sppvt_output = float(self.matlab_eng.eval("yout{1}.Values.sppvt_velocity_output.Data(end)"))
+                                        self.logger.debug(f"Using sppvt_velocity_output timeseries as fallback: {sppvt_output}")
+                                    except:
+                                        try:
+                                            # 尝试加速度输出的timeseries数据
+                                            sppvt_output = float(self.matlab_eng.eval("yout{1}.Values.sppvt_acceleration_output.Data(end)"))
+                                            self.logger.debug(f"Using sppvt_acceleration_output timeseries as fallback: {sppvt_output}")
+                                        except:
+                                            sppvt_output = 0.0
+                                            self.logger.warning("Could not extract any timeseries data, using default 0.0")
+
+                                except Exception as e:
+                                    self.logger.debug(f"Struct field access failed: {e}, trying generic approach")
+                                    # 备用方案：获取所有字段值并选择合适的输出
+                                    try:
+                                        # 方法1：尝试直接访问结构体数据
+                                        field_names_str = self.matlab_eng.eval("strjoin(fieldnames(yout{1}.Values), ',')")
+                                        self.logger.debug(f"Struct fields: {field_names_str}")
+
+                                        # 方法2：尝试cell2mat转换
+                                        values_array = self.matlab_eng.eval("cell2mat(struct2cell(yout{1}.Values))")
+                                        self.logger.debug(f"Values array shape: {self.matlab_eng.eval('size(cell2mat(struct2cell(yout{{1}}.Values)))')}")
+
+                                        # 假设第7个字段是sppvt_control_output (索引从1开始)
+                                        if self.matlab_eng.eval("numel(cell2mat(struct2cell(yout{1}.Values))) >= 7"):
+                                            sppvt_output = float(self.matlab_eng.eval("cell2mat(struct2cell(yout{1}.Values))(7)"))
+                                            self.logger.debug(f"Using cell2mat approach: {sppvt_output}")
+                                        else:
+                                            # 使用第一个字段
+                                            sppvt_output = float(self.matlab_eng.eval("cell2mat(struct2cell(yout{1}.Values))(1)"))
+                                            self.logger.debug(f"Using first field: {sppvt_output}")
+                                    except Exception as e2:
+                                        self.logger.debug(f"Generic approach also failed: {e2}")
+                                        sppvt_output = 0.0
+
                             else:
-                                # 尝试直接转换
-                                sppvt_output = float(self.matlab_eng.eval("double(yout{1}.Values)"))
+                                # Values不是结构体，尝试数组访问
+                                try:
+                                    sppvt_output = float(self.matlab_eng.eval("yout{1}.Values(end, 1)"))
+                                except:
+                                    sppvt_output = float(self.matlab_eng.eval("yout{1}.Values(end)"))
+
                         else:
-                            # 没有Values属性，直接访问
+                            # 没有Values属性，直接访问Dataset元素
                             if self.matlab_eng.eval("isnumeric(yout{1})"):
-                                sppvt_output = float(self.matlab_eng.eval("yout{1}(end, 1)"))
+                                sppvt_output = float(self.matlab_eng.eval("yout{1}(end)"))
                             else:
                                 sppvt_output = float(self.matlab_eng.eval("double(yout{1})"))
 
