@@ -16,14 +16,15 @@
 
 ## 输入数据设计
 
-### 基础输入数据结构
+### 基础输入数据结构（基于create_decision_sppvt_bus.m）
 
 ```matlab
 function input_data = create_test_input_data(ego_speed_kmh, control_error, command_type, command_active)
-% 创建标准测试输入数据
+% 创建符合14字段总线定义的标准测试输入数据
+% 基于 DecisionSPPVTInputExtended 总线定义
 % 参数:
 %   ego_speed_kmh - 自车速度 (km/h)
-%   control_error - 控制误差 (m/s^2)
+%   control_error - 控制误差 (m)
 %   command_type - 指令类型 (1=I0, 2=I1, ..., 7=I6)
 %   command_active - 指令是否激活 (boolean)
 
@@ -50,11 +51,16 @@ input_data.command_type = timeseries(int32([command_type, command_type]), time_p
 input_data.command_active = timeseries(logical([command_active, command_active]), time_points, 'Name', 'command_active');
 input_data.manual_throttle_active = timeseries(logical([false, false]), time_points, 'Name', 'manual_throttle_active');
 input_data.control_error = timeseries([control_error, control_error], time_points, 'Name', 'control_error');
-input_data.control_mode_flag = timeseries(int32([1, 1]), time_points, 'Name', 'control_mode_flag');
+input_data.control_mode_flag = timeseries(int32([2, 2]), time_points, 'Name', 'control_mode_flag');  % 2=speed, 1=time
 input_data.V_target_kmh = timeseries([V_target_kmh, V_target_kmh], time_points, 'Name', 'V_target_kmh');
 input_data.V_min_kmh = timeseries([V_min_kmh, V_min_kmh], time_points, 'Name', 'V_min_kmh');
 input_data.G2_s = timeseries([G2_s, G2_s], time_points, 'Name', 'G2_s');
 input_data.timestamp = timeseries(time_points, time_points, 'Name', 'timestamp');
+
+% 新增3个外部状态字段（基于create_decision_sppvt_bus.m）
+input_data.external_stage_offset = timeseries([0.1, 0.1], time_points, 'Name', 'external_stage_offset');
+input_data.external_stage_manager_states = timeseries([[1.0; -1.0; 2.0], [1.0; -1.0; 2.0]], time_points, 'Name', 'external_stage_manager_states');
+input_data.external_adapter_states = timeseries([[1.0; 13.89; 0.2], [1.0; 13.89; 0.2]], time_points, 'Name', 'external_adapter_states');
 
 % 设置时间单位
 field_names = fieldnames(input_data);
@@ -109,7 +115,8 @@ end
 ### 必要的预加载步骤
 
 ```matlab
-% 1. 加载总线定义（必须在模型加载前）
+% 1. 创建并加载总线定义（必须在模型加载前）
+create_decision_sppvt_bus();  % 创建14/15字段扩展总线
 load('DecisionSPPVTBusDefinitions.mat');
 
 % 2. 加载模型
@@ -286,10 +293,11 @@ sim_out.yout                          % Simulink.SimulationData.Dataset
 ```
 
 **重要发现**：
-- `Values`字段是一个**结构体**，包含12个字段对应`DecisionSPPVTOutput`总线
+- `Values`字段是一个**结构体**，包含15个字段对应`DecisionSPPVTOutputExtended`总线
 - 每个字段都是独立的`timeseries`对象
 - 不能使用`find()`、`get()`等Dataset方法访问`Values`内的字段
 - 必须使用结构体字段访问：`output_element.Values.fieldname`
+- 数组字段（如`new_adapter_states`）使用`Data(end, :)`访问最终数组值
 
 ### 📋 完整的SPPVT输出提取函数
 
@@ -582,14 +590,24 @@ fprintf('SPPVT Debug: Control=%d, Error=%.3f, Output=%.3f\n', ...
 
 # ACC_Decision_SPPVT_Integrated 完整模块架构详细分析
 
-## 模型概述
+## 模型概述（基于实际测试验证）
 
 **模型名称**: `ACC_Decision_SPPVT_Integrated.slx`
 **功能**: ACC决策系统与SPPVT控制算法的完整集成模型
 **架构**: 输入验证 → 决策逻辑 → SPPVT状态管理 → SPPVT控制 → 输出格式化
-**主要模块数**: 17个
+**输入端口数**: 1个 (DecisionSPPVTInputExtended - 14字段)
+**输出端口数**: 1个 (DecisionSPPVTOutputExtended - 15字段)
+**主要子系统数**: 6个
 
-## 详细模块分析
+## 详细模块分析（基于实际测试验证）
+
+### 核心子系统列表（6个）：
+1. **Input_Validator** - 输入验证器
+2. **Decision_Function** - 决策功能模块
+3. **SPPVT_Adapter** - SPPVT接口适配器
+4. **Stage_Manager** - SPPVT状态管理器
+5. **Output_Formatter** - 输出格式化器
+6. **Parameter_Manager** - 参数管理器
 
 ### 1. **Input (输入端口)**
 ```
@@ -600,8 +618,8 @@ fprintf('SPPVT Debug: Control=%d, Error=%.3f, Output=%.3f\n', ...
 连接关系:
   输出1 → Input_Validator/输入1
 
-数据类型: Bus: DecisionSPPVTInput
-功能: 接收外部输入数据，包含11个字段的总线信号
+数据类型: Bus: DecisionSPPVTInputExtended (14字段)
+功能: 接收外部输入数据，包含14个字段的总线信号（11个原有字段 + 3个状态外化字段）
 ```
 
 ### 2. **Input_Validator (输入验证器)**
@@ -720,26 +738,7 @@ fprintf('SPPVT Debug: Control=%d, Error=%.3f, Output=%.3f\n', ...
 - 升级时根据误差符号计算新级差
 ```
 
-### 7. **Stage_Offset_Delay (级差延迟块)**
-```
-类型: UnitDelay
-输入端口: 1个
-输出端口: 1个
 
-连接关系:
-  输入1 ← Stage_Manager/输出1
-  输出1 → SPPVT_Adapter/输入3
-  输出1 → Stage_Manager/输入4
-
-配置:
-- Initial condition: 0.0
-- Sample time: -1 (继承)
-
-功能:
-- 解决代数环路问题
-- 提供一个时间步的延迟反馈
-- 确保Stage_Manager和SPPVT_Control的时序正确性
-```
 
 ### 8. **Parameter_Manager (参数管理器)**
 ```
@@ -815,7 +814,7 @@ fprintf('SPPVT Debug: Control=%d, Error=%.3f, Output=%.3f\n', ...
 - 从DecisionSPPVTInput总线中提取控制误差给Stage_Manager
 ```
 
-### 12. **integrated_output (集成输出端口)**
+### 7. **integrated_output (集成输出端口)**
 ```
 类型: Outport
 输入端口: 1个
@@ -824,8 +823,8 @@ fprintf('SPPVT Debug: Control=%d, Error=%.3f, Output=%.3f\n', ...
 连接关系:
   输入1 ← Output_Formatter/输出1
 
-数据类型: Bus: DecisionSPPVTOutput
-功能: 输出完整的集成结果数据
+数据类型: Bus: DecisionSPPVTOutputExtended (15字段)
+功能: 输出完整的集成结果数据（12个原有字段 + 3个状态输出字段）
 ```
 
 ### 13. **监控和调试模块**
@@ -888,18 +887,20 @@ SPPVT_Control/should_upgrade → Stage_Manager → Stage_Offset_Delay → SPPVT_
                    └──────────── Unit Delay ←─────────┘
 ```
 
-### 总线数据类型
+### 总线数据类型（基于实际测试验证）
 ```
-输入总线: DecisionSPPVTInput (11字段)
-- ego_speed_kmh, ego_speed_ms, command_type, command_active
+输入总线: DecisionSPPVTInputExtended (14字段)
+- 原有11个字段: ego_speed_kmh, ego_speed_ms, command_type, command_active
 - manual_throttle_active, control_error, control_mode_flag
 - V_target_kmh, V_min_kmh, G2_s, timestamp
+- 新增3个状态字段: external_stage_offset, external_stage_manager_states, external_adapter_states
 
-输出总线: DecisionSPPVTOutput (12字段)
-- control_enabled, current_state, current_decision
+输出总线: DecisionSPPVTOutputExtended (15字段)
+- 原有12个字段: control_enabled, current_state, current_decision
 - torque_arbitration_active, updated_V_target_kmh, updated_G2_s
-- target_accel, sppvt_stage, sppvt_upgrade_count
-- sppvt_control_output, sppvt_velocity_output, debug_message
+- sppvt_control_output, sppvt_velocity_output, sppvt_acceleration_output
+- sppvt_stage_output, sppvt_status_output, debug_message
+- 新增3个状态字段: new_stage_offset, new_stage_manager_states, new_adapter_states
 ```
 
 ## 关键技术特性
@@ -929,13 +930,16 @@ SPPVT_Control/should_upgrade → Stage_Manager → Stage_Offset_Delay → SPPVT_
 
 经过详细测试验证，已确认正确的SPPVT输出获取方法：`sim_out.yout{1}.Values.sppvt_control_output.Data(end)`。
 
-### 关键发现
-- `Values`字段是结构体，包含12个timeseries对象对应`DecisionSPPVTOutput`总线
+### 关键发现（基于实际测试验证）
+- `Values`字段是结构体，包含15个timeseries对象对应`DecisionSPPVTOutputExtended`总线
 - 必须使用结构体字段访问，不能使用Dataset的`find()`或`get()`方法
-- 通过5步调试过程确认此方法的正确性
+- 数组字段（如`new_adapter_states`）需要使用`Data(end, :)`访问完整数组
+- 总线定义必须使用`create_decision_sppvt_bus()`创建14/15字段扩展版本
 
-### 使用要点
-1. 加载总线定义：`load('DecisionSPPVTBusDefinitions.mat')`
-2. 配置输出保存：`SaveOutput='on'`, `SaveFormat='Dataset'`
+### 使用要点（修正版）
+1. 创建总线定义：`create_decision_sppvt_bus()` 然后 `load('DecisionSPPVTBusDefinitions.mat')`
+2. 配置输出保存：`SaveOutput='on'`, `SaveFormat='Dataset'`（必需）
 3. 使用正确的数据访问路径：`sim_out.yout{1}.Values.fieldname.Data(end)`
-4. 添加错误处理确保程序稳定性
+4. 数组字段访问：`sim_out.yout{1}.Values.fieldname.Data(end, :)`
+5. 控制模式标志：`1=time, 2=speed`
+6. 添加错误处理确保程序稳定性

@@ -40,7 +40,7 @@ function create_decision_sppvt_bus()
         createBusElement('command_active', 'boolean', 1, '1', '指令是否激活'),
         createBusElement('manual_throttle_active', 'boolean', 1, '1', '手动油门是否激活'),
         createBusElement('control_error', 'double', 1, 'm', 'Two Mode计算的控制误差'),
-        createBusElement('control_mode_flag', 'int32', 1, '1', '控制模式标志: 1=distance, 2=speed'),
+        createBusElement('control_mode_flag', 'int32', 1, '1', '控制模式标志: 1=time, 2=speed'),
         createBusElement('V_target_kmh', 'double', 1, 'km/h', '目标速度'),
         createBusElement('V_min_kmh', 'double', 1, 'km/h', '最小速度'),
         createBusElement('G2_s', 'double', 1, 's', '时距参数'),
