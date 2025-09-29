@@ -18,11 +18,13 @@ if exist('sppvt_control_model.slx', 'file') == 0
     warning('⚠️ 找不到现有SPPVT模型: sppvt_control_model.slx');
 end
 
-% 检查总线定义
-if ~evalin('base', 'exist(''DecisionSPPVTInput'', ''var'')') || ...
-   ~evalin('base', 'exist(''DecisionSPPVTOutput'', ''var'')')
-    fprintf('⚠️ 总线定义缺失，正在创建...\n');
+% 检查总线定义（18字段状态外化版本）
+if ~evalin('base', 'exist(''DecisionSPPVTInputExtended'', ''var'')') || ...
+   ~evalin('base', 'exist(''DecisionSPPVTOutputExtended'', ''var'')')
+    fprintf('⚠️ 总线定义缺失，正在创建18字段状态外化版本...\n');
     create_decision_sppvt_bus();
+else
+    fprintf('✅ 18字段状态外化总线定义已存在\n');
 end
 
 % 检查参数配置
@@ -104,27 +106,35 @@ try
         fprintf('💡 请在Simulink中手动启用: Configuration Parameters → Data Import/Export → Automatically handle rate transition\n');
     end
     
-    % 配置Input端口以接收总线数据
-    set_param([model_name '/Input'], 'OutDataTypeStr', 'Bus: DecisionSPPVTInput');
+    % 配置Input端口以接收总线数据（使用18字段扩展版本）
+    set_param([model_name '/Input'], 'OutDataTypeStr', 'Bus: DecisionSPPVTInputExtended');
     
     % 创建总线时间序列输入数据 - 正确的数值矩阵格式
     time_points = 0:0.05:1.0;  % 50ms步长，与模型固定步长一致
     num_points = length(time_points);
     
     % 创建数值矩阵：每行一个时间点，每列一个总线字段
-    % 按照DecisionSPPVTInput总线定义的字段顺序：
-    % 1:ego_speed_kmh, 2:ego_speed_ms, 3:command_type, 4:command_active, 
+    % 按照DecisionSPPVTInputExtended总线定义的字段顺序（17字段）：
+    % 1:ego_speed_kmh, 2:ego_speed_ms, 3:command_type, 4:command_active,
     % 5:manual_throttle_active, 6:control_error, 7:control_mode_flag,
-    % 8:V_target_kmh, 9:V_min_kmh, 10:G2_s, 11:timestamp
-    
-    signal_values = zeros(num_points, 11);
+    % 8:V_target_kmh, 9:V_min_kmh, 10:G2_s, 11:timestamp,
+    % 12:current_state, 13:has_history, 14:last_active_decision,
+    % 15:external_stage_offset, 16:external_stage_manager_states (3个元素),
+    % 17:external_adapter_states (3个元素)
+
+    signal_values = zeros(num_points, 17);
     
     for i = 1:num_points
         % 按总线字段顺序填充数值矩阵
         signal_values(i, 1) = test_input.ego_speed_kmh;           % double
         signal_values(i, 2) = test_input.ego_speed_ms;            % double
         signal_values(i, 3) = double(test_input.command_type);    % int32 -> double
-        signal_values(i, 4) = double(test_input.command_active);  % boolean -> double
+        % 修正：键盘命令只在第一个时间步激活，避免重复执行
+        if i == 1
+            signal_values(i, 4) = double(test_input.command_active);  % boolean -> double
+        else
+            signal_values(i, 4) = 0.0;  % 后续时间步不激活命令
+        end
         signal_values(i, 5) = double(test_input.manual_throttle_active); % boolean -> double
         
         % 动态场景：第0.5秒后改变控制误差
@@ -139,6 +149,16 @@ try
         signal_values(i, 9) = test_input.V_min_kmh;                % double
         signal_values(i, 10) = test_input.G2_s;                    % double
         signal_values(i, 11) = time_points(i);                     % timestamp使用仿真时间
+
+        % 决策状态字段（12-14）
+        signal_values(i, 12) = 2.0;                                % current_state: S2 (无史待命)
+        signal_values(i, 13) = 0.0;                                % has_history: false
+        signal_values(i, 14) = 8.0;                                % last_active_decision: R8 (系统待命)
+
+        % SPPVT状态字段（15-17）- 填充默认值
+        signal_values(i, 15) = 0.0;                                % external_stage_offset
+        signal_values(i, 16) = 1.0;                                % external_stage_manager_states[0]: stage=1
+        signal_values(i, 17) = 0.0;                                % external_adapter_states[0]: prev_error=0
     end
     
     % 验证所有数值都是有限的
@@ -150,8 +170,8 @@ try
     
     % 为总线创建结构体，每个字段都是timeseries对象，并设置正确的数据类型
     input_data = struct();
-    
-    % 按照DecisionSPPVTInput总线字段创建各个timeseries对象
+
+    % 按照DecisionSPPVTInputExtended总线字段创建各个timeseries对象
     % double类型字段
     input_data.ego_speed_kmh = timeseries(signal_values(:, 1), time_points, 'Name', 'ego_speed_kmh');
     input_data.ego_speed_ms = timeseries(signal_values(:, 2), time_points, 'Name', 'ego_speed_ms');
@@ -160,14 +180,34 @@ try
     input_data.V_min_kmh = timeseries(signal_values(:, 9), time_points, 'Name', 'V_min_kmh');
     input_data.G2_s = timeseries(signal_values(:, 10), time_points, 'Name', 'G2_s');
     input_data.timestamp = timeseries(signal_values(:, 11), time_points, 'Name', 'timestamp');
-    
+
     % int32类型字段 - 需要转换数据类型
     input_data.command_type = timeseries(int32(signal_values(:, 3)), time_points, 'Name', 'command_type');
     input_data.control_mode_flag = timeseries(int32(signal_values(:, 7)), time_points, 'Name', 'control_mode_flag');
-    
+
     % boolean类型字段 - 需要转换数据类型
     input_data.command_active = timeseries(logical(signal_values(:, 4)), time_points, 'Name', 'command_active');
     input_data.manual_throttle_active = timeseries(logical(signal_values(:, 5)), time_points, 'Name', 'manual_throttle_active');
+
+    % 决策状态字段（新增）
+    input_data.current_state = timeseries(int32(signal_values(:, 12)), time_points, 'Name', 'current_state');
+    input_data.has_history = timeseries(logical(signal_values(:, 13)), time_points, 'Name', 'has_history');
+    input_data.last_active_decision = timeseries(int32(signal_values(:, 14)), time_points, 'Name', 'last_active_decision');
+
+    % SPPVT状态字段（新增）- 使用简化的单值输入
+    input_data.external_stage_offset = timeseries(signal_values(:, 15), time_points, 'Name', 'external_stage_offset');
+    % 对于数组字段，创建正确的3元素数组格式
+    stage_manager_data = zeros(num_points, 3);
+    stage_manager_data(:, 1) = signal_values(:, 16);  % stage
+    stage_manager_data(:, 2) = 0.0;  % error_sign
+    stage_manager_data(:, 3) = 0.0;  % upgrade_count
+    input_data.external_stage_manager_states = timeseries(stage_manager_data, time_points, 'Name', 'external_stage_manager_states');
+
+    adapter_data = zeros(num_points, 3);
+    adapter_data(:, 1) = signal_values(:, 17);  % prev_error
+    adapter_data(:, 2) = 0.0;  % prev_velocity
+    adapter_data(:, 3) = 0.0;  % prev_accel
+    input_data.external_adapter_states = timeseries(adapter_data, time_points, 'Name', 'external_adapter_states');
     
     % 为每个timeseries设置时间单位
     field_names = fieldnames(input_data);
@@ -178,7 +218,7 @@ try
     % 将输入数据传入工作空间
     assignin('base', 'input_data', input_data);
     
-    fprintf('✅ 时间序列输入数据创建完成 (%d 个时间点, %d 个字段)\n', num_points, 11);
+    fprintf('✅ 时间序列输入数据创建完成 (%d 个时间点, %d 个字段)\n', num_points, 17);
     fprintf('   数据矩阵尺寸: %dx%d\n', size(signal_values, 1), size(signal_values, 2));
     fprintf('   时间范围: %.2f - %.2f 秒\n', time_points(1), time_points(end));
     
@@ -234,6 +274,19 @@ try
                 if isfield(values_struct, 'sppvt_control_output')
                     sppvt_data = double(values_struct.sppvt_control_output.Data);
                     fprintf('   SPPVT输出: %.6f (最终值)\n', sppvt_data(end));
+                end
+                % 检查新增的状态外化字段
+                if isfield(values_struct, 'next_state')
+                    next_state_data = double(values_struct.next_state.Data);
+                    fprintf('   下个状态: S%d (最终值)\n', next_state_data(end));
+                end
+                if isfield(values_struct, 'next_has_history')
+                    next_history_data = logical(values_struct.next_has_history.Data);
+                    fprintf('   下个历史: %d (最终值)\n', next_history_data(end));
+                end
+                if isfield(values_struct, 'next_last_active_decision')
+                    next_decision_data = double(values_struct.next_last_active_decision.Data);
+                    fprintf('   下个有效决策: R%d (最终值)\n', next_decision_data(end));
                 end
             end
         else
@@ -488,7 +541,7 @@ function test_single_step_mode()
         
         fprintf('✅ 单步模式配置: 执行时间=0.05s, 固定步长=0.05s\n');
         
-        % 创建单点输入数据（更简单的测试）
+        % 创建单点输入数据（更简单的测试）- 18字段版本
         single_input = struct();
         single_input.ego_speed_kmh = timeseries(50.0, 0, 'Name', 'ego_speed_kmh');
         single_input.ego_speed_ms = timeseries(13.89, 0, 'Name', 'ego_speed_ms');
@@ -501,6 +554,16 @@ function test_single_step_mode()
         single_input.V_min_kmh = timeseries(30.0, 0, 'Name', 'V_min_kmh');
         single_input.G2_s = timeseries(2.0, 0, 'Name', 'G2_s');
         single_input.timestamp = timeseries(0.0, 0, 'Name', 'timestamp');
+
+        % 决策状态字段（新增18字段版本）
+        single_input.current_state = timeseries(int32(2), 0, 'Name', 'current_state');
+        single_input.has_history = timeseries(false, 0, 'Name', 'has_history');
+        single_input.last_active_decision = timeseries(int32(8), 0, 'Name', 'last_active_decision');
+
+        % SPPVT状态字段（新增）
+        single_input.external_stage_offset = timeseries(0.0, 0, 'Name', 'external_stage_offset');
+        single_input.external_stage_manager_states = timeseries([1.0, 0.0, 0.0], 0, 'Name', 'external_stage_manager_states');
+        single_input.external_adapter_states = timeseries([0.0, 0.0, 0.0], 0, 'Name', 'external_adapter_states');
         
         % 设置时间单位
         field_names = fieldnames(single_input);
@@ -509,7 +572,7 @@ function test_single_step_mode()
         end
         
         assignin('base', 'single_input', single_input);
-        fprintf('✅ 单点输入数据创建完成\n');
+        fprintf('✅ 单点输入数据创建完成（18字段版本）\n');
         
         % 配置外部输入
         set_param(model_name, 'LoadExternalInput', 'on');

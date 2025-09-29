@@ -2,8 +2,7 @@ import numpy as np
 import carla
 from enum import Enum
 import math
-# 导入SPPVT控制器
-from sppvt_longitudinal_control import sppvt_longitudinal_control
+# SPPVT控制器已集成到Two Mode控制器中
 # 在文件顶部添加导入
 from two_mode_controller import two_mode_control, target_redetection_safety_control, get_safety_control_mode_recommendation
 import time

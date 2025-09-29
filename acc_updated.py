@@ -54,9 +54,18 @@ class acc:
         self.target_speed_controller = None
 
         # === ACC决策+SPPVT一体化模块 ===
-        self.acc_decision_sppvt = ACCDecisionSPPVTInterface(initial_target_speed_kmh=50.0, initial_time_gap=2.0)
-        self.acc_decision_sppvt.set_debug(True)
+        self.acc_decision_sppvt = ACCDecisionSPPVTInterface(debug=True)
         
+        # === ACC系统可配置参数 (环境相关，需要传递给Simulink) ===
+        self.acc_params = {
+            'V_target_kmh': 50.0,      # 默认巡航速度 - 传递给Simulink
+            'V_min_kmh': 30.0,         # 最小速度阈值 - 传递给Simulink
+            'G2_s': 2.0,               # 时距参数 - 传递给Simulink
+            'V_threshold_kmh': 50.0,   # 模式切换阈值 - 用于Two Mode控制器
+            'speed_step': 5.0,         # 速度调整步长
+            'cruise_mode_active': True  # 巡航模式状态
+        }
+
         # === 保持原有决策接口兼容性 ===
         self.acc_decision = self.acc_decision_sppvt  # 兼容性别名
 
@@ -80,8 +89,7 @@ class acc:
         self.init_carla()
         self.init_csv()
 
-        # 初始化两模式参数
-        self._sync_two_mode_parameters()
+        # 初始化两模式参数 - 已集成到Simulink，无需外部同步
         
         # 初始化一体化接口的两模式控制器
         if hasattr(self.acc_decision_sppvt, 'init_two_mode_controller'):
@@ -246,6 +254,18 @@ class acc:
                 target_speed_kmh=acc_params['V_target_kmh']
             )
 
+    def get_current_parameters(self):
+        """获取当前ACC参数，直接使用Simulink管理的参数"""
+        return self.acc_params.copy()
+
+    def get_status_info(self):
+        """获取ACC状态信息，基于Simulink状态"""
+        return {
+            'state_description': 'Pure Simulink Mode',
+            'cruise_mode_active': self.acc_params['cruise_mode_active'],
+            'system_enabled': self.acc_system_enabled
+        }
+
     def handle_keyboard_input(self):
         """处理键盘输入"""
         keys = pygame.key.get_pressed()
@@ -379,32 +399,35 @@ class acc:
                         self.acc_decision.reset()
                         print(f"🔴 ACC系统已关闭")
 
-                # === ACC功能指令（基于新决策文档） ===
+                # === ACC功能指令（使用标准I0-I6指令） ===
                 elif event_data == K_q:
                     if self.acc_system_enabled:
-                        print(f"🔵 Q键被按下 - 增速/继承启控")
-                        self._process_acc_command(ACCCommand.INCREASE_SPEED)  # I_1 增速/继承启控
+                        # Q键增速 -> I1 (增速指令)
+                        self._send_keyboard_command_to_simulink(2, "Q键增速(I1)")
                     else:
                         print(f"⚠️ Q键被按下但ACC系统未开启，请先按空格键开启ACC系统")
 
                 elif event_data == K_e:
                     if self.acc_system_enabled:
-                        print(f"🔵 E键被按下 - 降速/当速启控")
-                        self._process_acc_command(ACCCommand.DECREASE_SPEED)  # I_0 降速/当速启控
+                        # E键减速 -> I0 (降速指令)
+                        self._send_keyboard_command_to_simulink(1, "E键减速(I0)")
                     else:
                         print(f"⚠️ E键被按下但ACC系统未开启，请先按空格键开启ACC系统")
 
                 elif event_data == K_r:
                     if self.acc_system_enabled:
-                        self._process_acc_command(ACCCommand.INCREASE_DISTANCE)  # I_3 增距
+                        # R键增距 -> I3 (增距指令)
+                        self._send_keyboard_command_to_simulink(4, "R键增距(I3)")
 
                 elif event_data == K_t:
                     if self.acc_system_enabled:
-                        self._process_acc_command(ACCCommand.DECREASE_DISTANCE)  # I_2 减距
+                        # T键减距 -> I2 (降距指令)
+                        self._send_keyboard_command_to_simulink(3, "T键减距(I2)")
 
                 elif event_data == K_c:
                     if self.acc_system_enabled:
-                        self._process_acc_command(ACCCommand.CANCEL)  # I_6 取消ACC
+                        # C键取消 -> I6 (取消ACC指令)
+                        self._send_keyboard_command_to_simulink(7, "C键取消(I6)")
 
                 # === 人工干预指令（WASD） ===
                 elif event_data == K_w:
@@ -434,77 +457,75 @@ class acc:
             direction = "左" if steer_value < 0 else "右"
             print(f"🔄 手动转向: {direction} ({steer_value:.1f})")
 
-    def _process_acc_command(self, command):
-        """处理ACC指令 - 基于新决策文档，兼容一体化接口"""
-        if not self.ego_vehicle:
-            return
+    def _send_keyboard_command_to_simulink(self, command_code, description):
+        """
+        发送键盘指令给Simulink进行处理
 
-        ego_speed = self.get_vehicle_speed(self.ego_vehicle)
-        target_distance = self.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
-        has_target = target_distance < 50.0
+        Args:
+            command_code (int): 标准指令码 (根据decision.md)
+                0=NONE, 1=I0降速, 2=I1增速, 3=I2降距, 4=I3增距,
+                5=I4油门, 6=I5制动, 7=I6取消
+            description (str): 指令描述
+        """
+        try:
+            # 获取当前车辆状态
+            ego_speed = self.get_vehicle_speed(self.ego_vehicle)
+            ego_speed_ms = ego_speed / 3.6
 
-        # === 调试：处理指令前的状态 ===
-        if self.acc_decision.debug:
-            print(f"\n🔍 处理ACC指令调试:")
-            print(f"   指令: {command.value}")
-            print(f"   处理前状态: {self.acc_decision.current_state.value}")
-            print(f"   当前速度: {ego_speed:.1f} km/h")
-            print(f"   有前车: {has_target} (距离: {target_distance:.1f}m)")
+            # 创建发送给Simulink的输入数据
+            simulink_input = {
+                'ego_speed_kmh': ego_speed,
+                'ego_speed_ms': ego_speed_ms,
+                'command_type': command_code,  # 按键指令码
+                'command_active': True,        # 激活指令
+                'manual_throttle_active': False,
+                'control_error': 0.0,          # 按键指令时控制误差为0
+                'control_mode_flag': 2,        # 默认速度模式
+                'V_target_kmh': self.acc_params['V_target_kmh'],
+                'V_min_kmh': self.acc_params['V_min_kmh'],
+                'G2_s': self.acc_params['G2_s'],
+                'timestamp': time.time(),
+                # 外部状态字段（使用默认值）
+                'external_stage_offset': 0.0,
+                'external_stage_manager_states': [1.0, 0.0, 0.0],
+                'external_adapter_states': [0.0, ego_speed_ms, 0.0]
+            }
 
-        # === 通过一体化接口处理指令 ===
-        if hasattr(self.acc_decision_sppvt, 'process_command'):
-            # 使用一体化接口的指令处理
-            state, decision, msg = self.acc_decision_sppvt.process_command(
-                command, ego_speed, has_target, target_distance if has_target else None)
-        else:
-            # 回退到传统决策模块
-            state, decision, msg = self.acc_decision.process_command(
-                command, ego_speed, has_target, target_distance if has_target else None)
+            # 调用Simulink决策+SPPVT接口
+            result = self.acc_decision.process_decision_and_control(simulink_input)
 
-        # === 显示处理结果 ===
-        command_names = {
-            'I0': '降速/当速启控',
-            'I1': '增速/继承启控', 
-            'I2': '减距',
-            'I3': '增距',
-            'I4': '油门',
-            'I5': '刹车',
-            'I6': '取消ACC'
-        }
-        
-        command_name = command_names.get(command.value, command.value)
-        print(f"📋 {command_name}: {msg}")
+            if result:
+                # 更新参数（从 Simulink 返回的结果）
+                if 'updated_V_target_kmh' in result:
+                    old_V_target = self.acc_params['V_target_kmh']
+                    self.acc_params['V_target_kmh'] = result['updated_V_target_kmh']
+                    print(f"🔵 {description}: {old_V_target:.1f} → {self.acc_params['V_target_kmh']:.1f} km/h")
 
-        # === 调试：处理指令后的状态 ===
-        if self.acc_decision.debug:
-            print(f"   处理后状态: {state.value}")
-            print(f"   执行决策: {decision.value if decision else None}")
-            print(f"   状态转移消息: {msg}")
-            print("🔍 调试结束\n")
+                if 'updated_G2_s' in result:
+                    old_G2 = self.acc_params['G2_s']
+                    self.acc_params['G2_s'] = result['updated_G2_s']
+                    print(f"🔵 {description}: {old_G2:.1f} → {self.acc_params['G2_s']:.1f} s")
 
-        acc_params = self.acc_decision.get_current_parameters()
-        acc_control_active = acc_params['is_active']  # 获取决策模块的激活状态
+                # 处理取消指令
+                if command_code == 7:  # I6取消指令
+                    self.acc_system_enabled = False
+                    self.manual_control_active = True
+                    print(f"🔵 {description} - ACC系统已关闭")
 
-        # 修正：只有在ACC系统开启且决策模块激活时才设为自动模式
-        if self.acc_system_enabled and acc_control_active:
-            self.manual_control_active = False  # ACC激活时关闭手动模式
-        # 其他情况下保持手动模式
+                # 显示 Simulink 决策结果
+                print(f"🛠️ Simulink决策: 状态S{result.get('current_state', 0)} → R{result.get('current_decision', 0)}")
+                print(f"🎯 控制使能: {'Yes' if result.get('control_enabled', False) else 'No'}")
 
-        print(f"   ACC系统开启: {self.acc_system_enabled}")
-        print(f"   ACC控制激活: {acc_control_active}")
-        print(f"   手动模式: {self.manual_control_active}")
+                return True
+            else:
+                print(f"❌ {description} 失败: Simulink返回结果为空")
+                return False
 
-        # 同步参数（但不包括增速/减速，因为那些直接修改了target_speed）
-        if command not in [ACCCommand.INCREASE_SPEED, ACCCommand.DECREASE_SPEED]:
-            self._sync_two_mode_parameters()
-
-        print(f"ACC指令 {command.value}: {msg}")
-        print(f"🎯 当前速度: {ego_speed:.1f} km/h, ACC系统: {self.acc_system_enabled}, ACC控制: {acc_control_active}")
-
-        # 显示当前巡航速度（如果ACC系统开启且控制激活且有控制器）
-        if self.acc_system_enabled and acc_control_active and hasattr(self, 'acc_controller') and self.acc_controller:
-            current_cruise_speed = self.acc_controller.target_speed * 3.6
-            print(f"🎯 当前巡航速度: {current_cruise_speed:.1f} km/h")
+        except Exception as e:
+            print(f"❌ {description} 失败: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
 
     def get_system_info(self):
         """获取系统状态信息，用于显示 """
@@ -737,22 +758,26 @@ class acc:
                 vehicle_distance = self.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
                 has_target = vehicle_distance < 50.0
 
-                # === 使用一体化接口获取决策和控制输出 ===
-                acc_params = self.acc_decision.get_current_parameters()
-                acc_status = self.acc_decision.get_status_info()
-                
+                # === 使用Simulink一体化接口进行决策和控制 ===
+                # 获取当前ACC参数（可能被Simulink或用户修改）
+                acc_params = self.get_current_parameters()
+                acc_status = self.get_status_info()
+
+                # 使用ACC参数中的目标速度
+                target_speed_ms = acc_params['V_target_kmh'] / 3.6
+
                 # 为一体化接口准备输入数据
                 ego_speed_ms = ego_speed / 3.6
                 lane_offset = self.get_lane_offset()
-                
+
                 # 获取增强两模式控制信息用于Simulink接口
                 if has_target:
                     current_distance = vehicle_distance
-                    enhanced_two_mode_output = enhanced_two_mode_control(ego_speed_ms, current_distance, acc_params['V_target_kmh'] / 3.6)
+                    enhanced_two_mode_output = enhanced_two_mode_control(ego_speed_ms, current_distance, target_speed_ms)
                     control_error = enhanced_two_mode_output['control_error']
                     control_mode_flag = enhanced_two_mode_output['control_mode_flag']
                 else:
-                    enhanced_two_mode_output = enhanced_two_mode_control(ego_speed_ms, None, acc_params['V_target_kmh'] / 3.6)
+                    enhanced_two_mode_output = enhanced_two_mode_control(ego_speed_ms, None, target_speed_ms)
                     control_error = enhanced_two_mode_output['control_error']
                     control_mode_flag = enhanced_two_mode_output['control_mode_flag']
 
@@ -809,7 +834,7 @@ class acc:
 
                     # 在OpenCV图像上添加ACC状态信息
                     y_offset = 10
-                    cv2.putText(image_with_radar, f"ACC: {acc_status['state_description']}", (10, y_offset),
+                    cv2.putText(image_with_radar, f"ACC: Simulink Integrated", (10, y_offset),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                     y_offset += 25
 
@@ -818,7 +843,7 @@ class acc:
                                 (0, 255, 0) if self.acc_system_enabled else (255, 255, 255), 2)
                     y_offset += 25
 
-                    if acc_params.get('cruise_mode_active', False):
+                    if self.acc_system_enabled:
                         cv2.putText(image_with_radar, "CRUISE MODE", (10, y_offset),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
                         y_offset += 25
@@ -851,32 +876,44 @@ class acc:
                 # 调用一体化接口获取决策+SPPVT输出
                 try:
                     unified_output = self.acc_decision_sppvt.process_decision_and_control(unified_input)
+
+                    # === 同步Simulink输出的参数回到系统 ===
+                    # V_target_kmh可能被Simulink修改（无继控制时）
+                    if 'updated_V_target_kmh' in unified_output:
+                        self.acc_params['V_target_kmh'] = unified_output['updated_V_target_kmh']
+                    if 'updated_G2_s' in unified_output:
+                        self.acc_params['G2_s'] = unified_output['updated_G2_s']
+
+                    # 键盘调整将通过Simulink输入输出处理，不再使用备用决策
+
                     # 为了向后兼容，从统一输出中提取传统的决策输出格式
                     decision_output = {
                         'control_enabled': unified_output['control_enabled'],
-                        'current_control_mode': f"SPPVT_{unified_output['sppvt_stage']}",
+                        'current_control_mode': f"SPPVT_{unified_output.get('sppvt_stage', 1)}",
                         'current_decision': unified_output['current_decision'],
                         'torque_arbitration_active': unified_output['torque_arbitration_active']
                     }
                     # 保存SPPVT目标加速度用于后续使用
-                    sppvt_target_accel = unified_output['target_accel']
+                    sppvt_target_accel = unified_output.get('target_accel', 0.0)
                     
                 except Exception as e:
-                    print(f"⚠️ 一体化接口调用失败，使用传统模式: {e}")
-                    # 回退到传统决策模式
-                    decision_output = self.acc_decision.get_decision_output(ego_speed, vehicle_distance, manual_throttle_active)
-                    sppvt_target_accel = None
+                    print(f"❌ Simulink一体化接口调用失败: {e}")
+                    print("错误详情:")
+                    import traceback
+                    traceback.print_exc()
+                    # 不再回退，让问题充分暴露
+                    raise e
 
                 # === 调试输出：检查每个判断条件 ===
-                if self.acc_decision.debug:
-                    print(f"\n=== ACC控制判断调试 ===")
-                    print(f"1. acc_control_active: {self.acc_system_enabled}")
-                    print(f"2. decision_output['control_enabled']: {decision_output['control_enabled']}")
-                    print(f"3. is_in_active_control_mode(): {self.acc_decision.is_in_active_control_mode()}")
-                    print(f"4. current_state: {self.acc_decision.current_state.value}")
-                    print(f"5. current_decision: {decision_output.get('current_decision', 'None')}")
-                    print(f"6. torque_arbitration_active: {decision_output.get('torque_arbitration_active', False)}")
-                    print(f"7. manual_control_active: {self.manual_control_active}")
+                if hasattr(self.acc_decision_sppvt, 'debug') and self.acc_decision_sppvt.debug:
+                    print(f"\n=== Simulink ACC控制判断调试 ===")
+                    print(f"1. acc_system_enabled: {self.acc_system_enabled}")
+                    print(f"2. simulink_control_enabled: {unified_output.get('control_enabled', False)}")
+                    print(f"3. current_state: {unified_output.get('current_state', 'Unknown')}")
+                    print(f"4. current_decision: {unified_output.get('current_decision', 'None')}")
+                    print(f"5. torque_arbitration_active: {unified_output.get('torque_arbitration_active', False)}")
+                    print(f"6. manual_control_active: {self.manual_control_active}")
+                    print(f"7. V_target_kmh: {self.acc_params['V_target_kmh']:.1f}")
                     print("=== 调试结束 ===\n")
 
                 # === 扭矩仲裁处理（油门指令时） ===

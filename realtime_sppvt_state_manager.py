@@ -1,7 +1,7 @@
 """
-实时SPPVT状态管理器
-解决Simulink重复调用sim()时的状态持久化问题
-高内聚低耦合设计，专门管理SPPVT相关的所有状态
+Real-time SPPVT State Manager
+Solves state persistence issues when repeatedly calling sim() in Simulink
+High cohesion, low coupling design specifically for managing all SPPVT-related states
 """
 
 import numpy as np
@@ -15,14 +15,14 @@ import time
 
 @dataclass
 class SPPVTState:
-    """SPPVT状态数据结构"""
+    """SPPVT state data structure"""
     current_stage_offset: float = 0.0
     prev_error: float = 0.0
     prev_velocity: float = 13.89  # 50 km/h = 13.89 m/s
     prev_accel: float = 0.1
     last_update_time: float = 0.0
 
-    # 历史记录用于分析
+    # Historical records for analysis
     error_history: deque = None
     velocity_history: deque = None
     accel_history: deque = None
@@ -37,13 +37,13 @@ class SPPVTState:
 
 @dataclass
 class SimulinkInputs:
-    """Simulink输入数据结构"""
+    """Simulink input data structure"""
     control_error: float
     ego_speed_ms: float
     control_mode_flag: bool
     control_enabled: bool
 
-    # 外部状态输入
+    # External state inputs
     external_stage_offset: float = 0.0
     external_prev_error: float = 0.0
     external_prev_velocity: float = 13.89
@@ -51,34 +51,34 @@ class SimulinkInputs:
 
 class RealtimeSPPVTStateManager:
     """
-    实时SPPVT状态管理器
+    Real-time SPPVT State Manager
 
-    核心功能:
-    1. 管理SPPVT算法的所有持久化状态
-    2. 提供单步仿真接口，避免状态重置
-    3. 实现外部状态注入，确保状态连续性
-    4. 性能监控和异常处理
+    Core functionality:
+    1. Manage all persistent states of SPPVT algorithm
+    2. Provide single-step simulation interface to avoid state reset
+    3. Implement external state injection to ensure state continuity
+    4. Performance monitoring and exception handling
     """
 
     def __init__(self, matlab_engine=None, model_name='ACC_Decision_SPPVT_Integrated'):
         self.logger = logging.getLogger(__name__)
 
-        # MATLAB引擎管理
+        # MATLAB engine management
         self.matlab_eng = matlab_engine
         self.model_name = model_name
         self.model_loaded = False
 
-        # 状态管理
+        # State management
         self.sppvt_state = SPPVTState()
         self.simulation_time = 0.0
-        self.dt = 0.05  # 50ms时间步长
+        self.dt = 0.05  # 50ms time step
 
-        # 性能监控
+        # Performance monitoring
         self.execution_times = deque(maxlen=1000)
         self.error_count = 0
         self.last_successful_output = None
 
-        # 配置参数
+        # Configuration parameters
         self.config = {
             'sppvt_kp': 1.0,
             'max_accel': 2.0,
@@ -89,100 +89,164 @@ class RealtimeSPPVTStateManager:
             'max_consecutive_errors': 5
         }
 
+        # Performance optimization - workspace templates and cached operations
+        self.cached_time_points = None
+        self.input_data_initialized = False
+        self.workspace_templates_initialized = False
+
         self._initialize_matlab_engine()
 
     def _initialize_matlab_engine(self):
-        """初始化MATLAB引擎"""
+        """Initialize MATLAB engine"""
         try:
             if self.matlab_eng is None:
-                self.logger.info("启动MATLAB引擎...")
+                self.logger.info("Starting MATLAB engine...")
                 self.matlab_eng = matlab.engine.start_matlab()
-                self.logger.info("MATLAB引擎启动成功")
+                self.logger.info("MATLAB engine started successfully")
 
-            # 加载模型
+            # Load model
             self._load_simulink_model()
 
         except Exception as e:
-            self.logger.error(f"MATLAB引擎初始化失败: {e}")
+            self.logger.error(f"MATLAB engine initialization failed: {e}")
             raise
 
     def _load_simulink_model(self):
-        """加载Simulink模型"""
+        """Load Simulink model"""
         try:
             self.logger.info(f"Loading Simulink model: {self.model_name}")
 
-            # 首先创建必需的总线定义
-            self.logger.info("Creating 14/15-field bus definitions...")
+            # First create required bus definitions
+            self.logger.info("Creating 17/18-field bus definitions...")
             self.matlab_eng.eval("create_decision_sppvt_bus()", nargout=0)
 
-            # 检查总线是否成功创建
+            # Check if bus was successfully created
             bus_check = self.matlab_eng.eval("exist('DecisionSPPVTInputExtended', 'var')")
             if bus_check == 0:
                 self.logger.error("DecisionSPPVTInputExtended bus creation failed")
                 raise RuntimeError("Bus definition creation failed")
 
-            self.logger.info("Success: 14/15-field bus definitions created")
+            self.logger.info("Success: 17/18-field bus definitions created")
 
-            # 加载模型
+            # Load model
             self.matlab_eng.eval(f"load_system('{self.model_name}')", nargout=0)
 
-            # 配置仿真参数 - 参考两种成功的实现方式
+            # Configure simulation parameters - reference successful implementations
             self.matlab_eng.eval(f"set_param('{self.model_name}', 'SimulationMode', 'normal')", nargout=0)
             self.matlab_eng.eval(f"set_param('{self.model_name}', 'StopTime', '{self.dt}')", nargout=0)
             self.matlab_eng.eval(f"set_param('{self.model_name}', 'SaveOutput', 'on')", nargout=0)
             self.matlab_eng.eval(f"set_param('{self.model_name}', 'OutputSaveName', 'yout')", nargout=0)
 
-            # 强制使用Dataset格式 - StructureWithTime不支持总线数据记录
-            # 根据Simulink文档：总线数据输出必须使用Dataset格式
+            # Force Dataset format - StructureWithTime doesn't support bus data recording
+            # According to Simulink documentation: bus data output must use Dataset format
             self.matlab_eng.eval(f"set_param('{self.model_name}', 'SaveFormat', 'Dataset')", nargout=0)
             self.output_format = 'Dataset'
             self.logger.info("Configured Simulink output format: Dataset (required for bus data)")
 
-            # 清除任何旧的外部输入配置
+            # Clear any old external input configuration
             try:
                 self.matlab_eng.eval(f"set_param('{self.model_name}', 'ExternalInput', '')", nargout=0)
                 self.matlab_eng.eval(f"set_param('{self.model_name}', 'LoadExternalInput', 'off')", nargout=0)
                 self.logger.info("Cleared external input configuration")
             except:
-                pass  # 忽略配置错误
+                pass  # Ignore configuration errors
 
             self.model_loaded = True
             self.logger.info("Simulink model loaded successfully")
 
         except Exception as e:
             self.logger.error(f"Simulink model loading failed: {e}")
-            # 如果是总线相关错误，提供详细信息
+            # If bus-related error, provide detailed information
             if "Bus" in str(e) or "DecisionSPPVT" in str(e):
                 self.logger.error("This might be a bus definition issue. Please check:")
                 self.logger.error("1. create_decision_sppvt_bus.m file exists")
                 self.logger.error("2. Simulink model uses correct bus names")
-                self.logger.error("3. Inport/Outport configured for new 14/15-field buses")
+                self.logger.error("3. Inport/Outport configured for new 17/18-field buses")
+            raise
+
+    def _initialize_workspace_templates(self):
+        """Initialize workspace timeseries templates for performance optimization"""
+        if self.workspace_templates_initialized:
+            return
+
+        try:
+            self.logger.info("Initializing workspace timeseries templates...")
+
+            # Create all timeseries templates in MATLAB workspace
+            self.matlab_eng.eval(f"""
+            % Pre-allocate time vector and default arrays
+            time_points_template = [0.0, {self.dt}];
+            double_template = [0.0, 0.0];
+            int32_template = int32([1, 1]);
+            logical_template = logical([true, true]);
+
+            % Pre-create all timeseries templates with default values
+            ts_ego_speed_kmh = timeseries(double_template, time_points_template, 'Name', 'ego_speed_kmh');
+            ts_ego_speed_ms = timeseries(double_template, time_points_template, 'Name', 'ego_speed_ms');
+            ts_control_error = timeseries(double_template, time_points_template, 'Name', 'control_error');
+            ts_V_target_kmh = timeseries(double_template, time_points_template, 'Name', 'V_target_kmh');
+            ts_V_min_kmh = timeseries(double_template, time_points_template, 'Name', 'V_min_kmh');
+            ts_G2_s = timeseries(double_template, time_points_template, 'Name', 'G2_s');
+            ts_timestamp = timeseries(time_points_template, time_points_template, 'Name', 'timestamp');
+
+            % Int32 field templates
+            ts_command_type = timeseries(int32_template, time_points_template, 'Name', 'command_type');
+            ts_control_mode_flag = timeseries(int32_template, time_points_template, 'Name', 'control_mode_flag');
+
+            % Logical field templates
+            ts_command_active = timeseries(logical_template, time_points_template, 'Name', 'command_active');
+            ts_manual_throttle_active = timeseries(logical_template, time_points_template, 'Name', 'manual_throttle_active');
+
+            % External state field templates
+            ts_external_stage_offset = timeseries(double_template, time_points_template, 'Name', 'external_stage_offset');
+            ts_external_stage_manager_states = timeseries([[0.0, 0.0, 0.0]; [0.0, 0.0, 0.0]], time_points_template, 'Name', 'external_stage_manager_states');
+            ts_external_adapter_states = timeseries([[0.0, 0.0, 0.0]; [0.0, 0.0, 0.0]], time_points_template, 'Name', 'external_adapter_states');
+
+            % Set time units once for all templates (batch operation)
+            template_names = {{'ts_ego_speed_kmh', 'ts_ego_speed_ms', 'ts_control_error', 'ts_V_target_kmh', ...
+                             'ts_V_min_kmh', 'ts_G2_s', 'ts_timestamp', 'ts_command_type', 'ts_control_mode_flag', ...
+                             'ts_command_active', 'ts_manual_throttle_active', 'ts_external_stage_offset', ...
+                             'ts_external_stage_manager_states', 'ts_external_adapter_states'}};
+
+            for i = 1:length(template_names)
+                eval([template_names{{i}} '.TimeInfo.Units = ''seconds'';']);
+            end
+
+            disp('Workspace timeseries templates initialized successfully');
+            """, nargout=0)
+
+            self.workspace_templates_initialized = True
+            self.logger.info("Workspace timeseries templates initialized successfully")
+
+        except Exception as e:
+            self.logger.error(f"Failed to initialize workspace templates: {e}")
+            self.workspace_templates_initialized = False
             raise
 
     def update_state_from_simulink_output(self, sim_out):
-        """从Simulink输出更新状态 - 使用正确的Dataset格式访问"""
+        """Update state from Simulink output - using correct Dataset format access"""
         try:
-            # 使用与test_integrated_sppvt_model.m一致的解析逻辑
-            # 检查Simulink.SimulationOutput格式
+            # Use parsing logic consistent with test_integrated_sppvt_model.m
+            # Check Simulink.SimulationOutput format
             if hasattr(sim_out, 'yout') and sim_out.yout is not None:
                 output_data = sim_out.yout
 
-                # 检查Dataset格式
+                # Check Dataset format
                 if hasattr(output_data, 'numElements') and output_data.numElements >= 1:
                     element = self.matlab_eng.eval("sim_out.yout{1}")
 
-                    # 检查是否为Signal格式
+                    # Check if Signal format
                     if hasattr(element, 'Values') and element.Values is not None:
                         values_struct = element.Values
 
-                        # 提取SPPVT控制输出
+                        # Extract SPPVT control output
                         sppvt_output = self.matlab_eng.eval(
                             "sim_out.yout{1}.Values.sppvt_control_output.Data(end)"
                         )
 
-                        # 提取新的状态外化字段 (15-field版本的新字段)
+                        # Extract new state externalization fields (new fields in 18-field version)
                         try:
-                            # new_stage_offset (第13个字段)
+                            # new_stage_offset (field 16)
                             new_stage_offset = self.matlab_eng.eval(
                                 "sim_out.yout{1}.Values.new_stage_offset.Data(end)"
                             )
@@ -192,7 +256,7 @@ class RealtimeSPPVTStateManager:
                             self.logger.debug(f"Could not extract new_stage_offset: {e}")
 
                         try:
-                            # new_adapter_states (第15个字段) - [control_error, velocity, accel]
+                            # new_adapter_states (field 18) - [control_error, velocity, accel]
                             new_adapter_states = self.matlab_eng.eval(
                                 "sim_out.yout{1}.Values.new_adapter_states.Data(end,:)"
                             )
@@ -204,10 +268,10 @@ class RealtimeSPPVTStateManager:
                         except Exception as e:
                             self.logger.debug(f"Could not extract new_adapter_states: {e}")
 
-                        # 更新时间戳
+                        # Update timestamp
                         self.sppvt_state.last_update_time = time.time()
 
-                        # 记录历史数据
+                        # Record historical data
                         self.sppvt_state.error_history.append(self.sppvt_state.prev_error)
                         self.sppvt_state.velocity_history.append(self.sppvt_state.prev_velocity)
                         self.sppvt_state.accel_history.append(self.sppvt_state.prev_accel)
@@ -222,7 +286,7 @@ class RealtimeSPPVTStateManager:
 
         except Exception as e:
             self.logger.error(f"Failed to update state from Simulink output: {e}")
-            # 添加详细的调试信息
+            # Add detailed debug information
             try:
                 sim_out_type = str(type(sim_out))
                 self.logger.debug(f"sim_out type: {sim_out_type}")
@@ -418,15 +482,14 @@ class RealtimeSPPVTStateManager:
                         self.logger.debug(f"Extracted SPPVT output: {sppvt_output}")
 
                 else:
-                    # 非Dataset格式 - StructureWithTime
-                    if self.matlab_eng.eval("isfield(yout, 'signals')"):
-                        sppvt_output = float(self.matlab_eng.eval("yout.signals(1).values(end)"))
-                    else:
-                        sppvt_output = float(self.matlab_eng.eval("yout(end, 1)"))
+                    # Non-Dataset format - this should not happen with our configuration
+                    # but provide fallback handling
+                    self.logger.warning("Unexpected non-Dataset format encountered")
+                    sppvt_output = 0.0
 
             except Exception as e:
                 self.logger.error(f"Dataset access failed: {e}")
-                # 获取更详细的错误信息
+                # Get more detailed error information
                 try:
                     self.matlab_eng.eval("disp('=== DEBUGGING YOUT STRUCTURE ===');", nargout=0)
                     self.matlab_eng.eval("disp(['yout class: ', class(yout)]);", nargout=0)
@@ -438,10 +501,10 @@ class RealtimeSPPVTStateManager:
                 except:
                     pass
 
-                sppvt_output = 0.0  # 默认值
+                sppvt_output = 0.0  # Default value
                 self.logger.warning("Could not extract SPPVT output, using default value")
 
-            # 更新时间戳和历史记录
+            # Update timestamp and historical records
             self.sppvt_state.last_update_time = time.time()
             self.sppvt_state.error_history.append(self.sppvt_state.prev_error)
             self.sppvt_state.velocity_history.append(self.sppvt_state.prev_velocity)
@@ -455,35 +518,35 @@ class RealtimeSPPVTStateManager:
 
     def prepare_simulink_inputs(self, control_error: float, ego_speed_ms: float,
                               control_mode_flag: bool, control_enabled: bool) -> Dict[str, Any]:
-        """准备Simulink输入，注入外部状态到总线结构 - 14-field版本"""
+        """Prepare Simulink inputs, inject external state to bus structure - 17-field version"""
 
-        # 更新状态历史
+        # Update state history
         self.sppvt_state.prev_error = control_error if control_enabled else 0.0
         self.sppvt_state.prev_velocity = ego_speed_ms
 
         ego_speed_kmh = ego_speed_ms * 3.6
 
-        # 准备总线输入结构 - DecisionSPPVTInputExtended (14字段)
+        # Prepare bus input structure - DecisionSPPVTInputExtended (17 fields)
         simulink_inputs = {
-            # 原有的11个字段
+            # Original 11 fields
             'ego_speed_kmh': matlab.double([ego_speed_kmh]),
             'ego_speed_ms': matlab.double([ego_speed_ms]),
-            'command_type': matlab.int32([1]),  # 默认I0指令
+            'command_type': matlab.int32([1]),  # Default I0 command
             'command_active': matlab.logical([True]),
             'manual_throttle_active': matlab.logical([False]),
             'control_error': matlab.double([control_error]),
             'control_mode_flag': matlab.int32([1 if control_mode_flag else 2]),
-            'V_target_kmh': matlab.double([50.0]),  # 默认目标速度
-            'V_min_kmh': matlab.double([30.0]),     # 默认最小速度
-            'G2_s': matlab.double([2.0]),           # 默认时距参数
+            'V_target_kmh': matlab.double([50.0]),  # Default target speed
+            'V_min_kmh': matlab.double([30.0]),     # Default minimum speed
+            'G2_s': matlab.double([2.0]),           # Default time gap parameter
             'timestamp': matlab.double([time.time()]),
 
-            # 新增的3个外部状态字段 (14/15-field版本)
+            # New 6 external state fields (17/18-field version)
             'external_stage_offset': matlab.double([self.sppvt_state.current_stage_offset]),
-            'external_stage_manager_states': matlab.double([[0.0], [0.0], [0.0]]),  # 3x1列向量
+            'external_stage_manager_states': matlab.double([[0.0], [0.0], [0.0]]),  # 3x1 column vector
             'external_adapter_states': matlab.double([[self.sppvt_state.prev_error],
                                                      [self.sppvt_state.prev_velocity],
-                                                     [self.sppvt_state.prev_accel]])  # 3x1列向量
+                                                     [self.sppvt_state.prev_accel]])  # 3x1 column vector
         }
 
         return simulink_inputs
@@ -491,16 +554,16 @@ class RealtimeSPPVTStateManager:
     def run_single_step_simulation(self, control_error: float, ego_speed_ms: float,
                                  control_mode_flag: bool, control_enabled: bool) -> Optional[float]:
         """
-        运行单步仿真
+        Run single-step simulation
 
         Args:
-            control_error: 控制误差
-            ego_speed_ms: 自车速度 (m/s)
-            control_mode_flag: 控制模式标志
-            control_enabled: 控制使能
+            control_error: Control error
+            ego_speed_ms: Ego vehicle speed (m/s)
+            control_mode_flag: Control mode flag
+            control_enabled: Control enabled
 
         Returns:
-            SPPVT控制输出，失败时返回None
+            SPPVT control output, None if failed
         """
         start_time = time.time()
 
@@ -512,108 +575,78 @@ class RealtimeSPPVTStateManager:
             if not self.model_loaded:
                 self._load_simulink_model()
 
-            # 正确的总线数据创建方式 - 参考test_integrated_sppvt_model.m
-            # 创建时间向量
-            time_points = self.matlab_eng.eval(f"0:{self.dt/2}:{self.dt}")  # [0, dt/2, dt]
+            # STRATEGY A: Use workspace templates for maximum performance
+            # Initialize workspace templates (only once)
+            self._initialize_workspace_templates()
+
+            # Use current Python data to update workspace templates
             ego_speed_kmh = ego_speed_ms * 3.6
+            current_stage_offset = self.sppvt_state.current_stage_offset
 
-            # 创建总线结构体，每个字段都是timeseries对象
-            # DecisionSPPVTInputExtended (14字段)
-            input_data_dict = {
-                # 原有的11个字段 - double类型
-                'ego_speed_kmh': self.matlab_eng.timeseries(
-                    matlab.double([ego_speed_kmh, ego_speed_kmh, ego_speed_kmh]),
-                    time_points, 'Name', 'ego_speed_kmh'
-                ),
-                'ego_speed_ms': self.matlab_eng.timeseries(
-                    matlab.double([ego_speed_ms, ego_speed_ms, ego_speed_ms]),
-                    time_points, 'Name', 'ego_speed_ms'
-                ),
-                'control_error': self.matlab_eng.timeseries(
-                    matlab.double([control_error, control_error, control_error]),
-                    time_points, 'Name', 'control_error'
-                ),
-                'V_target_kmh': self.matlab_eng.timeseries(
-                    matlab.double([50.0, 50.0, 50.0]),
-                    time_points, 'Name', 'V_target_kmh'
-                ),
-                'V_min_kmh': self.matlab_eng.timeseries(
-                    matlab.double([30.0, 30.0, 30.0]),
-                    time_points, 'Name', 'V_min_kmh'
-                ),
-                'G2_s': self.matlab_eng.timeseries(
-                    matlab.double([2.0, 2.0, 2.0]),
-                    time_points, 'Name', 'G2_s'
-                ),
-                'timestamp': self.matlab_eng.timeseries(
-                    time_points, time_points, 'Name', 'timestamp'
-                ),
+            # Update workspace timeseries with real-time Python data
+            data_update_start = time.time()
+            self.matlab_eng.eval(f"""
+            % Update all timeseries data with current Python values
+            ts_ego_speed_kmh.Data = [{ego_speed_kmh}, {ego_speed_kmh}];
+            ts_ego_speed_ms.Data = [{ego_speed_ms}, {ego_speed_ms}];
+            ts_control_error.Data = [{control_error}, {control_error}];
+            ts_V_target_kmh.Data = [50.0, 50.0];
+            ts_V_min_kmh.Data = [30.0, 30.0];
+            ts_G2_s.Data = [2.0, 2.0];
 
-                # int32类型字段
-                'command_type': self.matlab_eng.timeseries(
-                    matlab.int32([1, 1, 1]),
-                    time_points, 'Name', 'command_type'
-                ),
-                'control_mode_flag': self.matlab_eng.timeseries(
-                    matlab.int32([1 if control_mode_flag else 2,
-                                 1 if control_mode_flag else 2,
-                                 1 if control_mode_flag else 2]),
-                    time_points, 'Name', 'control_mode_flag'
-                ),
+            % Update int32 fields
+            ts_command_type.Data = int32([1, 1]);
+            ts_control_mode_flag.Data = int32([{1 if control_mode_flag else 2}, {1 if control_mode_flag else 2}]);
 
-                # boolean类型字段
-                'command_active': self.matlab_eng.timeseries(
-                    matlab.logical([control_enabled, control_enabled, control_enabled]),
-                    time_points, 'Name', 'command_active'
-                ),
-                'manual_throttle_active': self.matlab_eng.timeseries(
-                    matlab.logical([False, False, False]),
-                    time_points, 'Name', 'manual_throttle_active'
-                ),
+            % Update logical fields
+            ts_command_active.Data = logical([{str(control_enabled).lower()}, {str(control_enabled).lower()}]);
+            ts_manual_throttle_active.Data = logical([false, false]);
 
-                # 新增的3个外部状态字段 - double类型
-                'external_stage_offset': self.matlab_eng.timeseries(
-                    matlab.double([self.sppvt_state.current_stage_offset,
-                                  self.sppvt_state.current_stage_offset,
-                                  self.sppvt_state.current_stage_offset]),
-                    time_points, 'Name', 'external_stage_offset'
-                ),
-                'external_stage_manager_states': self.matlab_eng.timeseries(
-                    matlab.double([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
-                    time_points, 'Name', 'external_stage_manager_states'
-                ),
-                'external_adapter_states': self.matlab_eng.timeseries(
-                    matlab.double([[self.sppvt_state.prev_error, self.sppvt_state.prev_error, self.sppvt_state.prev_error],
-                                  [self.sppvt_state.prev_velocity, self.sppvt_state.prev_velocity, self.sppvt_state.prev_velocity],
-                                  [self.sppvt_state.prev_accel, self.sppvt_state.prev_accel, self.sppvt_state.prev_accel]]),
-                    time_points, 'Name', 'external_adapter_states'
-                )
-            }
+            % Update external state fields with current SPPVT state
+            ts_external_stage_offset.Data = [{current_stage_offset}, {current_stage_offset}];
+            ts_external_stage_manager_states.Data = [[0.0, 0.0, 0.0]; [0.0, 0.0, 0.0]];
+            ts_external_adapter_states.Data = [[{self.sppvt_state.prev_error}, {self.sppvt_state.prev_velocity}, {self.sppvt_state.prev_accel}];
+                                              [{self.sppvt_state.prev_error}, {self.sppvt_state.prev_velocity}, {self.sppvt_state.prev_accel}]];
 
-            # 为每个timeseries设置时间单位
-            for field_name, ts_obj in input_data_dict.items():
-                self.matlab_eng.workspace[f'{field_name}_temp'] = ts_obj
-                self.matlab_eng.eval(f"{field_name}_temp.TimeInfo.Units = 'seconds';", nargout=0)
-                input_data_dict[field_name] = self.matlab_eng.workspace[f'{field_name}_temp']
+            % Assemble input_data structure using updated templates
+            input_data.ego_speed_kmh = ts_ego_speed_kmh;
+            input_data.ego_speed_ms = ts_ego_speed_ms;
+            input_data.control_error = ts_control_error;
+            input_data.V_target_kmh = ts_V_target_kmh;
+            input_data.V_min_kmh = ts_V_min_kmh;
+            input_data.G2_s = ts_G2_s;
+            input_data.timestamp = ts_timestamp;
+            input_data.command_type = ts_command_type;
+            input_data.control_mode_flag = ts_control_mode_flag;
+            input_data.command_active = ts_command_active;
+            input_data.manual_throttle_active = ts_manual_throttle_active;
+            input_data.external_stage_offset = ts_external_stage_offset;
+            input_data.external_stage_manager_states = ts_external_stage_manager_states;
+            input_data.external_adapter_states = ts_external_adapter_states;
+            """, nargout=0)
+            data_update_time = time.time() - data_update_start
 
-            # 将输入数据传入工作空间
-            self.matlab_eng.workspace['input_data'] = input_data_dict
+            # Configure external input and run simulation
+            self.logger.debug(f"Running optimized simulation: t={self.simulation_time:.3f}s, data_update={data_update_time*1000:.1f}ms")
 
-            # 配置外部输入为总线结构体
-            self.matlab_eng.eval(f"set_param('{self.model_name}', 'LoadExternalInput', 'on')", nargout=0)
+            # Configure and run simulation
+            config_start = time.time()
             self.matlab_eng.eval(f"set_param('{self.model_name}', 'ExternalInput', 'input_data')", nargout=0)
+            self.matlab_eng.eval(f"set_param('{self.model_name}', 'LoadExternalInput', 'on')", nargout=0)
+            config_time = time.time() - config_start
 
-            # 运行仿真（使用eval方式，参考成功的实现）
-            self.logger.debug(f"运行单步仿真: t={self.simulation_time:.3f}s")
-
+            sim_start = time.time()
             self.matlab_eng.eval(f"simOut = sim('{self.model_name}');", nargout=0)
+            sim_time = time.time() - sim_start
 
             # 检查simOut是否存在
             if not self.matlab_eng.eval("exist('simOut', 'var')"):
-                raise RuntimeError("仿真未能生成输出")
+                raise RuntimeError("Simulation failed to generate output")
 
-            # 更新状态并获取输出（使用eval方式）
+            # Extract output with detailed timing
+            extract_start = time.time()
             sppvt_output = self.update_state_from_simulink_output_eval(current_control_error, current_ego_speed_ms)
+            extract_time = time.time() - extract_start
 
             if sppvt_output is not None:
                 self.last_successful_output = sppvt_output
@@ -623,10 +656,17 @@ class RealtimeSPPVTStateManager:
                 self.simulation_time += self.dt
 
                 # 记录执行时间
-                execution_time = time.time() - start_time
-                self.execution_times.append(execution_time)
+                total_execution_time = time.time() - start_time
+                self.execution_times.append(total_execution_time)
 
-                self.logger.debug(f"仿真成功: 输出={sppvt_output:.3f}, 耗时={execution_time*1000:.1f}ms")
+                # Detailed performance logging
+                self.logger.debug(f"Strategy A Performance Breakdown:")
+                self.logger.debug(f"  Data update: {data_update_time*1000:.1f}ms")
+                self.logger.debug(f"  Config: {config_time*1000:.1f}ms")
+                self.logger.debug(f"  Simulation: {sim_time*1000:.1f}ms")
+                self.logger.debug(f"  Extraction: {extract_time*1000:.1f}ms")
+                self.logger.debug(f"  Total: {total_execution_time*1000:.1f}ms")
+                self.logger.debug(f"  SPPVT output: {sppvt_output:.3f}")
 
                 return sppvt_output
             else:
@@ -636,37 +676,37 @@ class RealtimeSPPVTStateManager:
             self.error_count += 1
             execution_time = time.time() - start_time
 
-            self.logger.error(f"单步仿真失败 (错误#{self.error_count}): {e}, 耗时={execution_time*1000:.1f}ms")
+            self.logger.error(f"Single-step simulation failed (error #{self.error_count}): {e}, time={execution_time*1000:.1f}ms")
 
-            # 错误恢复策略
+            # Error recovery strategy
             if self.error_count < self.config['max_consecutive_errors']:
                 if self.last_successful_output is not None:
-                    self.logger.warning(f"使用上次成功输出: {self.last_successful_output}")
+                    self.logger.warning(f"Using last successful output: {self.last_successful_output}")
                     return self.last_successful_output
             else:
-                self.logger.critical("连续错误过多，需要重新初始化")
+                self.logger.critical("Too many consecutive errors, system reinitialization required")
                 self._reinitialize_system()
 
             return None
 
     def _reinitialize_system(self):
-        """重新初始化系统"""
+        """Reinitialize system"""
         try:
-            self.logger.info("重新初始化SPPVT状态管理器...")
+            self.logger.info("Reinitializing SPPVT state manager...")
 
-            # 重置状态
+            # Reset state
             self.sppvt_state = SPPVTState()
             self.simulation_time = 0.0
             self.error_count = 0
 
-            # 重新加载模型
+            # Reload model
             self.model_loaded = False
             self._load_simulink_model()
 
-            self.logger.info("系统重新初始化成功")
+            self.logger.info("System reinitialization successful")
 
         except Exception as e:
-            self.logger.error(f"系统重新初始化失败: {e}")
+            self.logger.error(f"System reinitialization failed: {e}")
             raise
 
     def calculate_stage_offset_upgrade(self, current_accel: float, current_velocity: float,

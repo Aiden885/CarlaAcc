@@ -1,5 +1,5 @@
 import math
-from sppvt_longitudinal_control import sppvt_longitudinal_control, set_sppvt_parameters, reset_sppvt_controller
+from realtime_sppvt_state_manager import RealtimeSPPVTStateManager
 
 # 核心职责:
 # 1.模式选择: 基于速度阈值的TIME / SPEED模式切换
@@ -37,6 +37,10 @@ class TwoModeController:
 
         # 调试标志
         self.debug = False
+
+        # SPPVT Simulink管理器
+        self.sppvt_manager = RealtimeSPPVTStateManager()
+        self.control_mode_flag = 2  # 默认speed模式
 
     def set_parameters(self, V_threshold_kmh=None, G2_s=None, target_speed_kmh=None):
         """动态设置两模式参数"""
@@ -103,7 +107,7 @@ class TwoModeController:
         # 模式切换处理
         if mode != self.current_mode:
             if self.current_mode is not None:
-                reset_sppvt_controller()  # 重置SPPVT状态
+                # Simulink状态管理器自动处理状态重置
                 if self.debug:
                     print(f"模式切换: {self.current_mode} → {mode} at {ego_speed * 3.6:.1f}km/h")
             self.prev_mode = self.current_mode
@@ -119,9 +123,14 @@ class TwoModeController:
 
                 speed_error = target_speed - ego_speed
 
-                # 使用SPPVT速度控制
-                set_sppvt_parameters(control_mode='speed')
-                control_output = sppvt_longitudinal_control(speed_error, 0.05)
+                # 使用Simulink SPPVT速度控制
+                self.control_mode_flag = 2  # speed模式
+                control_output = self.sppvt_manager.run_single_step_simulation(
+                    control_error=speed_error,
+                    ego_speed_ms=ego_speed,
+                    control_mode_flag=self.control_mode_flag,
+                    control_enabled=True
+                )
 
                 control_info = {
                     'mode': f'{mode}_NO_TARGET',
@@ -143,9 +152,14 @@ class TwoModeController:
                 # 计算时间误差：期望时距 - 实际时距
                 time_error = desired_time_gap - actual_time_gap
 
-                # 使用SPPVT时间控制（将距离模式改为时间模式）
-                set_sppvt_parameters(control_mode='distance')  # 保持distance模式，但处理时间误差
-                control_output = sppvt_longitudinal_control(time_error, 0.05)
+                # 使用Simulink SPPVT时间控制
+                self.control_mode_flag = 1  # time模式
+                control_output = self.sppvt_manager.run_single_step_simulation(
+                    control_error=time_error,
+                    ego_speed_ms=ego_speed,
+                    control_mode_flag=self.control_mode_flag,
+                    control_enabled=True
+                )
 
                 control_info = {
                     'mode': mode,
@@ -162,9 +176,14 @@ class TwoModeController:
 
             speed_error = target_speed - ego_speed
 
-            # 使用SPPVT速度控制
-            set_sppvt_parameters(control_mode='speed')
-            control_output = sppvt_longitudinal_control(speed_error, 0.05)
+            # 使用Simulink SPPVT速度控制
+            self.control_mode_flag = 2  # speed模式
+            control_output = self.sppvt_manager.run_single_step_simulation(
+                control_error=speed_error,
+                ego_speed_ms=ego_speed,
+                control_mode_flag=self.control_mode_flag,
+                control_enabled=True
+            )
 
             control_info = {
                 'mode': mode,

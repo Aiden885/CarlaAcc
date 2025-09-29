@@ -3,8 +3,8 @@ function create_decision_sppvt_bus()
 
 %
 %   此函数创建以下总线：
-%   - DecisionSPPVTInputExtended: 14个输入字段 (原有11个 + 3个外部状态字段)
-%   - DecisionSPPVTOutputExtended: 15个输出字段 (原有12个 + 3个状态输出字段)
+%   - DecisionSPPVTInputExtended: 17个输入字段 (原有11个 + 3个决策状态 + 3个SPPVT状态字段)
+%   - DecisionSPPVTOutputExtended: 18个输出字段 (原有12个 + 3个决策状态输出 + 3个SPPVT状态输出字段)
 %
 %   状态外化精简设计：
 %   - Python维护3个关键状态：stage_offset + 2个数组状态
@@ -27,11 +27,11 @@ function create_decision_sppvt_bus()
     % 使用MATLAB 2024b的新语法创建总线对象
     DecisionSPPVTInputExtended = Simulink.Bus;
     DecisionSPPVTInputExtended.HeaderFile = '';
-    DecisionSPPVTInputExtended.Description = 'ACC决策+SPPVT一体化输入数据总线 (状态外化精简版本 - 14字段)';
+    DecisionSPPVTInputExtended.Description = 'ACC决策+SPPVT一体化输入数据总线 (状态外化精简版本 - 17字段)';
     DecisionSPPVTInputExtended.DataScope = 'Auto';
     DecisionSPPVTInputExtended.Alignment = -1;
 
-    % 定义输入总线元素 - 包含原有11个字段 + 新增3个外部状态字段
+    % 定义输入总线元素 - 包含原有11个字段 + 3个决策状态字段 + 3个SPPVT状态字段
     inputElements = [
         % 原有的11个字段
         createBusElement('ego_speed_kmh', 'double', 1, 'km/h', '自车速度(km/h)'),
@@ -46,7 +46,12 @@ function create_decision_sppvt_bus()
         createBusElement('G2_s', 'double', 1, 's', '时距参数'),
         createBusElement('timestamp', 'double', 1, 's', '时间戳'),
 
-        % 新增的3个外部状态字段 - 精简数组化状态管理
+        % 决策状态外化字段 - 替代persistent变量
+        createBusElement('current_state', 'int32', 1, '1', '当前状态: 0=S0, 1=S1, 2=S2, 3=S3'),
+        createBusElement('has_history', 'boolean', 1, '1', '是否有历史数据'),
+        createBusElement('last_active_decision', 'int32', 1, '1', '最后有效决策: 1=R1...8=R8'),
+
+        % SPPVT状态外化字段 - 精简数组化状态管理
         createBusElement('external_stage_offset', 'double', 1, '1', '外部状态: Stage_Manager级差值'),
         createBusElement('external_stage_manager_states', 'double', [3 1], '1', '外部状态: [stage, error_sign, upgrade_count]'),
         createBusElement('external_adapter_states', 'double', [3 1], '1', '外部状态: [prev_error, prev_velocity, prev_accel]')
@@ -59,11 +64,11 @@ function create_decision_sppvt_bus()
 
     DecisionSPPVTOutputExtended = Simulink.Bus;
     DecisionSPPVTOutputExtended.HeaderFile = '';
-    DecisionSPPVTOutputExtended.Description = 'ACC决策+SPPVT一体化输出数据总线 (状态外化精简版本 - 15字段)';
+    DecisionSPPVTOutputExtended.Description = 'ACC决策+SPPVT一体化输出数据总线 (状态外化精简版本 - 18字段)';
     DecisionSPPVTOutputExtended.DataScope = 'Auto';
     DecisionSPPVTOutputExtended.Alignment = -1;
 
-    % 定义输出总线元素 - 包含原有12个字段 + 新增3个状态输出字段
+    % 定义输出总线元素 - 包含原有12个字段 + 3个决策状态输出字段 + 3个SPPVT状态输出字段
     outputElements = [
         % 原有的12个字段 - 来自Decision_Function和SPPVT模块
         createBusElement('control_enabled', 'boolean', 1, '1', '控制使能状态'),
@@ -79,7 +84,12 @@ function create_decision_sppvt_bus()
         createBusElement('sppvt_status_output', 'double', 1, '1', 'SPPVT状态输出'),
         createBusElement('debug_message', 'int32', 1, '1', '调试信息代码'),
 
-        % 新增的3个状态输出字段 - 精简数组化状态回传
+        % 决策状态输出字段 - 下一个状态信息
+        createBusElement('next_state', 'int32', 1, '1', '下一个状态: 0=S0, 1=S1, 2=S2, 3=S3'),
+        createBusElement('next_has_history', 'boolean', 1, '1', '下一个历史标志'),
+        createBusElement('next_last_active_decision', 'int32', 1, '1', '下一个有效决策: 1=R1...8=R8'),
+
+        % SPPVT状态输出字段 - 精简数组化状态回传
         createBusElement('new_stage_offset', 'double', 1, '1', '更新后状态: 新Stage_Manager级差值'),
         createBusElement('new_stage_manager_states', 'double', [3 1], '1', '更新后状态: [new_stage, new_error_sign, new_upgrade_count]'),
         createBusElement('new_adapter_states', 'double', [3 1], '1', '更新后状态: [new_control_error, new_velocity, new_accel]')
@@ -138,19 +148,30 @@ function create_decision_sppvt_bus()
     fprintf('   4. Python调用: create_decision_sppvt_bus() 创建扩展总线\n');
     fprintf('   5. 状态外化设计用于CARLA单步调用集成\n');
 
-    % 显示状态外化的精简字段信息
-    fprintf('\n🆕 新增外部状态字段 (输入总线 - 3个字段):\n');
-    fprintf('   12. external_stage_offset        | Stage_Manager级差值 (标量)\n');
-    fprintf('   13. external_stage_manager_states | [stage, error_sign, upgrade_count] (数组)\n');
-    fprintf('   14. external_adapter_states      | [prev_error, prev_velocity, prev_accel] (数组)\n');
+    % 显示状态外化的新增字段信息
+    fprintf('\n🆕 新增决策状态字段 (输入总线):\n');
+    fprintf('   12. current_state                | 当前决策状态: 0=S0, 1=S1, 2=S2, 3=S3\n');
+    fprintf('   13. has_history                  | 是否有历史数据 (boolean)\n');
+    fprintf('   14. last_active_decision         | 最后有效决策: 1=R1...8=R8\n');
 
-    fprintf('\n🔄 新增状态输出字段 (输出总线 - 3个字段):\n');
-    fprintf('   13. new_stage_offset             | 更新后Stage_Manager级差值 (标量)\n');
-    fprintf('   14. new_stage_manager_states     | [new_stage, new_error_sign, new_upgrade_count] (数组)\n');
-    fprintf('   15. new_adapter_states           | [new_control_error, new_velocity, new_accel] (数组)\n');
+    fprintf('\n🆕 新增SPPVT状态字段 (输入总线):\n');
+    fprintf('   15. external_stage_offset        | Stage_Manager级差值 (标量)\n');
+    fprintf('   16. external_stage_manager_states | [stage, error_sign, upgrade_count] (数组)\n');
+    fprintf('   17. external_adapter_states      | [prev_error, prev_velocity, prev_accel] (数组)\n');
+
+    fprintf('\n🔄 新增决策状态输出字段 (输出总线):\n');
+    fprintf('   13. next_state                   | 下一个状态: 0=S0, 1=S1, 2=S2, 3=S3\n');
+    fprintf('   14. next_has_history             | 下一个历史标志 (boolean)\n');
+    fprintf('   15. next_last_active_decision    | 下一个有效决策: 1=R1...8=R8\n');
+
+    fprintf('\n🔄 新增SPPVT状态输出字段 (输出总线):\n');
+    fprintf('   16. new_stage_offset             | 更新后Stage_Manager级差值 (标量)\n');
+    fprintf('   17. new_stage_manager_states     | [new_stage, new_error_sign, new_upgrade_count] (数组)\n');
+    fprintf('   18. new_adapter_states           | [new_control_error, new_velocity, new_accel] (数组)\n');
 
     fprintf('\n🔧 状态外化精简设计要点:\n');
-    fprintf('   - Python维护3个关键状态：stage_offset + 2个状态数组\n');
+    fprintf('   - Python维护决策状态：current_state + has_history + last_active_decision\n');
+    fprintf('   - Python维护SPPVT状态：stage_offset + 2个状态数组\n');
     fprintf('   - 保持现有17模块架构基本不变\n');
     fprintf('   - 最小化总线复杂度和连接修改\n');
     fprintf('   - 数组化管理相关状态，减少字段数量\n');
@@ -242,7 +263,7 @@ function runBusDefinitionTest()
     fprintf('\n🧪 开始总线定义测试...\n');
     
     try
-        % 测试扩展输入总线 (18个字段)
+        % 测试扩展输入总线 (17个字段)
         testInputExtended = struct();
         % 原有的11个字段
         testInputExtended.ego_speed_kmh = 50.0;
@@ -257,14 +278,19 @@ function runBusDefinitionTest()
         testInputExtended.G2_s = 2.0;
         testInputExtended.timestamp = now();
 
-        % 新增的3个外部状态字段 (状态外化精简版本)
+        % 新增的3个决策状态字段 (状态外化版本)
+        testInputExtended.current_state = int32(1);
+        testInputExtended.has_history = true;
+        testInputExtended.last_active_decision = int32(5);
+
+        % 新增的3个SPPVT外部状态字段 (状态外化精简版本)
         testInputExtended.external_stage_offset = 0.15;
         testInputExtended.external_stage_manager_states = [2.0; 1.0; 3.0];  % [stage, error_sign, upgrade_count]
         testInputExtended.external_adapter_states = [0.3; 13.89; 0.2];      % [prev_error, prev_velocity, prev_accel]
 
-        fprintf('✅ 精简输入总线测试数据创建成功 (14个字段)\n');
+        fprintf('✅ 精简输入总线测试数据创建成功 (17个字段)\n');
 
-        % 测试扩展输出总线 (19个字段)
+        % 测试扩展输出总线 (18个字段)
         testOutputExtended = struct();
         % 原有的12个字段
         testOutputExtended.control_enabled = true;
@@ -280,12 +306,17 @@ function runBusDefinitionTest()
         testOutputExtended.sppvt_status_output = 1.0;
         testOutputExtended.debug_message = int32(100);
 
-        % 新增的3个状态输出字段 (状态外化精简版本)
+        % 新增的3个决策状态输出字段 (状态外化版本)
+        testOutputExtended.next_state = int32(0);
+        testOutputExtended.next_has_history = true;
+        testOutputExtended.next_last_active_decision = int32(5);
+
+        % 新增的3个SPPVT状态输出字段 (状态外化精简版本)
         testOutputExtended.new_stage_offset = 0.2;
         testOutputExtended.new_stage_manager_states = [3.0; 1.0; 4.0];      % [new_stage, new_error_sign, new_upgrade_count]
         testOutputExtended.new_adapter_states = [0.4; 13.7; 0.25];          % [new_control_error, new_velocity, new_accel]
 
-        fprintf('✅ 精简输出总线测试数据创建成功 (15个字段)\n');
+        fprintf('✅ 精简输出总线测试数据创建成功 (18个字段)\n');
 
         % 保存测试数据
         assignin('base', 'testDecisionSPPVTInputExtended', testInputExtended);
