@@ -1,1 +1,2 @@
 Time(s),Ego_Speed(km/h),Target_Speed(km/h),Actual_Distance(m),Desired_Distance(m),Control_Mode,Lane_Offset,ACC_State,ACC_Active,V_target_Setting,V_min_Setting,G2_Setting,Cruise_Mode,Manual_Throttle,Manual_Brake,Manual_Steer
+19.392343997955322,0.08829050395683953,13.99364167349451,21.040724486466697,0.04905027997602196,TIME,0.08479385823011398,Pure Simulink Mode,False,50.0,30.0,2.0,True,0.0,0.0,0.0

@@ -253,6 +253,7 @@ class ACCDecisionSPPVTInterface:
             self.error_count += 1
             raise RuntimeError(f"Realtime SPPVT state manager failed (error #{self.consecutive_errors})")
 
+        self._update_current_state(result.get('current_state', 2))
         self.consecutive_errors = 0
         compute_time = time.time() - start_time
         self.total_compute_time += compute_time
@@ -307,6 +308,19 @@ class ACCDecisionSPPVTInterface:
                     print(f"Initial state: S2(Adaptive no-history standby), vehicle speed {ego_speed_kmh:.1f}km/h >= minimum speed {v_min_kmh:.1f}km/h")
 
             self.decision_state['current_state'] = initial_state
+
+    def is_in_active_control_mode(self):
+        """
+        判断是否处于主动控制模式 - 这是为了兼容旧接口添加的方法。
+        决策现在由Simulink做出，这个函数反映了从Simulink获取到的最新状态。
+
+        Returns:
+            bool: True表示车辆正处于ACC主动控制状态
+        """
+        # 这个方法的正确性依赖于 self.current_state
+        # 在 process_decision_and_control 方法中被正确更新。
+        from acc_decision import ACCState
+        return self.current_state == ACCState.IN_CONTROL
 
     def _call_realtime_sppvt(self, input_data):
         """使用实时SPPVT状态管理器进行计算 - 唯一计算路径"""
@@ -423,6 +437,18 @@ class ACCDecisionSPPVTInterface:
                     traceback.print_exc()
                 return None
     
+    def _sanitize_value(self, value, default=0.0):
+        """清洗数据：将Inf/NaN替换为默认值"""
+        import numpy as np
+        if value is None or not np.isfinite(value):
+            return default
+        return value
+
+    def _sanitize_array(self, arr, default=0.0):
+        """清洗数组：将Inf/NaN替换为默认值"""
+        import numpy as np
+        return [self._sanitize_value(v, default) for v in arr]
+
     def _prepare_simulink_input(self, input_data):
         """准备Simulink输入数据格式 - 创建正确的timeseries格式"""
 
@@ -431,28 +457,32 @@ class ACCDecisionSPPVTInterface:
         simulink_input = struct();
         """, nargout=0)
 
-        # 基本车辆数据字段
-        self.matlab_engine.workspace['ego_speed_kmh'] = float(input_data['ego_speed_kmh'])
-        self.matlab_engine.workspace['ego_speed_ms'] = float(input_data['ego_speed_ms'])
+        # 基本车辆数据字段（加入二次清洗）
+        self.matlab_engine.workspace['ego_speed_kmh'] = float(self._sanitize_value(input_data['ego_speed_kmh'], 0.0))
+        self.matlab_engine.workspace['ego_speed_ms'] = float(self._sanitize_value(input_data['ego_speed_ms'], 0.0))
         self.matlab_engine.workspace['command_type'] = int(input_data['command_type'])
         self.matlab_engine.workspace['command_active'] = bool(input_data['command_active'])
         self.matlab_engine.workspace['manual_throttle_active'] = bool(input_data['manual_throttle_active'])
-        self.matlab_engine.workspace['control_error'] = float(input_data['control_error'])
+        self.matlab_engine.workspace['control_error'] = float(self._sanitize_value(input_data['control_error'], 0.0))
         self.matlab_engine.workspace['control_mode_flag'] = int(input_data['control_mode_flag'])
-        self.matlab_engine.workspace['V_target_kmh'] = float(input_data['V_target_kmh'])
-        self.matlab_engine.workspace['V_min_kmh'] = float(input_data['V_min_kmh'])
-        self.matlab_engine.workspace['G2_s'] = float(input_data['G2_s'])
-        self.matlab_engine.workspace['timestamp'] = float(input_data['timestamp'])
+        self.matlab_engine.workspace['V_target_kmh'] = float(self._sanitize_value(input_data['V_target_kmh'], 50.0))
+        self.matlab_engine.workspace['V_min_kmh'] = float(self._sanitize_value(input_data['V_min_kmh'], 30.0))
+        self.matlab_engine.workspace['G2_s'] = float(self._sanitize_value(input_data['G2_s'], 2.0))
+        self.matlab_engine.workspace['timestamp'] = float(self._sanitize_value(input_data['timestamp'], 0.0))
 
         # 决策状态字段
         self.matlab_engine.workspace['current_state'] = int(self.decision_state['current_state'])
         self.matlab_engine.workspace['has_history'] = bool(self.decision_state['has_history'])
         self.matlab_engine.workspace['last_active_decision'] = int(self.decision_state['last_active_decision'])
 
-        # SPPVT状态字段
-        self.matlab_engine.workspace['external_stage_offset'] = float(input_data.get('external_stage_offset', 0.0))
+        # SPPVT状态字段（加入二次清洗）
+        self.matlab_engine.workspace['external_stage_offset'] = float(self._sanitize_value(input_data.get('external_stage_offset', 0.0), 0.0))
         external_stage_manager = input_data.get('external_stage_manager_states', [1.0, 0.0, 0.0])
         external_adapter = input_data.get('external_adapter_states', [0.0, 0.0, 0.0])
+
+        # 清洗数组中的Inf/NaN
+        external_stage_manager = self._sanitize_array(external_stage_manager, 0.0)
+        external_adapter = self._sanitize_array(external_adapter, 0.0)
 
         # 确保数组是列向量
         import matlab
@@ -648,7 +678,35 @@ class ACCDecisionSPPVTInterface:
         self.total_compute_time = 0.0
         self.error_count = 0
         self.consecutive_errors = 0
-    
+
+    def reset(self):
+        """重置ACC决策模块到未初始化状态
+
+        状态将在下次调用process_decision_and_control时根据车速初始化:
+        - 如果 ego_speed_kmh < V_min_kmh: 初始化为S3(低速状态)
+        - 否则: 初始化为S2(适速无史待命)
+        """
+        # 重置决策状态（标记为未初始化，等待首次调用）
+        self.decision_state = {
+            'current_state': None,     # 待首次调用时根据车速确定
+            'has_history': False,      # 清除历史
+            'last_active_decision': 8  # R8-系统待命
+        }
+
+        # 重置SPPVT状态
+        if self.realtime_sppvt_manager:
+            self.realtime_sppvt_manager.reset_state()
+
+        # 重置统计信息
+        self.reset_statistics()
+
+        # 更新兼容字段
+        from acc_decision import ACCState
+        self.current_state = ACCState.ADAPTIVE_NO_HISTORY_STANDBY
+
+        if self.debug:
+            print("✅ ACC决策模块已重置，状态将在下次调用时根据车速初始化")
+
     def __del__(self):
         """析构函数，清理资源"""
         if hasattr(self, 'matlab_engine') and self.matlab_engine is not None:

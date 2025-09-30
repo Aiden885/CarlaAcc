@@ -82,6 +82,10 @@ class acc:
         self.manual_brake_input = 0.0
         self.manual_steer_input = 0.0
 
+        # 按键按下状态跟踪
+        self.w_key_pressed = False  # W键（油门）是否按下
+        self.s_key_pressed = False  # S键（刹车）是否按下
+
         # === 运行控制 ===
         self.running = True
 
@@ -105,10 +109,10 @@ class acc:
         except RuntimeError as e:
             raise RuntimeError(f"Failed to load map Town05: {e}")
 
-        # 设置同步模式
+        # 设置同步模式（放宽时间步长以匹配Simulink处理能力）
         settings = self.world.get_settings()
-        settings.synchronous_mode = True
-        settings.fixed_delta_seconds = 1.0 / 60.0
+        settings.synchronous_mode = False
+        settings.fixed_delta_seconds = 0.5  # 20 FPS (50ms per frame)
         self.world.apply_settings(settings)
 
         # 获取蓝图库和地图
@@ -160,10 +164,10 @@ class acc:
         # 初始化显示管理器的相机
         self.display_manager.init_camera_manager(self.ego_vehicle)
 
-        # 设置交通管理器
+        # 设置交通管理器（必须与CARLA世界同步模式一致）
         tm = self.client.get_trafficmanager(8000)
         tm.set_global_distance_to_leading_vehicle(2.0)
-        tm.set_synchronous_mode(False)
+        tm.set_synchronous_mode(False)  # 修改为True，与CARLA世界同步
         self.tm_port = tm.get_port()
         tm.auto_lane_change(self.ego_vehicle, False)
 
@@ -267,79 +271,22 @@ class acc:
         }
 
     def handle_keyboard_input(self):
-        """处理键盘输入"""
+        """处理持续按键输入（基础手动驾驶控制）"""
         keys = pygame.key.get_pressed()
 
-        # === 人工介入检测（优先级最高）===
-        # 保存手动输入强度用于扭矩仲裁
-        self.manual_throttle_input = 0.0
-        self.manual_brake_input = 0.0
-        self.manual_steer_input = 0.0
-        
-        if self.acc_system_enabled:
-            # 检测任何手动控制输入
-            manual_input_detected = (
-                    keys[K_w] or keys[K_UP] or  # 油门
-                    keys[K_s] or keys[K_DOWN] or  # 刹车
-                    keys[K_a] or keys[K_LEFT] or  # 左转
-                    keys[K_d] or keys[K_RIGHT]  # 右转
-                    # 移除空格键，避免与ACC开关冲突
-            )
-
-            if manual_input_detected:
-                ego_speed = self.get_vehicle_speed(self.ego_vehicle)
-                
-                # 计算手动输入强度
-                if keys[K_w] or keys[K_UP]:
-                    self.manual_throttle_input = 1.0  # 最大油门输入
-                    command = ACCCommand.THROTTLE
-                    input_type = "油门"
-                    
-                    # 处理油门指令
-                    state, mode, msg = self.acc_decision.process_command(command, ego_speed)
-                    
-                    # 检查是否触发扭矩仲裁
-                    decision_output = self.acc_decision.get_decision_output(ego_speed, None, manual_throttle_active=True)
-                    if decision_output.get('torque_arbitration_active', False):
-                        # 扭矩仲裁模式：不设置manual_control_active，继续ACC控制
-                        print(f"⚖️ 扭矩仲裁激活: {msg}")
-                        print(f"   驾驶员油门输入: {self.manual_throttle_input:.2f}")
-                        print(f"   ACC控制继续执行，将协调油门输出")
-                    else:
-                        # 其他情况下正常设为手动模式
-                        self.manual_control_active = True
-                        print(f"🚨 人工{input_type}介入: {msg}")
-                        
-                else:
-                    # 刹车和转向输入
-                    if keys[K_s] or keys[K_DOWN]:
-                        self.manual_brake_input = 1.0
-                    if keys[K_a] or keys[K_LEFT]:
-                        self.manual_steer_input = -0.5
-                    elif keys[K_d] or keys[K_RIGHT]:
-                        self.manual_steer_input = 0.5
-                        
-                    command = ACCCommand.BRAKE
-                    input_type = "刹车/转向"
-
-                    # 处理非油门指令
-                    state, mode, msg = self.acc_decision.process_command(command, ego_speed)
-
-                    # 刹车和转向介入后设为手动模式
-                    self.manual_control_active = True
-                    print(f"🚨 人工{input_type}介入: {msg}")
-                print(f"💡 当前状态: {self.acc_decision.current_state.value}")
+        # 注意：W/S键的油门/刹车已经在handle_events()和主循环中处理
+        # 这里只处理基础的手动驾驶控制（用于完全手动模式）
 
         # 基础车辆控制（只在手动模式下有效）
         if self.manual_control_active:
-            # 油门
-            if keys[K_w] or keys[K_UP]:
+            # 油门（使用UP键）
+            if keys[K_UP]:
                 self.throttle = min(1.0, self.throttle + 0.02)
             else:
                 self.throttle = max(0.0, self.throttle - 0.05)
 
-            # 刹车
-            if keys[K_s] or keys[K_DOWN]:
+            # 刹车（使用DOWN键）
+            if keys[K_DOWN]:
                 self.brake = min(1.0, self.brake + 0.05)
             else:
                 self.brake = max(0.0, self.brake - 0.1)
@@ -352,14 +299,14 @@ class acc:
             else:
                 self.steer = self.steer * 0.9
 
-        # 应用手动控制
-        if self.ego_vehicle and self.manual_control_active:
-            control = carla.VehicleControl()
-            control.throttle = self.throttle
-            control.brake = self.brake
-            control.steer = self.steer
-            control.hand_brake = False  # 移除空格键手刹冲突
-            self.ego_vehicle.apply_control(control)
+            # 应用手动控制
+            if self.ego_vehicle:
+                control = carla.VehicleControl()
+                control.throttle = self.throttle
+                control.brake = self.brake
+                control.steer = self.steer
+                control.hand_brake = False
+                self.ego_vehicle.apply_control(control)
 
     def handle_events(self):
         """处理事件"""
@@ -431,12 +378,32 @@ class acc:
 
                 # === 人工干预指令（WASD） ===
                 elif event_data == K_w:
+                    # W键按下：标记按键状态（无论ACC是否开启）
+                    self.w_key_pressed = True
                     if self.acc_system_enabled:
-                        self._process_acc_command(ACCCommand.THROTTLE)  # I_4 油门
+                        # ACC开启时，发送油门指令给Simulink触发扭矩仲裁
+                        self._send_keyboard_command_to_simulink(5, "W键油门(I4)")
 
                 elif event_data == K_s:
+                    # S键按下：标记按键状态（无论ACC是否开启）
+                    self.s_key_pressed = True
                     if self.acc_system_enabled:
-                        self._process_acc_command(ACCCommand.BRAKE)  # I_5 刹车
+                        # ACC开启时，发送刹车指令给Simulink
+                        self._send_keyboard_command_to_simulink(6, "S键刹车(I5)")
+
+            elif event_type == 'keyup':
+                # 按键松开事件处理
+                if event_data == K_w:
+                    # W键松开：重置油门开度
+                    self.w_key_pressed = False
+                    self.manual_throttle_input = 0.0
+                    print("🔵 油门松开，开度归零")
+
+                elif event_data == K_s:
+                    # S键松开：重置刹车开度
+                    self.s_key_pressed = False
+                    self.manual_brake_input = 0.0
+                    print("🔵 刹车松开，开度归零")
 
                 elif event_data == K_a:
                     # 向左转向辅助
@@ -532,17 +499,18 @@ class acc:
         ego_speed = self.get_vehicle_speed(self.ego_vehicle)
         target_distance = self.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
         has_target = target_distance < 50.0
-        acc_params = self.acc_decision.get_current_parameters()
-        acc_status = self.acc_decision.get_status_info()
+        acc_params = self.get_current_parameters()
+        acc_status = self.get_status_info()
 
         return {
             'ego_speed': ego_speed,
             'target_distance': target_distance,
             'has_target': has_target,
             'acc_system_enabled': self.acc_system_enabled,  # ACC系统开关状态（空格键）
-            'acc_control_active': acc_params['is_active'],   # ACC实际控制激活状态
+            'acc_control_active': self.acc_decision.current_state == ACCState.IN_CONTROL,
             'acc_state': acc_status['state_description'],
-            'torque_arbitration_active': acc_status.get('torque_arbitration_active', False),  # 扭矩仲裁状态
+            'torque_arbitration_active': (hasattr(self.acc_decision, 'torque_arbitration_active') and
+                                          self.acc_decision.torque_arbitration_active),
             'cruise_mode': acc_params.get('cruise_mode_active', False),
             'cruise_speed_kmh': self.current_cruise_speed_kmh,
             'V_target_kmh': acc_params['V_target_kmh'],
@@ -740,7 +708,21 @@ class acc:
             while self.running:
                 # 处理事件
                 self.handle_events()
-                self.handle_keyboard_input()
+                # handle_keyboard_input()已禁用，W/S键通过事件驱动方式处理
+                # self.handle_keyboard_input()
+
+                # === 按键持续检测和开度累加逻辑（无论ACC是否开启）===
+                # W键（油门）持续按下：每帧累加0.1
+                if self.w_key_pressed:
+                    self.manual_throttle_input = min(1.0, self.manual_throttle_input + 0.1)
+                    if self.acc_decision.debug:
+                        print(f"🔵 W键持续按下，油门开度: {self.manual_throttle_input:.2f}")
+
+                # S键（刹车）持续按下：每帧累加0.2
+                if self.s_key_pressed:
+                    self.manual_brake_input = min(1.0, self.manual_brake_input + 0.2)
+                    if self.acc_decision.debug:
+                        print(f"🔵 S键持续按下，刹车开度: {self.manual_brake_input:.2f}")
 
                 # 更新前车速度控制
                 if self.target_speed_controller:
@@ -857,20 +839,38 @@ class acc:
                 # === 使用一体化接口进行决策和控制计算 ===
                 # 传递手动油门状态用于扭矩仲裁管理
                 manual_throttle_active = hasattr(self, 'manual_throttle_input') and self.manual_throttle_input > 0
-                
+
+                # 根据按键状态确定command_type
+                command_type = 0  # 默认NONE
+                if self.w_key_pressed and self.acc_system_enabled:
+                    command_type = 5  # I4油门指令
+                elif self.s_key_pressed and self.acc_system_enabled:
+                    command_type = 6  # I5刹车指令
+
+                # 数据清洗：确保所有值都是有限数（非Inf/NaN）
+                def sanitize_value(value, default=0.0):
+                    """清洗数据：将Inf/NaN替换为默认值"""
+                    if value is None or not np.isfinite(value):
+                        return default
+                    return value
+
                 # 准备一体化接口输入数据
                 unified_input = {
-                    'ego_speed_kmh': ego_speed,
-                    'ego_speed_ms': ego_speed_ms,
-                    'command_type': 0,  # 暂时设为NONE，实际应该从当前命令获取
+                    'ego_speed_kmh': sanitize_value(ego_speed, 0.0),
+                    'ego_speed_ms': sanitize_value(ego_speed_ms, 0.0),
+                    'command_type': command_type,  # 根据按键状态动态设置
                     'command_active': self.acc_system_enabled,
                     'manual_throttle_active': manual_throttle_active,
-                    'control_error': control_error,
+                    'control_error': sanitize_value(control_error, 0.0),
                     'control_mode_flag': control_mode_flag,
-                    'V_target_kmh': acc_params['V_target_kmh'],
-                    'V_min_kmh': acc_params['V_min_kmh'],
-                    'G2_s': acc_params['G2_s'],
-                    'timestamp': time.time()
+                    'V_target_kmh': sanitize_value(acc_params['V_target_kmh'], 50.0),
+                    'V_min_kmh': sanitize_value(acc_params['V_min_kmh'], 30.0),
+                    'G2_s': sanitize_value(acc_params['G2_s'], 2.0),
+                    'timestamp': time.time(),
+                    # 外部状态字段（必需）
+                    'external_stage_offset': 0.0,
+                    'external_stage_manager_states': [1.0, 0.0, 0.0],
+                    'external_adapter_states': [0.0, sanitize_value(ego_speed_ms, 0.0), 0.0]
                 }
                 
                 # 调用一体化接口获取决策+SPPVT输出
@@ -921,8 +921,7 @@ class acc:
                 
                 # === ACC控制执行条件判断 ===
                 acc_should_control = (self.acc_system_enabled and
-                                    decision_output['control_enabled'] and
-                                    not self.manual_control_active)
+                                    decision_output['control_enabled'])
 
                 if acc_should_control:
                     # ACC控制模式 - 只有在主动控制模式下才执行
@@ -1035,7 +1034,7 @@ class acc:
                         traceback.print_exc()
 
                 else:
-                    # 不满足控制条件时的提示
+                    # ACC不控制时，但仍需处理手动油门/刹车输入
                     print("❌ 未进入ACC控制分支")
                     if self.acc_system_enabled:
                         acc_state = self.acc_decision.current_state.value
@@ -1049,6 +1048,24 @@ class acc:
                             print("💡 提示: ACC处于待命状态，按1键可重新激活")
                         else:
                             print("💡 原因: ACC未激活 (acc_control_active=False)")
+
+                    # === 处理手动油门/刹车输入（独立于ACC控制状态）===
+                    if self.manual_throttle_input > 0 or self.manual_brake_input > 0:
+                        control = carla.VehicleControl()
+
+                        # 刹车优先级高于油门
+                        if self.manual_brake_input > 0:
+                            control.throttle = 0.0
+                            control.brake = self.manual_brake_input
+                            control.steer = 0.0
+                            print(f"🛑 手动刹车执行: {self.manual_brake_input:.2f}")
+                        elif self.manual_throttle_input > 0:
+                            control.throttle = self.manual_throttle_input
+                            control.brake = 0.0
+                            control.steer = 0.0
+                            print(f"⚙️ 手动油门执行: {self.manual_throttle_input:.2f}")
+
+                        self.ego_vehicle.apply_control(control)
 
                 # === 数据记录 ===
                 current_time = time.time() - self.start_time
