@@ -111,8 +111,8 @@ class acc:
 
         # 设置同步模式（放宽时间步长以匹配Simulink处理能力）
         settings = self.world.get_settings()
-        settings.synchronous_mode = False
-        settings.fixed_delta_seconds = 0.5  # 20 FPS (50ms per frame)
+        settings.synchronous_mode = True
+        settings.fixed_delta_seconds = 0.05  # 20 FPS (50ms per frame)
         self.world.apply_settings(settings)
 
         # 获取蓝图库和地图

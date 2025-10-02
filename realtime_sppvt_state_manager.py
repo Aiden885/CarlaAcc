@@ -551,6 +551,12 @@ class RealtimeSPPVTStateManager:
 
         return simulink_inputs
 
+    def _sanitize_value(self, value: float, default: float = 0.0) -> float:
+        """清洗数据：将Inf/NaN替换为默认值"""
+        if value is None or not np.isfinite(value):
+            return default
+        return value
+
     def run_single_step_simulation(self, control_error: float, ego_speed_ms: float,
                                  control_mode_flag: bool, control_enabled: bool) -> Optional[float]:
         """
@@ -567,6 +573,10 @@ class RealtimeSPPVTStateManager:
         """
         start_time = time.time()
 
+        # 清洗输入数据
+        control_error = self._sanitize_value(control_error, 0.0)
+        ego_speed_ms = self._sanitize_value(ego_speed_ms, 0.0)
+
         # 创建局部变量引用，避免IDE在深层嵌套中的未解析引用警告
         current_control_error = control_error
         current_ego_speed_ms = ego_speed_ms
@@ -579,9 +589,12 @@ class RealtimeSPPVTStateManager:
             # Initialize workspace templates (only once)
             self._initialize_workspace_templates()
 
-            # Use current Python data to update workspace templates
-            ego_speed_kmh = ego_speed_ms * 3.6
-            current_stage_offset = self.sppvt_state.current_stage_offset
+            # Use current Python data to update workspace templates (清洗所有状态值)
+            ego_speed_kmh = self._sanitize_value(ego_speed_ms * 3.6, 0.0)
+            current_stage_offset = self._sanitize_value(self.sppvt_state.current_stage_offset, 0.0)
+            prev_error = self._sanitize_value(self.sppvt_state.prev_error, 0.0)
+            prev_velocity = self._sanitize_value(self.sppvt_state.prev_velocity, 13.89)
+            prev_accel = self._sanitize_value(self.sppvt_state.prev_accel, 0.1)
 
             # Update workspace timeseries with real-time Python data
             data_update_start = time.time()
@@ -602,11 +615,11 @@ class RealtimeSPPVTStateManager:
             ts_command_active.Data = logical([{str(control_enabled).lower()}, {str(control_enabled).lower()}]);
             ts_manual_throttle_active.Data = logical([false, false]);
 
-            % Update external state fields with current SPPVT state
+            % Update external state fields with current SPPVT state (已清洗)
             ts_external_stage_offset.Data = [{current_stage_offset}, {current_stage_offset}];
             ts_external_stage_manager_states.Data = [[0.0, 0.0, 0.0]; [0.0, 0.0, 0.0]];
-            ts_external_adapter_states.Data = [[{self.sppvt_state.prev_error}, {self.sppvt_state.prev_velocity}, {self.sppvt_state.prev_accel}];
-                                              [{self.sppvt_state.prev_error}, {self.sppvt_state.prev_velocity}, {self.sppvt_state.prev_accel}]];
+            ts_external_adapter_states.Data = [[{prev_error}, {prev_velocity}, {prev_accel}];
+                                              [{prev_error}, {prev_velocity}, {prev_accel}]];
 
             % Assemble input_data structure using updated templates
             input_data.ego_speed_kmh = ts_ego_speed_kmh;

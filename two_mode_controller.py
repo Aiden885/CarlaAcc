@@ -147,7 +147,7 @@ class TwoModeController:
                 if ego_speed > 0.1:  # 低于0.36km/h视为静止
                     actual_time_gap = current_distance / ego_speed
                 else:
-                    actual_time_gap = float('inf')  # 静止时设为无穷大时距
+                    actual_time_gap = 9999.0
 
                 # 计算时间误差：期望时距 - 实际时距
                 time_error = desired_time_gap - actual_time_gap
