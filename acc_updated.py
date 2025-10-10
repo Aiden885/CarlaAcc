@@ -330,7 +330,7 @@ class acc:
 
                 elif event_data == K_p:
                     debug_state = not self.acc_decision.debug
-                    self.acc_decision.set_debug(debug_state)
+                    self.acc_decision.debug = debug_state
                     print(f"ACC调试模式: {'开启' if debug_state else '关闭'}")
 
                 # === ACC系统总开关 ===
@@ -705,35 +705,107 @@ class acc:
             print(f"\n当前状态: ACC系统关闭, 请先按空格键开启")
             print("\n")
 
+            # 性能分析器
+            import collections
+            perf_times = collections.defaultdict(list)
+            perf_start_time = time.time()
+            last_perf_report_time = time.time()
+
+            # 性能报告辅助函数
+            def print_performance_report(perf_times, elapsed_time):
+                """打印性能统计报告 - 包含首次周期分析"""
+                print("\n" + "="*60)
+                print(f"📊 性能分析报告 (运行时间: {elapsed_time:.1f}秒)")
+                print("="*60)
+
+                if not perf_times:
+                    print("⚠️ 暂无性能数据")
+                    return
+
+                total_avg = 0
+                for key in sorted(perf_times.keys()):
+                    times = perf_times[key]
+                    if times:
+                        avg_ms = (sum(times) / len(times)) * 1000
+                        max_ms = max(times) * 1000
+                        min_ms = min(times) * 1000
+                        first_ms = times[0] * 1000 if len(times) > 0 else 0
+
+                        # 如果有多次调用,计算排除首次的平均值
+                        if len(times) > 1:
+                            avg_excluding_first_ms = (sum(times[1:]) / (len(times) - 1)) * 1000
+                            print(f"{key:20s}: 平均 {avg_ms:6.2f}ms | 最大 {max_ms:6.2f}ms | 最小 {min_ms:6.2f}ms | 次数 {len(times)}")
+
+                            # 如果首次明显慢于平均值,标记出来
+                            if first_ms > avg_excluding_first_ms * 1.5:
+                                print(f"{'':20s}  ⚠️  首次: {first_ms:6.2f}ms (慢于后续平均 {avg_excluding_first_ms:6.2f}ms)")
+                        else:
+                            print(f"{key:20s}: 平均 {avg_ms:6.2f}ms | 最大 {max_ms:6.2f}ms | 最小 {min_ms:6.2f}ms | 次数 {len(times)}")
+
+                        total_avg += avg_ms
+
+                if total_avg > 0:
+                    print("-"*60)
+                    print(f"{'总计':20s}: 平均 {total_avg:6.2f}ms/周期")
+                    if total_avg > 0:
+                        fps = 1000.0 / total_avg
+                        print(f"{'理论帧率':20s}: {fps:6.2f} FPS")
+                print("="*60 + "\n")
+
             while self.running:
+                # === 性能分析：记录每个周期开始时间 ===
+                cycle_start = time.time()
+
                 # 处理事件
+                t0 = time.time()
                 self.handle_events()
+                perf_times['1_events'].append(time.time() - t0)
                 # handle_keyboard_input()已禁用，W/S键通过事件驱动方式处理
                 # self.handle_keyboard_input()
 
                 # === 按键持续检测和开度累加逻辑（无论ACC是否开启）===
-                # W键（油门）持续按下：每帧累加0.1
+                # W键（油门）持续按下：每帧累加0.1，松开时立即归零
                 if self.w_key_pressed:
                     self.manual_throttle_input = min(1.0, self.manual_throttle_input + 0.1)
                     if self.acc_decision.debug:
                         print(f"🔵 W键持续按下，油门开度: {self.manual_throttle_input:.2f}")
+                else:
+                    # W键未按下时，确保油门归零
+                    self.manual_throttle_input = 0.0
 
-                # S键（刹车）持续按下：每帧累加0.2
+                # S键（刹车）持续按下：每帧累加0.2，松开时立即归零
                 if self.s_key_pressed:
                     self.manual_brake_input = min(1.0, self.manual_brake_input + 0.2)
                     if self.acc_decision.debug:
                         print(f"🔵 S键持续按下，刹车开度: {self.manual_brake_input:.2f}")
+                else:
+                    # S键未按下时，确保刹车归零
+                    self.manual_brake_input = 0.0
 
                 # 更新前车速度控制
+                t0 = time.time()
                 if self.target_speed_controller:
                     self.target_speed_controller.update()
+                perf_times['2_target_speed'].append(time.time() - t0)
 
                 # 世界更新
+                t0 = time.time()
                 if self.world:
                     self.world.tick()
+                perf_times['3_world_tick'].append(time.time() - t0)
 
+                t0 = time.time()
                 self.display_manager.tick(60)  # 60 FPS
+                perf_times['4_display_tick'].append(time.time() - t0)
 
+                # === 定期输出性能报告 (每10秒) ===
+                current_time = time.time()
+                if current_time - last_perf_report_time >= 10.0:
+                    elapsed = current_time - perf_start_time
+                    print_performance_report(perf_times, elapsed)
+                    last_perf_report_time = current_time
+
+                t0 = time.time()
                 # 获取车辆状态
                 ego_speed = self.get_vehicle_speed(self.ego_vehicle)
                 target_speed = self.get_vehicle_speed(self.target_vehicle) if self.target_vehicle else 0.0
@@ -772,6 +844,7 @@ class acc:
                         self.acc_controller.target_speed = self.current_cruise_speed_kmh / 3.6
 
                 # === OpenCV图像处理（用于雷达和车道检测） ===
+                t0 = time.time()
                 if self.latest_camera_image is not None:
                     image_with_radar = self.latest_camera_image.copy()
 
@@ -872,10 +945,12 @@ class acc:
                     'external_stage_manager_states': [1.0, 0.0, 0.0],
                     'external_adapter_states': [0.0, sanitize_value(ego_speed_ms, 0.0), 0.0]
                 }
-                
+
                 # 调用一体化接口获取决策+SPPVT输出
                 try:
+                    t0 = time.time()
                     unified_output = self.acc_decision_sppvt.process_decision_and_control(unified_input)
+                    perf_times['0_simulink'].append(time.time() - t0)
 
                     # === 同步Simulink输出的参数回到系统 ===
                     # V_target_kmh可能被Simulink修改（无继控制时）
@@ -944,64 +1019,72 @@ class acc:
                             if sppvt_target_accel is not None:
                                 # 使用一体化接口的SPPVT输出
                                 print(f"🚗 使用一体化SPPVT控制 (目标加速度: {sppvt_target_accel:.3f} m/s²)")
-                                
+
                                 # 将SPPVT加速度转换为车辆控制命令
                                 control = carla.VehicleControl()
                                 control.manual_gear_shift = False
                                 control.gear = 1
-                                
+
                                 if sppvt_target_accel > 0:
                                     control.throttle = min(sppvt_target_accel / 2.0, 1.0)  # 归一化到[0,1]
                                     control.brake = 0.0
                                 else:
                                     control.throttle = 0.0
                                     control.brake = min(-sppvt_target_accel / 4.0, 1.0)  # 归一化到[0,1]
-                                
+
                                 # 横向控制使用现有逻辑
                                 control.steer = np.clip(lane_offset * 0.04, -0.4, 0.4)  # 简化转向控制
-                                
-                                # === 扭矩仲裁处理 ===
-                                if torque_arbitration and hasattr(self, 'manual_throttle_input'):
-                                    print(f"⚖️ 执行扭矩仲裁")
-                                    print(f"   SPPVT油门输出: {control.throttle:.3f}")
-                                    print(f"   驾驶员油门输入: {self.manual_throttle_input:.3f}")
-                                    
-                                    # 取最大油门开度（协调控制）
-                                    final_throttle = max(control.throttle, self.manual_throttle_input)
-                                    control.throttle = final_throttle
-                                    
-                                    print(f"   协调后油门输出: {final_throttle:.3f}")
-                                    print(f"   仲裁模式: 取最大值(驾驶员={self.manual_throttle_input:.3f} vs SPPVT={control.throttle:.3f})")
-                                    
+
+                                # === W/S键处理：始终生效 ===
+                                if self.manual_throttle_input > 0:
+                                    if torque_arbitration:
+                                        # 扭矩仲裁激活：取max(SPPVT, W键)
+                                        print(f"⚖️ 执行扭矩仲裁")
+                                        print(f"   SPPVT油门输出: {control.throttle:.3f}")
+                                        print(f"   驾驶员油门输入: {self.manual_throttle_input:.3f}")
+                                        final_throttle = max(control.throttle, self.manual_throttle_input)
+                                        control.throttle = final_throttle
+                                        print(f"   协调后油门输出: {final_throttle:.3f}")
+                                    else:
+                                        # 扭矩仲裁未激活：直接使用W键输入
+                                        print(f"⚙️ W键直接控制油门: {self.manual_throttle_input:.3f}")
+                                        control.throttle = self.manual_throttle_input
+                                        control.brake = 0.0
+
+                                if self.manual_brake_input > 0:
+                                    # S键刹车：始终覆盖
+                                    print(f"🛑 S键直接控制刹车: {self.manual_brake_input:.3f}")
+                                    control.throttle = 0.0
+                                    control.brake = self.manual_brake_input
+
                             else:
                                 # 回退到传统ACC控制
                                 print(f"🚗 回退传统ACC控制 (使用前车信息: {target_info is not None})")
                                 acc_control = acc_controller.cruise_control(lane_offset, target_info)
-                                
-                                # === 扭矩仲裁处理 ===
-                                if torque_arbitration and hasattr(self, 'manual_throttle_input'):
-                                    print(f"⚖️ 执行扭矩仲裁")
-                                    print(f"   ACC油门输出: {acc_control.throttle:.3f}")
-                                    print(f"   驾驶员油门输入: {self.manual_throttle_input:.3f}")
-                                    
-                                    # 取最大油门开度（协调控制）
-                                    final_throttle = max(acc_control.throttle, self.manual_throttle_input)
-                                    
-                                    # 创建协调后的控制命令
-                                    control = carla.VehicleControl()
-                                    control.throttle = final_throttle
-                                    control.brake = acc_control.brake  # ACC刹车逻辑
-                                    control.steer = acc_control.steer  # ACC转向逻辑
-                                    control.manual_gear_shift = acc_control.manual_gear_shift
-                                    control.gear = acc_control.gear
-                                    
-                                    print(f"   协调后油门输出: {final_throttle:.3f}")
-                                    print(f"   仲裁模式: 取最大值(驾驶员={self.manual_throttle_input:.3f} vs ACC={acc_control.throttle:.3f})")
-                                    
-                                else:
-                                    # 正常ACC控制
-                                    control = acc_control
-                                
+                                control = acc_control
+
+                                # === W/S键处理：始终生效 ===
+                                if self.manual_throttle_input > 0:
+                                    if torque_arbitration:
+                                        # 扭矩仲裁激活：取max(ACC, W键)
+                                        print(f"⚖️ 执行扭矩仲裁")
+                                        print(f"   ACC油门输出: {control.throttle:.3f}")
+                                        print(f"   驾驶员油门输入: {self.manual_throttle_input:.3f}")
+                                        final_throttle = max(control.throttle, self.manual_throttle_input)
+                                        control.throttle = final_throttle
+                                        print(f"   协调后油门输出: {final_throttle:.3f}")
+                                    else:
+                                        # 扭矩仲裁未激活：直接使用W键输入
+                                        print(f"⚙️ W键直接控制油门: {self.manual_throttle_input:.3f}")
+                                        control.throttle = self.manual_throttle_input
+                                        control.brake = 0.0
+
+                                if self.manual_brake_input > 0:
+                                    # S键刹车：始终覆盖
+                                    print(f"🛑 S键直接控制刹车: {self.manual_brake_input:.3f}")
+                                    control.throttle = 0.0
+                                    control.brake = self.manual_brake_input
+
                         else:
                             # ACC未激活：不执行控制或使用巡航模式
                             print("🚗 ACC未激活，保持手动控制")
@@ -1104,6 +1187,14 @@ class acc:
             import traceback
             traceback.print_exc()
         finally:
+            # === 输出最终性能报告 ===
+            if 'perf_times' in locals() and 'perf_start_time' in locals():
+                final_elapsed = time.time() - perf_start_time
+                print("\n" + "="*60)
+                print("🏁 最终性能分析报告")
+                print("="*60)
+                print_performance_report(perf_times, final_elapsed)
+
             print("Cleaning up...")
             cv2.destroyAllWindows()
             self.csv_file.close()

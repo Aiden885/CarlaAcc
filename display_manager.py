@@ -235,6 +235,9 @@ class DisplayManager:
                 else:
                     main_events.append(('keydown', event.key))
 
+            elif event.type == pygame.KEYUP:
+                main_events.append(('keyup', event.key))
+
         return main_events
 
     def render_display(self, system_info):

@@ -71,7 +71,7 @@ class RealtimeSPPVTStateManager:
         # State management
         self.sppvt_state = SPPVTState()
         self.simulation_time = 0.0
-        self.dt = 0.05  # 50ms time step
+        self.dt = 0.02  # 20ms time step (updated from 50ms for faster response)
 
         # Performance monitoring
         self.execution_times = deque(maxlen=1000)
@@ -112,7 +112,7 @@ class RealtimeSPPVTStateManager:
             raise
 
     def _load_simulink_model(self):
-        """Load Simulink model"""
+        """Load Simulink model with Fast Restart optimization"""
         try:
             self.logger.info(f"Loading Simulink model: {self.model_name}")
 
@@ -131,28 +131,40 @@ class RealtimeSPPVTStateManager:
             # Load model
             self.matlab_eng.eval(f"load_system('{self.model_name}')", nargout=0)
 
-            # Configure simulation parameters - reference successful implementations
-            self.matlab_eng.eval(f"set_param('{self.model_name}', 'SimulationMode', 'normal')", nargout=0)
-            self.matlab_eng.eval(f"set_param('{self.model_name}', 'StopTime', '{self.dt}')", nargout=0)
-            self.matlab_eng.eval(f"set_param('{self.model_name}', 'SaveOutput', 'on')", nargout=0)
-            self.matlab_eng.eval(f"set_param('{self.model_name}', 'OutputSaveName', 'yout')", nargout=0)
+            # Configure simulation parameters with Fast Restart optimization
+            # Fast Restart keeps model compiled between sim() calls - critical for performance!
+            # Reference: https://www.mathworks.com/help/simulink/ug/how-fast-restart-improves-iterative-simulations.html
+            self.logger.info("Configuring Accelerator mode with Fast Restart...")
+            self.matlab_eng.eval(f"""
+                % Use accelerator mode for fast simulation
+                set_param('{self.model_name}', 'SimulationMode', 'accelerator');
 
-            # Force Dataset format - StructureWithTime doesn't support bus data recording
-            # According to Simulink documentation: bus data output must use Dataset format
-            self.matlab_eng.eval(f"set_param('{self.model_name}', 'SaveFormat', 'Dataset')", nargout=0)
+                % Enable Fast Restart - keeps model compiled between runs
+                set_param('{self.model_name}', 'FastRestart', 'on');
+
+                % Basic simulation parameters
+                set_param('{self.model_name}', 'StopTime', '{self.dt}');
+                set_param('{self.model_name}', 'SaveOutput', 'on');
+                set_param('{self.model_name}', 'OutputSaveName', 'yout');
+                set_param('{self.model_name}', 'SaveFormat', 'Dataset');
+
+                % Disable model reference rebuild checks for performance
+                set_param('{self.model_name}', 'UpdateModelReferenceTargets', 'AssumeUpToDate');
+
+                disp('Fast Restart configuration complete');
+            """, nargout=0)
+
             self.output_format = 'Dataset'
-            self.logger.info("Configured Simulink output format: Dataset (required for bus data)")
+            self.logger.info("Configured Accelerator + Fast Restart mode (Dataset output)")
 
-            # Clear any old external input configuration
-            try:
-                self.matlab_eng.eval(f"set_param('{self.model_name}', 'ExternalInput', '')", nargout=0)
-                self.matlab_eng.eval(f"set_param('{self.model_name}', 'LoadExternalInput', 'off')", nargout=0)
-                self.logger.info("Cleared external input configuration")
-            except:
-                pass  # Ignore configuration errors
+            # Perform initial compilation by running a dummy simulation
+            # This triggers the accelerator build and prepares Fast Restart
+            self.logger.info("Performing initial accelerator build (one-time ~10s)...")
+            self._run_initial_compilation()
 
             self.model_loaded = True
-            self.logger.info("Simulink model loaded successfully")
+            self.logger.info("✅ Simulink model ready with Fast Restart enabled")
+            self.logger.info("   Subsequent simulations will use compiled model for maximum speed")
 
         except Exception as e:
             self.logger.error(f"Simulink model loading failed: {e}")
@@ -162,6 +174,64 @@ class RealtimeSPPVTStateManager:
                 self.logger.error("1. create_decision_sppvt_bus.m file exists")
                 self.logger.error("2. Simulink model uses correct bus names")
                 self.logger.error("3. Inport/Outport configured for new 17/18-field buses")
+            raise
+
+    def _run_initial_compilation(self):
+        """Run initial compilation to trigger accelerator build and prepare Fast Restart"""
+        try:
+            import time
+            self.logger.info("Creating dummy input for initial compilation...")
+
+            # Create minimal dummy input for compilation
+            self.matlab_eng.eval(f"""
+                % Create minimal dummy timeseries data
+                time_pts = [0.0, {self.dt}];
+                dummy_double = [0.0, 0.0];
+                dummy_int = int32([1, 1]);
+                dummy_bool = logical([true, true]);
+                dummy_array = [[0.0; 0.0; 0.0], [0.0; 0.0; 0.0]];
+
+                % Build complete input structure matching DecisionSPPVTInputExtended
+                dummy_input.ego_speed_kmh = timeseries(dummy_double, time_pts, 'Name', 'ego_speed_kmh');
+                dummy_input.ego_speed_ms = timeseries(dummy_double, time_pts, 'Name', 'ego_speed_ms');
+                dummy_input.command_type = timeseries(dummy_int, time_pts, 'Name', 'command_type');
+                dummy_input.command_active = timeseries(dummy_bool, time_pts, 'Name', 'command_active');
+                dummy_input.manual_throttle_active = timeseries(dummy_bool, time_pts, 'Name', 'manual_throttle_active');
+                dummy_input.control_error = timeseries(dummy_double, time_pts, 'Name', 'control_error');
+                dummy_input.control_mode_flag = timeseries(dummy_int, time_pts, 'Name', 'control_mode_flag');
+                dummy_input.V_target_kmh = timeseries([50.0, 50.0], time_pts, 'Name', 'V_target_kmh');
+                dummy_input.V_min_kmh = timeseries([30.0, 30.0], time_pts, 'Name', 'V_min_kmh');
+                dummy_input.G2_s = timeseries([2.0, 2.0], time_pts, 'Name', 'G2_s');
+                dummy_input.timestamp = timeseries(time_pts, time_pts, 'Name', 'timestamp');
+                dummy_input.external_stage_offset = timeseries(dummy_double, time_pts, 'Name', 'external_stage_offset');
+                dummy_input.external_stage_manager_states = timeseries(dummy_array, time_pts, 'Name', 'external_stage_manager_states');
+                dummy_input.external_adapter_states = timeseries(dummy_array, time_pts, 'Name', 'external_adapter_states');
+
+                % Set time units
+                fields = fieldnames(dummy_input);
+                for i = 1:length(fields)
+                    dummy_input.(fields{{i}}).TimeInfo.Units = 'seconds';
+                end
+
+                % Configure external input
+                set_param('{self.model_name}', 'ExternalInput', 'dummy_input');
+                set_param('{self.model_name}', 'LoadExternalInput', 'on');
+
+                disp('Running initial compilation (this will take ~10 seconds)...');
+            """, nargout=0)
+
+            compile_start = time.time()
+
+            # Run first simulation to trigger compilation
+            self.matlab_eng.eval(f"simOut_initial = sim('{self.model_name}');", nargout=0)
+
+            compile_time = time.time() - compile_start
+
+            self.logger.info(f"Initial compilation completed in {compile_time:.1f}s")
+            self.logger.info("Model is now compiled and Fast Restart is active")
+
+        except Exception as e:
+            self.logger.error(f"Initial compilation failed: {e}")
             raise
 
     def _initialize_workspace_templates(self):
@@ -250,7 +320,14 @@ class RealtimeSPPVTStateManager:
                             new_stage_offset = self.matlab_eng.eval(
                                 "sim_out.yout{1}.Values.new_stage_offset.Data(end)"
                             )
-                            self.sppvt_state.current_stage_offset = float(new_stage_offset)
+                            new_stage_offset = float(new_stage_offset)
+
+                            # 🔒 范围检查：stage_offset必须在合理范围内 [-100, 100]
+                            if not np.isfinite(new_stage_offset) or abs(new_stage_offset) > 100:
+                                self.logger.warning(f"Invalid stage_offset detected: {new_stage_offset}, using safe value 0.0")
+                                new_stage_offset = 0.0
+
+                            self.sppvt_state.current_stage_offset = new_stage_offset
                             self.logger.debug(f"Updated stage_offset: {new_stage_offset}")
                         except Exception as e:
                             self.logger.debug(f"Could not extract new_stage_offset: {e}")
@@ -354,6 +431,12 @@ class RealtimeSPPVTStateManager:
                                     try:
                                         new_stage_offset_raw = self.matlab_eng.eval("yout{1}.Values.new_stage_offset.Data(end)")
                                         new_stage_offset = float(new_stage_offset_raw)
+
+                                        # 🔒 范围检查：stage_offset必须在合理范围内 [-100, 100]
+                                        if not np.isfinite(new_stage_offset) or abs(new_stage_offset) > 100:
+                                            self.logger.warning(f"Invalid stage_offset detected: {new_stage_offset}, using safe value 0.0")
+                                            new_stage_offset = 0.0
+
                                         self.sppvt_state.current_stage_offset = new_stage_offset
                                         self.logger.debug(f"Updated stage_offset from timeseries: {new_stage_offset}")
 
@@ -642,14 +725,22 @@ class RealtimeSPPVTStateManager:
             # Configure external input and run simulation
             self.logger.debug(f"Running optimized simulation: t={self.simulation_time:.3f}s, data_update={data_update_time*1000:.1f}ms")
 
-            # Configure and run simulation
+            # Configure and run simulation using SimulationInput for build control
             config_start = time.time()
             self.matlab_eng.eval(f"set_param('{self.model_name}', 'ExternalInput', 'input_data')", nargout=0)
             self.matlab_eng.eval(f"set_param('{self.model_name}', 'LoadExternalInput', 'on')", nargout=0)
+
+            # 使用SimulationInput对象明确禁用build检查
+            # 参考: https://www.mathworks.com/help/simulink/slref/simulink.simulationinput.html
+            self.matlab_eng.eval(f"""
+            simIn = Simulink.SimulationInput('{self.model_name}');
+            simIn = simIn.setModelParameter('UpdateModelReferenceTargets', 'AssumeUpToDate');
+            """, nargout=0)
             config_time = time.time() - config_start
 
             sim_start = time.time()
-            self.matlab_eng.eval(f"simOut = sim('{self.model_name}');", nargout=0)
+            # 使用SimulationInput运行仿真而不是直接sim()
+            self.matlab_eng.eval(f"simOut = sim(simIn);", nargout=0)
             sim_time = time.time() - sim_start
 
             # 检查simOut是否存在
