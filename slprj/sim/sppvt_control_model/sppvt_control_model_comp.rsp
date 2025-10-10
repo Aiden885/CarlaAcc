@@ -1,0 +1,8 @@
+﻿-IC:\Users\ZhaoY\PycharmProjects\CarlaAcc
+-IC:\Users\ZhaoY\PycharmProjects\CarlaAcc\slprj\sim\sppvt_control_model
+-I"C:\Program Files\MATLAB\R2024b\extern\include"
+-I"C:\Program Files\MATLAB\R2024b\simulink\include"
+-I"C:\Program Files\MATLAB\R2024b\rtw\c\src"
+-I"C:\Program Files\MATLAB\R2024b\rtw\c\src\ext_mode\common"
+-I"C:\Program Files\MATLAB\R2024b\rtw\c\ert"
+-IC:\Users\ZhaoY\PycharmProjects\CarlaAcc\slprj\sim\_sharedutils
