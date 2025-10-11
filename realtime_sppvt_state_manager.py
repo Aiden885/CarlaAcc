@@ -133,7 +133,6 @@ class RealtimeSPPVTStateManager:
 
             # Configure simulation parameters with Fast Restart optimization
             # Fast Restart keeps model compiled between sim() calls - critical for performance!
-            # Reference: https://www.mathworks.com/help/simulink/ug/how-fast-restart-improves-iterative-simulations.html
             self.logger.info("Configuring Accelerator mode with Fast Restart...")
             self.matlab_eng.eval(f"""
                 % Use accelerator mode for fast simulation
@@ -614,7 +613,7 @@ class RealtimeSPPVTStateManager:
             # Original 11 fields
             'ego_speed_kmh': matlab.double([ego_speed_kmh]),
             'ego_speed_ms': matlab.double([ego_speed_ms]),
-            'command_type': matlab.int32([1]),  # Default I0 command
+            'command_type': matlab.int32([0]),  # Default I0 command
             'command_active': matlab.logical([True]),
             'manual_throttle_active': matlab.logical([False]),
             'control_error': matlab.double([control_error]),
@@ -691,7 +690,7 @@ class RealtimeSPPVTStateManager:
             ts_G2_s.Data = [2.0, 2.0];
 
             % Update int32 fields
-            ts_command_type.Data = int32([1, 1]);
+            ts_command_type.Data = int32([0, 0]);
             ts_control_mode_flag.Data = int32([{1 if control_mode_flag else 2}, {1 if control_mode_flag else 2}]);
 
             % Update logical fields
@@ -813,31 +812,6 @@ class RealtimeSPPVTStateManager:
             self.logger.error(f"System reinitialization failed: {e}")
             raise
 
-    def calculate_stage_offset_upgrade(self, current_accel: float, current_velocity: float,
-                                     current_error: float) -> bool:
-        """
-        计算级差升级条件 (基于C代码分析的完整逻辑)
-
-        升级条件: (acceleration < 0) && (|velocity| <= delta) && (|error| > eta)
-        """
-        delta = self.config['sppvt_delta']
-        eta = self.config['sppvt_eta']
-
-        condition1 = current_accel < 0  # 减速状态
-        condition2 = abs(current_velocity) <= delta  # 速度足够小
-        condition3 = abs(current_error) > eta  # 误差足够大
-
-        should_upgrade = condition1 and condition2 and condition3
-
-        if should_upgrade:
-            # 计算新的级差值
-            sign_error = 1.0 if current_error >= 0 else -1.0
-            new_stage_offset = self.sppvt_state.current_stage_offset + sign_error * 0.1  # 级差步长
-
-            self.logger.info(f"级差升级: {self.sppvt_state.current_stage_offset:.3f} -> {new_stage_offset:.3f}")
-            self.sppvt_state.current_stage_offset = new_stage_offset
-
-        return should_upgrade
 
     def get_performance_stats(self) -> Dict[str, Any]:
         """获取性能统计信息"""

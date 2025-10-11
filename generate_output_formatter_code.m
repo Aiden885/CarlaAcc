@@ -1,16 +1,16 @@
 function integrated_output = fcn(decision_output, sppvt_output1, sppvt_output2, sppvt_output3, sppvt_output4, sppvt_output5, new_stage_offset, stage_manager_states_out, adapter_states_out)
 %#codegen
 % Output_Formatter - 17/18-field state externalization version
-% 集成决策、SPPVT输出和状态输出，用于Python状态捕获
+% Integrates decision, SPPVT output and state output for Python state capture
 %
-% 输入:
-%   decision_output - Decision_Function的DecisionSPPVTOutput (包含next_state等决策状态输出字段)
-%   sppvt_output1-5 - SPPVT_Control的5个输出 (control, velocity, acceleration, stage, status)
-%   new_stage_offset - Stage_Manager的级差输出
-%   stage_manager_states_out - [new_stage, new_error_sign, new_upgrade_count] 数组
-%   adapter_states_out - [new_control_error, new_velocity, new_accel] 数组
+% Inputs:
+%   decision_output - DecisionSPPVTOutput from Decision_Function (includes next_state and other decision state output fields)
+%   sppvt_output1-5 - 5 outputs from SPPVT_Control (control, velocity, acceleration, stage, status)
+%   new_stage_offset - Stage offset output from Stage_Manager
+%   stage_manager_states_out - [new_stage, new_error_sign, new_upgrade_count] array
+%   adapter_states_out - [new_control_error, new_velocity, new_accel] array
 %
-% 输出: integrated_output - DecisionSPPVTOutputExtended (18字段)
+% Output: integrated_output - DecisionSPPVTOutputExtended (18 fields)
 
 %% 构造集成输出结构
 integrated_output = struct();

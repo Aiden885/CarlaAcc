@@ -16,6 +16,7 @@ from pygame.locals import *
 # $env:HTTP_PROXY = "http://127.0.0.1:7890"
 # $env:HTTPS_PROXY = "http://127.0.0.1:7890"
 # $env:ALL_PROXY = "socks5://127.0.0.1:7891"
+#升级条件: (acceleration < 0) && (|velocity| <= delta) && (|error| > eta)
 
 # ACC相关模块
 from acc_planning_control import ACCPlanningControl
@@ -54,7 +55,8 @@ class acc:
         self.target_speed_controller = None
 
         # === ACC决策+SPPVT一体化模块 ===
-        self.acc_decision_sppvt = ACCDecisionSPPVTInterface(debug=True)
+        # 使用完整Simulink模型（包含决策+SPPVT控制），不使用简化的realtime_sppvt_manager
+        self.acc_decision_sppvt = ACCDecisionSPPVTInterface(debug=True, use_realtime_sppvt=False)
         
         # === ACC系统可配置参数 (环境相关，需要传递给Simulink) ===
         self.acc_params = {
@@ -968,7 +970,7 @@ class acc:
                         'current_decision': unified_output['current_decision'],
                         'torque_arbitration_active': unified_output['torque_arbitration_active']
                     }
-                    # 保存SPPVT目标加速度用于后续使用
+                    # 保存SPPVT控制输出用于后续使用
                     sppvt_target_accel = unified_output.get('target_accel', 0.0)
                     
                 except Exception as e:
@@ -1018,7 +1020,7 @@ class acc:
                             # ACC控制激活
                             if sppvt_target_accel is not None:
                                 # 使用一体化接口的SPPVT输出
-                                print(f"🚗 使用一体化SPPVT控制 (目标加速度: {sppvt_target_accel:.3f} m/s²)")
+                                print(f"🚗 使用一体化SPPVT控制 (控制输出: {sppvt_target_accel:.3f} m/s²)")
 
                                 # 将SPPVT加速度转换为车辆控制命令
                                 control = carla.VehicleControl()
@@ -1099,7 +1101,7 @@ class acc:
                             current_mode = f"UNIFIED_SPPVT_{unified_output.get('sppvt_stage', 'Unknown')}"
                             print(f"🎮 一体化SPPVT控制模式: {current_mode}")
                             print(f"   决策状态: {unified_output.get('current_state', 'Unknown')}")
-                            print(f"   目标加速度: {sppvt_target_accel:.3f} m/s²")
+                            print(f"   控制输出: {sppvt_target_accel:.3f} m/s²")
                         else:
                             current_mode = decision_output.get('current_control_mode', 'Unknown')
                             print(f"🎮 传统ACC控制模式: {current_mode}")

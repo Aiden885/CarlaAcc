@@ -1,39 +1,30 @@
-function [error_value, dt, stage_offset, kp, max_accel, max_decel, prev_error_out, prev_velocity_out, prev_accel_out, delta, eta, mode_flag] = fcn(validated_input, decision_output)
+function [error_value, dt, stage_offset, kp, max_accel, max_decel, prev_error_out, prev_velocity_out, prev_accel_out, delta, eta, mode_flag, adapter_states_out] = fcn(validated_input, decision_output, external_stage_offset, external_adapter_states)
 %#codegen
-% SPPVT接口适配器 - 支持外部状态注入版本 (通过总线)
-% 输入: validated_input (验证后的输入，含外部状态), decision_output (决策输出)
-% 输出: 12个独立信号匹配sppvt_control_model的12个输入端口
+% SPPVT接口适配器 - 支持外部状态注入版本 (通过Bus Selector)
+% 输入:
+%   validated_input - 验证后的输入总线
+%   decision_output - 决策输出总线
+%   external_stage_offset - 外部级差状态 (从Bus Selector1/1)
+%   external_adapter_states - 外部适配器状态 [prev_error, prev_velocity, prev_accel] (从Bus Selector1/3)
+% 输出:
+%   1-12: 12个独立信号匹配sppvt_control_model的12个输入端口
+%   13: adapter_states_out - [new_control_error, new_velocity, new_accel] 用于Output_Formatter
 
-%% 使用外部状态（从总线输入中获取）
-% 检查是否有外部状态字段，如果有则使用外部状态，否则使用内部persistent变量
-persistent internal_stage_offset internal_prev_error internal_prev_velocity internal_prev_accel
+%% 直接使用外部状态（从Bus Selector传入）
+% 修复：直接使用Bus Selector提取的字段，不需要isfield()检查
+current_stage_offset = external_stage_offset;
 
-% 初始化内部persistent变量作为备份
-if isempty(internal_stage_offset)
-    internal_stage_offset = 0.0;
-    internal_prev_error = 0.0;
-    internal_prev_velocity = 13.89;  % 50 km/h = 13.89 m/s
-    internal_prev_accel = 0.1;
-end
-
-% 优先使用外部状态，如果不可用则回退到内部状态
-if isfield(validated_input, 'external_stage_offset') && ...
-   isfield(validated_input, 'external_prev_error') && ...
-   isfield(validated_input, 'external_prev_velocity') && ...
-   isfield(validated_input, 'external_prev_accel')
-    % 使用外部状态（Python状态管理器注入）
-    current_stage_offset = validated_input.external_stage_offset;
-    prev_error = validated_input.external_prev_error;
-    prev_velocity = validated_input.external_prev_velocity;
-    prev_accel = validated_input.external_prev_accel;
-    fprintf("SPPVT Adapter: 使用外部状态 - Stage=%.3f, PrevErr=%.3f\n", current_stage_offset, prev_error);
+% 从3元素数组中提取 [prev_error, prev_velocity, prev_accel]
+if length(external_adapter_states) >= 3
+    prev_error = external_adapter_states(1);
+    prev_velocity = external_adapter_states(2);
+    prev_accel = external_adapter_states(3);
 else
-    % 回退到内部persistent变量
-    current_stage_offset = internal_stage_offset;
-    prev_error = internal_prev_error;
-    prev_velocity = internal_prev_velocity;
-    prev_accel = internal_prev_accel;
-    fprintf("SPPVT Adapter: 使用内部状态 (外部状态不可用)\n");
+    % 如果数组长度不足，使用默认值
+    prev_error = 0.0;
+    prev_velocity = 13.89;  % 50 km/h = 13.89 m/s
+    prev_accel = 0.0;
+    fprintf("SPPVT Adapter: Warning - external_adapter_states length < 3, using defaults\n");
 end
 
 %% 根据决策结果确定控制误差
@@ -58,25 +49,16 @@ delta = 0.05;                                   % [10] sppvt_delta 控制参数 
 eta = 0.2;                                      % [11] sppvt_eta 控制参数 (与Python实现一致)
 mode_flag = double(validated_input.control_mode_flag); % [12] 控制模式标志
 
-% 更新内部状态（仅在使用内部状态时）
-if ~(isfield(validated_input, 'external_stage_offset') && ...
-     isfield(validated_input, 'external_prev_error') && ...
-     isfield(validated_input, 'external_prev_velocity') && ...
-     isfield(validated_input, 'external_prev_accel'))
-    % 只有在使用内部状态时才更新内部persistent变量
-    internal_prev_error = error_value;
-    internal_prev_velocity = validated_input.ego_speed_ms;
-    % internal_prev_accel 需要通过Stage_Manager反馈更新
-end
+%% 输出adapter状态数组（第13个输出）
+% 用于Output_Formatter的new_adapter_states字段
+% 格式: [new_control_error, new_velocity, new_accel]
+% 注意：new_accel将在Output_Formatter中被SPPVT控制输出覆盖
+adapter_states_out = [error_value; validated_input.ego_speed_ms; 0.0];
 
-% 调试输出 - 显示状态来源和关键参数
+% 调试输出 - 显示关键参数
 if abs(error_value) > 0.01
-    state_source = "External";
-    if ~isfield(validated_input, 'external_stage_offset')
-        state_source = "Internal";
-    end
-    fprintf("SPPVT Adapter (%s): Error=%.3f, Speed=%.3f, Stage=%.3f, Mode=%d, Control=%d\n", ...
-            state_source, error_value, validated_input.ego_speed_ms, current_stage_offset, ...
+    fprintf("SPPVT Adapter: Error=%.3f, Speed=%.3f, Stage=%.3f, PrevAccel=%.3f, Mode=%d, Control=%d\n", ...
+            error_value, validated_input.ego_speed_ms, current_stage_offset, prev_accel, ...
             int32(validated_input.control_mode_flag), int32(decision_output.control_enabled));
 end
 end
