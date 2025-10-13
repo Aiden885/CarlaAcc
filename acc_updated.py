@@ -88,6 +88,9 @@ class acc:
         self.w_key_pressed = False  # W键（油门）是否按下
         self.s_key_pressed = False  # S键（刹车）是否按下
 
+        # 键盘指令队列（单帧有效，只记录指令不立即调用Simulink）
+        self.pending_keyboard_command = None  # 格式: {'code': int, 'description': str}
+
         # === 运行控制 ===
         self.running = True
 
@@ -428,7 +431,7 @@ class acc:
 
     def _send_keyboard_command_to_simulink(self, command_code, description):
         """
-        发送键盘指令给Simulink进行处理
+        记录键盘指令，将在下一帧的主循环中统一处理
 
         Args:
             command_code (int): 标准指令码 (根据decision.md)
@@ -436,65 +439,131 @@ class acc:
                 5=I4油门, 6=I5制动, 7=I6取消
             description (str): 指令描述
         """
-        try:
-            # 获取当前车辆状态
-            ego_speed = self.get_vehicle_speed(self.ego_vehicle)
-            ego_speed_ms = ego_speed / 3.6
+        # 只记录指令，不立即调用Simulink
+        self.pending_keyboard_command = {
+            'code': command_code,
+            'description': description
+        }
+        print(f"⌨️ 已记录键盘指令: {description} (将在下一帧处理)")
 
-            # 创建发送给Simulink的输入数据
-            simulink_input = {
-                'ego_speed_kmh': ego_speed,
-                'ego_speed_ms': ego_speed_ms,
-                'command_type': command_code,  # 按键指令码
-                'command_active': True,        # 激活指令
-                'manual_throttle_active': False,
-                'control_error': 0.0,          # 按键指令时控制误差为0
-                'control_mode_flag': 2,        # 默认速度模式
-                'V_target_kmh': self.acc_params['V_target_kmh'],
-                'V_min_kmh': self.acc_params['V_min_kmh'],
-                'G2_s': self.acc_params['G2_s'],
-                'timestamp': time.time(),
-                # 外部状态字段（使用默认值）
-                'external_stage_offset': 0.0,
-                'external_stage_manager_states': [1.0, 0.0, 0.0],
-                'external_adapter_states': [0.0, ego_speed_ms, 0.0]
-            }
+    def _print_simulink_io(self, frame_num, current_time, unified_input, unified_output, duration_ms,
+                           command_description=None, final_control=None, env_data=None):
+        """
+        格式化输出Simulink输入输出信息
 
-            # 调用Simulink决策+SPPVT接口
-            result = self.acc_decision.process_decision_and_control(simulink_input)
+        Args:
+            frame_num: 帧编号
+            current_time: 当前时间(秒)
+            unified_input: Simulink输入字典
+            unified_output: Simulink输出字典
+            duration_ms: Simulink调用耗时(毫秒)
+            command_description: 键盘指令描述(可选)
+            final_control: 最终控制输出(油门/刹车/转向, 可选)
+            env_data: 环境感知数据字典(可选)
+        """
+        # 指令名称映射
+        cmd_names = {
+            0: "NONE",
+            1: "I0(降速)",
+            2: "I1(增速)",
+            3: "I2(降距)",
+            4: "I3(增距)",
+            5: "I4(油门)",
+            6: "I5(刹车)",
+            7: "I6(取消)"
+        }
 
-            if result:
-                # 更新参数（从 Simulink 返回的结果）
-                if 'updated_V_target_kmh' in result:
-                    old_V_target = self.acc_params['V_target_kmh']
-                    self.acc_params['V_target_kmh'] = result['updated_V_target_kmh']
-                    print(f"🔵 {description}: {old_V_target:.1f} → {self.acc_params['V_target_kmh']:.1f} km/h")
+        # 控制模式名称
+        mode_names = {
+            1: "TIME模式",
+            2: "SPEED模式"
+        }
 
-                if 'updated_G2_s' in result:
-                    old_G2 = self.acc_params['G2_s']
-                    self.acc_params['G2_s'] = result['updated_G2_s']
-                    print(f"🔵 {description}: {old_G2:.1f} → {self.acc_params['G2_s']:.1f} s")
+        print(f"\n{'='*80}")
+        print(f"帧#{frame_num} | 时间:{current_time:.2f}s | Simulink:{duration_ms:.1f}ms")
+        print(f"{'='*80}")
 
-                # 处理取消指令
-                if command_code == 7:  # I6取消指令
-                    self.acc_system_enabled = False
-                    self.manual_control_active = True
-                    print(f"🔵 {description} - ACC系统已关闭")
+        # [环境感知] - 表格式
+        if env_data:
+            print(f"[环境感知]")
+            has_target_str = "✓" if env_data.get('has_target', False) else "✗"
+            target_speed_str = f"{env_data.get('target_speed_kmh', 0.0):.1f}km/h" if env_data.get('has_target', False) else "N/A"
 
-                # 显示 Simulink 决策结果
-                print(f"🛠️ Simulink决策: 状态S{result.get('current_state', 0)} → R{result.get('current_decision', 0)}")
-                print(f"🎯 控制使能: {'Yes' if result.get('control_enabled', False) else 'No'}")
+            # 距离误差符号
+            distance_error = env_data.get('distance_error', 0.0)
+            distance_error_str = f"{distance_error:+.2f}m" if env_data.get('has_target', False) else "N/A"
 
-                return True
+            # 车道偏移符号
+            lane_offset = env_data.get('lane_offset', 0.0)
+            lane_offset_str = f"{lane_offset:+.2f}m"
+
+            # 控制模式
+            control_mode = env_data.get('control_mode_name', 'Unknown')
+
+            print(f"  自车     前车      实际距离  期望距离  距离误差  车道偏移  模式      control_error")
+            print(f"  {env_data.get('ego_speed_kmh', 0.0):.1f}km/h {target_speed_str:8s}  "
+                  f"{env_data.get('vehicle_distance', 0.0):.2f}m   {env_data.get('desired_distance', 0.0):.2f}m   "
+                  f"{distance_error_str:8s} {lane_offset_str:7s}  {control_mode:8s}  "
+                  f"{env_data.get('control_error', 0.0):.3f}s")
+            print(f"  ")
+
+            # Two-Mode计算说明
+            if env_data.get('has_target', False):
+                if env_data.get('control_mode_flag', 1) == 1:
+                    print(f"[Two-Mode计算] control_error = 距离误差({distance_error:.2f}m) ÷ 自车速度({env_data.get('ego_speed_ms', 0.0):.2f}m/s) = {env_data.get('control_error', 0.0):.3f}s")
+                else:
+                    print(f"[Two-Mode计算] control_error = 前车速度({env_data.get('target_speed_ms', 0.0):.2f}m/s) - 自车速度({env_data.get('ego_speed_ms', 0.0):.2f}m/s) = {env_data.get('control_error', 0.0):.3f}m/s")
             else:
-                print(f"❌ {description} 失败: Simulink返回结果为空")
-                return False
+                print(f"[Two-Mode计算] 无前车 | control_error = 目标速度({env_data.get('target_speed_ms', 0.0):.2f}m/s) - 自车速度({env_data.get('ego_speed_ms', 0.0):.2f}m/s) = {env_data.get('control_error', 0.0):.3f}m/s")
 
-        except Exception as e:
-            print(f"❌ {description} 失败: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return False
+            print(f"[ACC参数] V_target:{unified_input['V_target_kmh']:.1f}km/h | G2:{unified_input['G2_s']:.1f}s | V_min:{unified_input['V_min_kmh']:.1f}km/h | 手动: 油门{self.manual_throttle_input:.2f} 刹车{self.manual_brake_input:.2f}")
+            print(f"")
+
+        # [键盘] - 紧凑单行
+        if command_description:
+            cmd_str = command_description
+        else:
+            cmd_type = unified_input['command_type']
+            cmd_str = cmd_names.get(cmd_type, f'Unknown({cmd_type})')
+
+        acc_status = "开启" if self.acc_system_enabled else "关闭"
+        w_status = "按下" if self.w_key_pressed else "松开"
+        s_status = "按下" if self.s_key_pressed else "松开"
+        print(f"[键盘] {cmd_str} | ACC:{acc_status} | W:{w_status} S:{s_status}")
+
+        # [Simulink→] - 紧凑单行
+        print(f"[Simulink→] 速度{unified_input['ego_speed_kmh']:.1f}km/h cmd:{unified_input['command_type']} "
+              f"err:{unified_input['control_error']:.3f}s mode:{unified_input['control_mode_flag']} "
+              f"V_target:{unified_input['V_target_kmh']:.1f} G2:{unified_input['G2_s']:.1f}")
+
+        # [Simulink←] - 紧凑单行
+        old_V = unified_input['V_target_kmh']
+        new_V = unified_output.get('updated_V_target_kmh', old_V)
+        old_G2 = unified_input['G2_s']
+        new_G2 = unified_output.get('updated_G2_s', old_G2)
+
+        print(f"[Simulink←] accel:{unified_output.get('target_accel', 0.0):.3f} "
+              f"enabled:{unified_output.get('control_enabled', False)} "
+              f"state:{unified_output.get('current_state', 'Unknown')} "
+              f"R{unified_output.get('current_decision', 0)} "
+              f"stage:{unified_output.get('sppvt_stage', 0)} "
+              f"仲裁:{unified_output.get('torque_arbitration_active', False)}")
+
+        # 参数变化检查
+        if abs(new_V - old_V) > 0.1 or abs(new_G2 - old_G2) > 0.1:
+            print(f"            参数变化: V_target:{old_V:.1f}→{new_V:.1f} G2:{old_G2:.1f}→{new_G2:.1f}")
+
+        # [控制执行] - 紧凑单行
+        if final_control:
+            mode_str = final_control.get('mode', 'Unknown')
+            print(f"[控制执行] {mode_str} | 油门:{final_control.get('throttle', 0.0):.2f} "
+                  f"刹车:{final_control.get('brake', 0.0):.2f} 转向:{final_control.get('steer', 0.0):.3f}")
+
+            # 扭矩仲裁信息
+            if final_control.get('torque_arbitration'):
+                print(f"            ⚖️ 扭矩仲裁: SPPVT={final_control.get('sppvt_throttle', 0.0):.2f} + Driver={final_control.get('driver_throttle', 0.0):.2f}")
+
+        print(f"{'='*80}\n")
 
     def get_system_info(self):
         """获取系统状态信息，用于显示 """
@@ -769,8 +838,6 @@ class acc:
                 # W键（油门）持续按下：每帧累加0.1，松开时立即归零
                 if self.w_key_pressed:
                     self.manual_throttle_input = min(1.0, self.manual_throttle_input + 0.1)
-                    if self.acc_decision.debug:
-                        print(f"🔵 W键持续按下，油门开度: {self.manual_throttle_input:.2f}")
                 else:
                     # W键未按下时，确保油门归零
                     self.manual_throttle_input = 0.0
@@ -778,8 +845,6 @@ class acc:
                 # S键（刹车）持续按下：每帧累加0.2，松开时立即归零
                 if self.s_key_pressed:
                     self.manual_brake_input = min(1.0, self.manual_brake_input + 0.2)
-                    if self.acc_decision.debug:
-                        print(f"🔵 S键持续按下，刹车开度: {self.manual_brake_input:.2f}")
                 else:
                     # S键未按下时，确保刹车归零
                     self.manual_brake_input = 0.0
@@ -915,12 +980,21 @@ class acc:
                 # 传递手动油门状态用于扭矩仲裁管理
                 manual_throttle_active = hasattr(self, 'manual_throttle_input') and self.manual_throttle_input > 0
 
-                # 根据按键状态确定command_type
-                command_type = 0  # 默认NONE
-                if self.w_key_pressed and self.acc_system_enabled:
-                    command_type = 5  # I4油门指令
-                elif self.s_key_pressed and self.acc_system_enabled:
-                    command_type = 6  # I5刹车指令
+                # === 检查是否有待处理的键盘指令（统一调用点）===
+                command_description = None  # 初始化为None，用于格式化输出
+                if self.pending_keyboard_command:
+                    # 使用键盘指令参数
+                    command_type = self.pending_keyboard_command['code']
+                    command_description = self.pending_keyboard_command['description']
+                    # 清除指令（单帧有效）
+                    self.pending_keyboard_command = None
+                else:
+                    # 使用正常的W/S键状态
+                    command_type = 0  # 默认NONE
+                    if self.w_key_pressed and self.acc_system_enabled:
+                        command_type = 5  # I4油门指令
+                    elif self.s_key_pressed and self.acc_system_enabled:
+                        command_type = 6  # I5刹车指令
 
                 # 数据清洗：确保所有值都是有限数（非Inf/NaN）
                 def sanitize_value(value, default=0.0):
@@ -934,7 +1008,7 @@ class acc:
                     'ego_speed_kmh': sanitize_value(ego_speed, 0.0),
                     'ego_speed_ms': sanitize_value(ego_speed_ms, 0.0),
                     'command_type': command_type,  # 根据按键状态动态设置
-                    'command_active': self.acc_system_enabled,
+                    'command_active': bool(command_type),
                     'manual_throttle_active': manual_throttle_active,
                     'control_error': sanitize_value(control_error, 0.0),
                     'control_mode_flag': control_mode_flag,
@@ -952,7 +1026,8 @@ class acc:
                 try:
                     t0 = time.time()
                     unified_output = self.acc_decision_sppvt.process_decision_and_control(unified_input)
-                    perf_times['0_simulink'].append(time.time() - t0)
+                    simulink_duration_ms = (time.time() - t0) * 1000  # 保存耗时(毫秒)
+                    perf_times['0_simulink'].append((time.time() - t0))
 
                     # === 同步Simulink输出的参数回到系统 ===
                     # V_target_kmh可能被Simulink修改（无继控制时）
@@ -1000,28 +1075,27 @@ class acc:
                 acc_should_control = (self.acc_system_enabled and
                                     decision_output['control_enabled'])
 
+                # 初始化最终控制信息字典
+                final_control = {
+                    'throttle': 0.0,
+                    'brake': 0.0,
+                    'steer': 0.0,
+                    'mode': 'MANUAL',
+                    'torque_arbitration': False,
+                    'sppvt_throttle': 0.0,
+                    'driver_throttle': 0.0
+                }
+
                 if acc_should_control:
                     # ACC控制模式 - 只有在主动控制模式下才执行
-                    print("✅ 进入ACC控制执行分支")
                     try:
                         lane_offset = (lane_center - 510) / 150
-
-                        # === 调试target_info ===
-                        print(f"🎯 target_info调试:")
-                        print(f"   target_info类型: {type(target_info)}")
-                        print(f"   target_info值: {target_info}")
-                        if target_info is not None:
-                            print(
-                                f"   target_info长度: {len(target_info) if hasattr(target_info, '__len__') else 'No length'}")
-                        print(f"   control_enabled: {decision_output.get('control_enabled', False)}")
 
                         # 根据控制激活状态决定控制方式
                         if decision_output.get('control_enabled', False):
                             # ACC控制激活
                             if sppvt_target_accel is not None:
                                 # 使用一体化接口的SPPVT输出
-                                print(f"🚗 使用一体化SPPVT控制 (控制输出: {sppvt_target_accel:.3f} m/s²)")
-
                                 # 将SPPVT加速度转换为车辆控制命令
                                 control = carla.VehicleControl()
                                 control.manual_gear_shift = False
@@ -1041,27 +1115,20 @@ class acc:
                                 if self.manual_throttle_input > 0:
                                     if torque_arbitration:
                                         # 扭矩仲裁激活：取max(SPPVT, W键)
-                                        print(f"⚖️ 执行扭矩仲裁")
-                                        print(f"   SPPVT油门输出: {control.throttle:.3f}")
-                                        print(f"   驾驶员油门输入: {self.manual_throttle_input:.3f}")
                                         final_throttle = max(control.throttle, self.manual_throttle_input)
                                         control.throttle = final_throttle
-                                        print(f"   协调后油门输出: {final_throttle:.3f}")
                                     else:
                                         # 扭矩仲裁未激活：直接使用W键输入
-                                        print(f"⚙️ W键直接控制油门: {self.manual_throttle_input:.3f}")
                                         control.throttle = self.manual_throttle_input
                                         control.brake = 0.0
 
                                 if self.manual_brake_input > 0:
                                     # S键刹车：始终覆盖
-                                    print(f"🛑 S键直接控制刹车: {self.manual_brake_input:.3f}")
                                     control.throttle = 0.0
                                     control.brake = self.manual_brake_input
 
                             else:
                                 # 回退到传统ACC控制
-                                print(f"🚗 回退传统ACC控制 (使用前车信息: {target_info is not None})")
                                 acc_control = acc_controller.cruise_control(lane_offset, target_info)
                                 control = acc_control
 
@@ -1069,42 +1136,41 @@ class acc:
                                 if self.manual_throttle_input > 0:
                                     if torque_arbitration:
                                         # 扭矩仲裁激活：取max(ACC, W键)
-                                        print(f"⚖️ 执行扭矩仲裁")
-                                        print(f"   ACC油门输出: {control.throttle:.3f}")
-                                        print(f"   驾驶员油门输入: {self.manual_throttle_input:.3f}")
                                         final_throttle = max(control.throttle, self.manual_throttle_input)
                                         control.throttle = final_throttle
-                                        print(f"   协调后油门输出: {final_throttle:.3f}")
                                     else:
                                         # 扭矩仲裁未激活：直接使用W键输入
-                                        print(f"⚙️ W键直接控制油门: {self.manual_throttle_input:.3f}")
                                         control.throttle = self.manual_throttle_input
                                         control.brake = 0.0
 
                                 if self.manual_brake_input > 0:
                                     # S键刹车：始终覆盖
-                                    print(f"🛑 S键直接控制刹车: {self.manual_brake_input:.3f}")
                                     control.throttle = 0.0
                                     control.brake = self.manual_brake_input
 
                         else:
                             # ACC未激活：不执行控制或使用巡航模式
-                            print("🚗 ACC未激活，保持手动控制")
                             control = carla.VehicleControl()
 
                         if control.brake < 0.01:
                             control.brake = 0
                         self.ego_vehicle.apply_control(control)
 
-                        # 显示当前控制模式
+                        # 收集最终控制信息
                         if sppvt_target_accel is not None:
                             current_mode = f"UNIFIED_SPPVT_{unified_output.get('sppvt_stage', 'Unknown')}"
-                            print(f"🎮 一体化SPPVT控制模式: {current_mode}")
-                            print(f"   决策状态: {unified_output.get('current_state', 'Unknown')}")
-                            print(f"   控制输出: {sppvt_target_accel:.3f} m/s²")
                         else:
                             current_mode = decision_output.get('current_control_mode', 'Unknown')
-                            print(f"🎮 传统ACC控制模式: {current_mode}")
+
+                        final_control.update({
+                            'throttle': control.throttle,
+                            'brake': control.brake,
+                            'steer': control.steer,
+                            'mode': current_mode,
+                            'torque_arbitration': torque_arbitration,
+                            'sppvt_throttle': control.throttle if sppvt_target_accel is not None else 0.0,
+                            'driver_throttle': self.manual_throttle_input
+                        })
 
                     except Exception as e:
                         print(f"❌ ACC control error详细信息:")
@@ -1120,20 +1186,6 @@ class acc:
 
                 else:
                     # ACC不控制时，但仍需处理手动油门/刹车输入
-                    print("❌ 未进入ACC控制分支")
-                    if self.acc_system_enabled:
-                        acc_state = self.acc_decision.current_state.value
-                        control_mode = decision_output.get('current_control_mode', 'None')
-                        is_active_mode = self.acc_decision.is_in_active_control_mode()
-                        print(f"💡 原因分析: State={acc_state}, ControlMode={control_mode}, "
-                              f"ActiveMode={is_active_mode}, ControlEnabled={decision_output['control_enabled']}, "
-                              f"ManualActive={self.manual_control_active}")
-                    else:
-                        if self.acc_decision.current_state == ACCState.ADAPTIVE_HISTORY_STANDBY:
-                            print("💡 提示: ACC处于待命状态，按1键可重新激活")
-                        else:
-                            print("💡 原因: ACC未激活 (acc_control_active=False)")
-
                     # === 处理手动油门/刹车输入（独立于ACC控制状态）===
                     if self.manual_throttle_input > 0 or self.manual_brake_input > 0:
                         control = carla.VehicleControl()
@@ -1143,14 +1195,56 @@ class acc:
                             control.throttle = 0.0
                             control.brake = self.manual_brake_input
                             control.steer = 0.0
-                            print(f"🛑 手动刹车执行: {self.manual_brake_input:.2f}")
                         elif self.manual_throttle_input > 0:
                             control.throttle = self.manual_throttle_input
                             control.brake = 0.0
                             control.steer = 0.0
-                            print(f"⚙️ 手动油门执行: {self.manual_throttle_input:.2f}")
 
                         self.ego_vehicle.apply_control(control)
+
+                        # 收集手动控制信息
+                        final_control.update({
+                            'throttle': control.throttle,
+                            'brake': control.brake,
+                            'steer': control.steer,
+                            'mode': 'MANUAL'
+                        })
+
+                # === 收集环境数据用于输出 ===
+                # 计算期望距离和距离误差
+                desired_distance = enhanced_two_mode_output.get('desired_distance', 0.0) if has_target else 0.0
+                distance_error = vehicle_distance - desired_distance if has_target else 0.0
+
+                # 控制模式名称
+                control_mode_names = {1: "TIME模式", 2: "SPEED模式"}
+                control_mode_name = control_mode_names.get(control_mode_flag, "Unknown")
+
+                env_data = {
+                    'ego_speed_kmh': ego_speed,
+                    'ego_speed_ms': ego_speed_ms,
+                    'target_speed_kmh': target_speed,
+                    'target_speed_ms': target_speed / 3.6,
+                    'vehicle_distance': vehicle_distance,
+                    'desired_distance': desired_distance,
+                    'distance_error': distance_error,
+                    'has_target': has_target,
+                    'lane_offset': lane_offset,
+                    'control_error': control_error,
+                    'control_mode_flag': control_mode_flag,
+                    'control_mode_name': control_mode_name
+                }
+
+                # === 格式化输出Simulink I/O信息 ===
+                self._print_simulink_io(
+                    frame_num=frame_count,
+                    current_time=time.time() - self.start_time,
+                    unified_input=unified_input,
+                    unified_output=unified_output,
+                    duration_ms=simulink_duration_ms,
+                    command_description=command_description,
+                    final_control=final_control,
+                    env_data=env_data
+                )
 
                 # === 数据记录 ===
                 current_time = time.time() - self.start_time

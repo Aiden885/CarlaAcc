@@ -35,20 +35,6 @@ class SPPVTState:
         if self.accel_history is None:
             self.accel_history = deque(maxlen=100)
 
-@dataclass
-class SimulinkInputs:
-    """Simulink input data structure"""
-    control_error: float
-    ego_speed_ms: float
-    control_mode_flag: bool
-    control_enabled: bool
-
-    # External state inputs
-    external_stage_offset: float = 0.0
-    external_prev_error: float = 0.0
-    external_prev_velocity: float = 13.89
-    external_prev_accel: float = 0.1
-
 class RealtimeSPPVTStateManager:
     """
     Real-time SPPVT State Manager
@@ -292,89 +278,6 @@ class RealtimeSPPVTStateManager:
             self.workspace_templates_initialized = False
             raise
 
-    def update_state_from_simulink_output(self, sim_out):
-        """Update state from Simulink output - using correct Dataset format access"""
-        try:
-            # Use parsing logic consistent with test_integrated_sppvt_model.m
-            # Check Simulink.SimulationOutput format
-            if hasattr(sim_out, 'yout') and sim_out.yout is not None:
-                output_data = sim_out.yout
-
-                # Check Dataset format
-                if hasattr(output_data, 'numElements') and output_data.numElements >= 1:
-                    element = self.matlab_eng.eval("sim_out.yout{1}")
-
-                    # Check if Signal format
-                    if hasattr(element, 'Values') and element.Values is not None:
-                        values_struct = element.Values
-
-                        # Extract SPPVT control output
-                        sppvt_output = self.matlab_eng.eval(
-                            "sim_out.yout{1}.Values.sppvt_control_output.Data(end)"
-                        )
-
-                        # Extract new state externalization fields (new fields in 18-field version)
-                        try:
-                            # new_stage_offset (field 16)
-                            new_stage_offset = self.matlab_eng.eval(
-                                "sim_out.yout{1}.Values.new_stage_offset.Data(end)"
-                            )
-                            new_stage_offset = float(new_stage_offset)
-
-                            # 🔒 范围检查：stage_offset必须在合理范围内 [-100, 100]
-                            if not np.isfinite(new_stage_offset) or abs(new_stage_offset) > 100:
-                                self.logger.warning(f"Invalid stage_offset detected: {new_stage_offset}, using safe value 0.0")
-                                new_stage_offset = 0.0
-
-                            self.sppvt_state.current_stage_offset = new_stage_offset
-                            self.logger.debug(f"Updated stage_offset: {new_stage_offset}")
-                        except Exception as e:
-                            self.logger.debug(f"Could not extract new_stage_offset: {e}")
-
-                        try:
-                            # new_adapter_states (field 18) - [control_error, velocity, accel]
-                            new_adapter_states = self.matlab_eng.eval(
-                                "sim_out.yout{1}.Values.new_adapter_states.Data(end,:)"
-                            )
-                            if hasattr(new_adapter_states, '__len__') and len(new_adapter_states) >= 3:
-                                self.sppvt_state.prev_error = float(new_adapter_states[0])
-                                self.sppvt_state.prev_velocity = float(new_adapter_states[1])
-                                self.sppvt_state.prev_accel = float(new_adapter_states[2])
-                                self.logger.debug(f"Updated adapter states: {new_adapter_states}")
-                        except Exception as e:
-                            self.logger.debug(f"Could not extract new_adapter_states: {e}")
-
-                        # Update timestamp
-                        self.sppvt_state.last_update_time = time.time()
-
-                        # Record historical data
-                        self.sppvt_state.error_history.append(self.sppvt_state.prev_error)
-                        self.sppvt_state.velocity_history.append(self.sppvt_state.prev_velocity)
-                        self.sppvt_state.accel_history.append(self.sppvt_state.prev_accel)
-
-                        return float(sppvt_output)
-                    else:
-                        raise ValueError("Dataset element does not have Values struct")
-                else:
-                    raise ValueError("Dataset format invalid or empty")
-            else:
-                raise ValueError("sim_out does not have yout attribute")
-
-        except Exception as e:
-            self.logger.error(f"Failed to update state from Simulink output: {e}")
-            # Add detailed debug information
-            try:
-                sim_out_type = str(type(sim_out))
-                self.logger.debug(f"sim_out type: {sim_out_type}")
-                if hasattr(sim_out, 'yout'):
-                    yout_type = str(type(sim_out.yout))
-                    self.logger.debug(f"yout type: {yout_type}")
-                    if hasattr(sim_out.yout, 'numElements'):
-                        self.logger.debug(f"Dataset numElements: {sim_out.yout.numElements}")
-            except:
-                pass
-            return None
-
     def update_state_from_simulink_output_eval(self, current_control_error: float, current_ego_speed_ms: float):
         """使用eval方式从Simulink输出更新状态 - 参考sppvt_longitudinal_control.py"""
         try:
@@ -598,41 +501,6 @@ class RealtimeSPPVTStateManager:
             self.logger.error(f"Failed to update state from Simulink output (eval): {e}")
             return None
 
-    def prepare_simulink_inputs(self, control_error: float, ego_speed_ms: float,
-                              control_mode_flag: bool, control_enabled: bool) -> Dict[str, Any]:
-        """Prepare Simulink inputs, inject external state to bus structure - 17-field version"""
-
-        # Update state history
-        self.sppvt_state.prev_error = control_error if control_enabled else 0.0
-        self.sppvt_state.prev_velocity = ego_speed_ms
-
-        ego_speed_kmh = ego_speed_ms * 3.6
-
-        # Prepare bus input structure - DecisionSPPVTInputExtended (17 fields)
-        simulink_inputs = {
-            # Original 11 fields
-            'ego_speed_kmh': matlab.double([ego_speed_kmh]),
-            'ego_speed_ms': matlab.double([ego_speed_ms]),
-            'command_type': matlab.int32([0]),  # Default I0 command
-            'command_active': matlab.logical([True]),
-            'manual_throttle_active': matlab.logical([False]),
-            'control_error': matlab.double([control_error]),
-            'control_mode_flag': matlab.int32([1 if control_mode_flag else 2]),
-            'V_target_kmh': matlab.double([50.0]),  # Default target speed
-            'V_min_kmh': matlab.double([30.0]),     # Default minimum speed
-            'G2_s': matlab.double([2.0]),           # Default time gap parameter
-            'timestamp': matlab.double([time.time()]),
-
-            # New 6 external state fields (17/18-field version)
-            'external_stage_offset': matlab.double([self.sppvt_state.current_stage_offset]),
-            'external_stage_manager_states': matlab.double([[0.0], [0.0], [0.0]]),  # 3x1 column vector
-            'external_adapter_states': matlab.double([[self.sppvt_state.prev_error],
-                                                     [self.sppvt_state.prev_velocity],
-                                                     [self.sppvt_state.prev_accel]])  # 3x1 column vector
-        }
-
-        return simulink_inputs
-
     def _sanitize_value(self, value: float, default: float = 0.0) -> float:
         """清洗数据：将Inf/NaN替换为默认值"""
         if value is None or not np.isfinite(value):
@@ -855,49 +723,3 @@ class RealtimeSPPVTStateManager:
             except:
                 self.logger.warning("模型可能仍在MATLAB中打开，这是正常现象")
 
-# 使用示例和测试函数
-def test_realtime_sppvt_manager():
-    """测试实时SPPVT状态管理器"""
-    import logging
-    logging.basicConfig(level=logging.DEBUG)
-
-    # 创建管理器
-    manager = RealtimeSPPVTStateManager()
-
-    try:
-        # 模拟一系列控制步骤
-        test_scenarios = [
-            (0.5, 15.0, True, True),   # 正常跟车
-            (1.2, 12.0, True, True),   # 大误差
-            (-0.8, 8.0, True, True),   # 负误差，低速
-            (0.1, 13.5, True, True),   # 小误差
-        ]
-
-        print("开始实时SPPVT测试...")
-
-        for i, (error, speed, mode, enabled) in enumerate(test_scenarios):
-            print(f"\n--- 测试步骤 {i+1} ---")
-            print(f"输入: error={error}, speed={speed}, mode={mode}, enabled={enabled}")
-
-            # 运行单步仿真
-            output = manager.run_single_step_simulation(error, speed, mode, enabled)
-
-            if output is not None:
-                print(f"输出: sppvt_control = {output:.3f}")
-            else:
-                print("输出: 失败")
-
-            # 显示状态
-            state = manager.sppvt_state
-            print(f"状态: stage_offset={state.current_stage_offset:.3f}, "
-                  f"prev_error={state.prev_error:.3f}")
-
-        # 显示性能统计
-        stats = manager.get_performance_stats()
-        print(f"\n性能统计: {stats}")
-
-    finally:
-        manager.cleanup()
-
-if __name__ == "__main__":
-    test_realtime_sppvt_manager()

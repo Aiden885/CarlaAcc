@@ -1,15 +1,15 @@
 import math
-from realtime_sppvt_state_manager import RealtimeSPPVTStateManager
 
 # 核心职责:
 # 1.模式选择: 基于速度阈值的TIME / SPEED模式切换
-# 2.算法调用: 调用SPPVT控制器
+# 2.误差计算: 计算控制误差（时距误差或速度误差）
 # 3.参数管理: 两模式参数设置和状态跟踪
+# 注意：不再直接调用SPPVT控制器，控制输出由ACCDecisionSPPVTInterface统一管理
 
 class TwoModeController:
     """
     ACC两模式控制器：时距控制、定速控制
-    高内聚的独立模块，专门负责两模式控制逻辑
+    高内聚的独立模块，专门负责模式判断和误差计算
     """
 
     def __init__(self, V_threshold_kmh=50, G2_s=2.0, target_speed_kmh=50.0):
@@ -37,10 +37,6 @@ class TwoModeController:
 
         # 调试标志
         self.debug = False
-
-        # SPPVT Simulink管理器
-        self.sppvt_manager = RealtimeSPPVTStateManager()
-        self.control_mode_flag = 2  # 默认speed模式
 
     def set_parameters(self, V_threshold_kmh=None, G2_s=None, target_speed_kmh=None):
         """动态设置两模式参数"""
@@ -88,9 +84,9 @@ class TwoModeController:
 
         return desired_time_gap, control_mode
 
-    def calculate_control_output(self, ego_speed, current_distance=None, target_speed=None):
+    def calculate_control_error(self, ego_speed, current_distance=None, target_speed=None):
         """
-        计算两模式控制输出
+        计算两模式控制误差（不调用SPPVT控制算法）
 
         参数:
         ego_speed: 自车速度 (m/s)
@@ -98,7 +94,7 @@ class TwoModeController:
         target_speed: 目标速度 (m/s, 可选)
 
         返回:
-        control_output: 控制输出 (m/s²)
+        control_error: 控制误差（时距误差或速度误差）
         control_info: 控制信息字典
         """
         # 确定控制模式
@@ -107,13 +103,12 @@ class TwoModeController:
         # 模式切换处理
         if mode != self.current_mode:
             if self.current_mode is not None:
-                # Simulink状态管理器自动处理状态重置
                 if self.debug:
                     print(f"模式切换: {self.current_mode} → {mode} at {ego_speed * 3.6:.1f}km/h")
             self.prev_mode = self.current_mode
             self.current_mode = mode
 
-        # 根据模式计算控制
+        # 根据模式计算控制误差
         if mode == 'TIME':
             # 时距控制模式
             if current_distance is None:
@@ -121,26 +116,18 @@ class TwoModeController:
                 if target_speed is None:
                     target_speed = self.target_speed
 
-                speed_error = target_speed - ego_speed
-
-                # 使用Simulink SPPVT速度控制
-                self.control_mode_flag = 2  # speed模式
-                control_output = self.sppvt_manager.run_single_step_simulation(
-                    control_error=speed_error,
-                    ego_speed_ms=ego_speed,
-                    control_mode_flag=self.control_mode_flag,
-                    control_enabled=True
-                )
+                control_error = target_speed - ego_speed
 
                 control_info = {
                     'mode': f'{mode}_NO_TARGET',
-                    'error': speed_error,
+                    'control_mode_flag': 2,  # speed模式
+                    'error': control_error,
                     'reference': target_speed,
                     'current': ego_speed,
                     'message': f'No target detected, using speed control at {target_speed * 3.6:.1f}km/h'
                 }
             else:
-                # 有目标时正常时距控制 - 修改为时间控制
+                # 有目标时正常时距控制
                 desired_time_gap = self.G2  # 期望时距(秒)
 
                 # 计算实际时距，避免除零错误
@@ -150,20 +137,12 @@ class TwoModeController:
                     actual_time_gap = 9999.0
 
                 # 计算时间误差：期望时距 - 实际时距
-                time_error = desired_time_gap - actual_time_gap
-
-                # 使用Simulink SPPVT时间控制
-                self.control_mode_flag = 1  # time模式
-                control_output = self.sppvt_manager.run_single_step_simulation(
-                    control_error=time_error,
-                    ego_speed_ms=ego_speed,
-                    control_mode_flag=self.control_mode_flag,
-                    control_enabled=True
-                )
+                control_error = desired_time_gap - actual_time_gap
 
                 control_info = {
                     'mode': mode,
-                    'error': time_error,
+                    'control_mode_flag': 1,  # time模式
+                    'error': control_error,
                     'reference': desired_time_gap,
                     'current': actual_time_gap,
                     'message': f'{mode} control: 期望时距{desired_time_gap:.1f}s, 实际时距{actual_time_gap:.1f}s'
@@ -174,20 +153,12 @@ class TwoModeController:
             if target_speed is None:
                 target_speed = self.target_speed
 
-            speed_error = target_speed - ego_speed
-
-            # 使用Simulink SPPVT速度控制
-            self.control_mode_flag = 2  # speed模式
-            control_output = self.sppvt_manager.run_single_step_simulation(
-                control_error=speed_error,
-                ego_speed_ms=ego_speed,
-                control_mode_flag=self.control_mode_flag,
-                control_enabled=True
-            )
+            control_error = target_speed - ego_speed
 
             control_info = {
                 'mode': mode,
-                'error': speed_error,
+                'control_mode_flag': 2,  # speed模式
+                'error': control_error,
                 'reference': target_speed,
                 'current': ego_speed,
                 'message': f'Speed control: limiting to {target_speed * 3.6:.1f}km/h'
@@ -195,15 +166,17 @@ class TwoModeController:
 
         else:
             # 未知模式
-            control_output = 0.0
+            control_error = 0.0
             control_info = {
                 'mode': 'UNKNOWN',
+                'control_mode_flag': 2,  # 默认speed模式
                 'error': 0.0,
                 'reference': 0.0,
+                'current': 0.0,
                 'message': 'Unknown control mode'
             }
 
-        return control_output, control_info
+        return control_error, control_info
 
     def get_status(self):
         """获取控制器状态信息"""
@@ -251,7 +224,7 @@ def calculate_two_mode_desired_distance(ego_speed_ms):
 
 def two_mode_control(ego_speed_ms, current_distance=None, target_speed_ms=None):
     """
-    两模式控制的全局函数
+    两模式控制的全局函数（只返回误差，不调用SPPVT）
 
     参数:
     ego_speed_ms: 自车速度 (m/s)
@@ -259,10 +232,10 @@ def two_mode_control(ego_speed_ms, current_distance=None, target_speed_ms=None):
     target_speed_ms: 目标速度 (m/s, 可选)
 
     返回:
-    control_output: 控制输出 (m/s²)
+    control_error: 控制误差（时距误差或速度误差）
     control_info: 控制信息字典
     """
-    return _global_two_mode_controller.calculate_control_output(
+    return _global_two_mode_controller.calculate_control_error(
         ego_speed_ms, current_distance, target_speed_ms)
 
 
@@ -389,25 +362,26 @@ def get_safety_control_mode_recommendation(ego_speed, current_distance, speed_in
 def enhanced_two_mode_control(ego_speed_ms, current_distance=None, target_speed_ms=None):
     """
     增强的两模式控制函数，为Simulink一体化接口提供标准化输出
-    
+    注意：只返回误差信息，不返回控制输出（控制输出由ACCDecisionSPPVTInterface提供）
+
     参数:
     ego_speed_ms: 自车速度 (m/s)
     current_distance: 当前跟车距离 (m, 可选)
     target_speed_ms: 目标速度 (m/s, 可选)
-    
+
     返回:
     enhanced_output: 增强的控制信息字典，包含:
         - control_error: 控制误差 (float)
-        - control_mode_flag: 控制模式标志 (int, 1=distance, 2=speed)
+        - control_mode_flag: 控制模式标志 (int, 1=time, 2=speed)
         - mode_description: 模式描述 (str)
         - reference_value: 参考值 (float)
         - current_value: 当前值 (float)
         - desired_distance: 期望距离 (float, 仅在时距模式下有效)
         - target_speed: 实际使用的目标速度 (float)
     """
-    # 调用基础两模式控制
-    control_output, basic_info = two_mode_control(ego_speed_ms, current_distance, target_speed_ms)
-    
+    # 调用基础两模式控制（返回误差而不是控制输出）
+    control_error, basic_info = two_mode_control(ego_speed_ms, current_distance, target_speed_ms)
+
     # 获取当前两模式参数
     try:
         params = get_two_mode_status()
@@ -419,32 +393,29 @@ def enhanced_two_mode_control(ego_speed_ms, current_distance=None, target_speed_
         V_threshold_ms = 50.0 / 3.6
         G2_s = 2.0
         default_target_speed = 50.0 / 3.6
-    
+
     # 确定实际使用的目标速度
     if target_speed_ms is None:
         target_speed_ms = default_target_speed
-    
-    # 标准化输出
+
+    # 标准化输出（使用 control_mode_flag 从 basic_info 中获取）
     enhanced_output = {
-        'control_output': control_output,  # 基础控制输出 (m/s²)
-        'control_error': basic_info['error'],  # 控制误差
+        'control_error': control_error,  # 控制误差（时距误差或速度误差）
+        'control_mode_flag': basic_info['control_mode_flag'],  # 1=time, 2=speed
         'reference_value': basic_info['reference'],  # 参考值
         'current_value': basic_info['current'],  # 当前值
         'target_speed': target_speed_ms,  # 实际使用的目标速度
         'mode_description': basic_info['mode'],  # 模式描述
     }
-    
-    # 根据模式设置标志和计算期望距离
+
+    # 根据模式计算期望距离
     if 'TIME' in basic_info['mode']:
-        enhanced_output['control_mode_flag'] = 1  # 时距模式
         enhanced_output['desired_distance'] = ego_speed_ms * G2_s
     elif 'SPEED' in basic_info['mode']:
-        enhanced_output['control_mode_flag'] = 2  # 速度模式
         enhanced_output['desired_distance'] = V_threshold_ms * G2_s  # 参考距离
     else:
-        enhanced_output['control_mode_flag'] = 2  # 默认速度模式
         enhanced_output['desired_distance'] = V_threshold_ms * G2_s
-    
+
     # 添加调试信息
     enhanced_output['debug_info'] = {
         'ego_speed_kmh': ego_speed_ms * 3.6,
@@ -454,5 +425,5 @@ def enhanced_two_mode_control(ego_speed_ms, current_distance=None, target_speed_
         'current_distance': current_distance,
         'basic_message': basic_info['message']
     }
-    
+
     return enhanced_output
