@@ -227,9 +227,7 @@ python test_two_mode_control.py
 # 实时Simulink集成测试
 python test_realtime_integration.py
 
-# 扭矩仲裁逻辑测试
-python test_torque_arbitration.py
-```
+
 
 ### 🛠️ 调试模式
 - **P键**: 切换ACC调试信息显示

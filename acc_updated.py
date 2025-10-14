@@ -500,11 +500,16 @@ class acc:
             # 控制模式
             control_mode = env_data.get('control_mode_name', 'Unknown')
 
-            print(f"  自车     前车      实际距离  期望距离  距离误差  车道偏移  模式      control_error")
+            # control_output 和 accel (转换后)
+            control_output = env_data.get('control_output', 0.0)
+            target_accel = env_data.get('sppvt_target_accel', 0.0)
+
+            print(f"  自车     前车      实际距离  期望距离  距离误差  模式      control_error  control_output  accel(转换后)")
             print(f"  {env_data.get('ego_speed_kmh', 0.0):.1f}km/h {target_speed_str:8s}  "
                   f"{env_data.get('vehicle_distance', 0.0):.2f}m   {env_data.get('desired_distance', 0.0):.2f}m   "
-                  f"{distance_error_str:8s} {lane_offset_str:7s}  {control_mode:8s}  "
-                  f"{env_data.get('control_error', 0.0):.3f}s")
+                  f"{distance_error_str:8s} {control_mode:8s}  "
+                  f"{env_data.get('control_error', 0.0):+.3f}s      "
+                  f"{control_output:+.3f}         {target_accel:+.3f}")
             print(f"  ")
 
             # Two-Mode计算说明
@@ -1045,8 +1050,22 @@ class acc:
                         'current_decision': unified_output['current_decision'],
                         'torque_arbitration_active': unified_output['torque_arbitration_active']
                     }
-                    # 保存SPPVT控制输出用于后续使用
-                    sppvt_target_accel = unified_output.get('target_accel', 0.0)
+
+                    # 获取Simulink的原始控制输出（与control_error同符号）
+                    control_output = unified_output.get('target_accel', 0.0)
+
+                    # 根据控制模式进行符号转换
+                    if control_mode_flag == 1:  # TIME模式
+                        # TIME模式下，control_error < 0 表示距离太远需要加速
+                        # 但control_output与control_error同符号，所以需要反转
+                        sppvt_target_accel = -control_output
+                    elif control_mode_flag == 2:  # SPEED模式
+                        # SPEED模式下，control_error > 0 表示需要加速
+                        # control_output与control_error同符号，直接使用
+                        sppvt_target_accel = control_output
+                    else:
+                        # 未知模式，保守使用原值
+                        sppvt_target_accel = control_output
                     
                 except Exception as e:
                     print(f"❌ Simulink一体化接口调用失败: {e}")
@@ -1231,7 +1250,9 @@ class acc:
                     'lane_offset': lane_offset,
                     'control_error': control_error,
                     'control_mode_flag': control_mode_flag,
-                    'control_mode_name': control_mode_name
+                    'control_mode_name': control_mode_name,
+                    'control_output': control_output,  # Simulink原始输出
+                    'sppvt_target_accel': sppvt_target_accel  # 符号转换后的加速度
                 }
 
                 # === 格式化输出Simulink I/O信息 ===

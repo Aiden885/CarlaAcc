@@ -1,7 +1,5 @@
 """
-Real-time SPPVT State Manager
-Solves state persistence issues when repeatedly calling sim() in Simulink
-High cohesion, low coupling design specifically for managing all SPPVT-related states
+这个只是用来测试的，已经暂时废弃，真正的流程不会使用这个文件，完整调用simulink的文件在acc_decision_sppvt_interface.py
 """
 
 import numpy as np
