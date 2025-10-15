@@ -221,12 +221,6 @@ CarlaAcc/
 # 决策系统独立测试
 python acc_decision.py
 
-# 两模式控制器测试
-python test_two_mode_control.py
-
-# 实时Simulink集成测试
-python test_realtime_integration.py
-
 
 
 ### 🛠️ 调试模式

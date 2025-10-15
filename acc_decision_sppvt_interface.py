@@ -641,12 +641,12 @@ class ACCDecisionSPPVTInterface:
     def _print_realtime_sppvt_debug(self, input_data, result, compute_time):
         """打印实时SPPVT调试信息"""
         command_name = self._get_command_name(input_data['command_type'])
-        print(f"[SPPVT] Realtime decision+control debug (time: {compute_time*1000:.1f}ms)")
-        print(f"   Input: cmd={command_name}, speed={input_data['ego_speed_kmh']:.1f}km/h, error={input_data['control_error']:.3f}")
-        print(f"   Output: state=S{result['current_state']}->R{result['current_decision']}, accel={result['target_accel']:.3f}m/s^2")
-        print(f"   SPPVT: {result['debug_message']}")
-        print(f"   Torque arbitration: {'Active' if result['torque_arbitration_active'] else 'Inactive'}")
-        print(f"   Performance: {self.call_count} calls, avg {self.total_compute_time/self.call_count*1000:.1f}ms")
+        # print(f"[SPPVT] Realtime decision+control debug (time: {compute_time*1000:.1f}ms)")
+        # print(f"   Input: cmd={command_name}, speed={input_data['ego_speed_kmh']:.1f}km/h, error={input_data['control_error']:.3f}")
+        # print(f"   Output: state=S{result['current_state']}->R{result['current_decision']}, accel={result['target_accel']:.3f}m/s^2")
+        # print(f"   SPPVT: {result['debug_message']}")
+        # print(f"   Torque arbitration: {'Active' if result['torque_arbitration_active'] else 'Inactive'}")
+        # print(f"   Performance: {self.call_count} calls, avg {self.total_compute_time/self.call_count*1000:.1f}ms")
 
         # 显示SPPVT管理器的详细性能统计
         if self.realtime_sppvt_manager:

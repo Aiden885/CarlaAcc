@@ -3,6 +3,7 @@ import math
 import numpy as np
 import cv2
 import csv
+import json
 import time
 import lane_detection
 import kalman_filter
@@ -1075,17 +1076,17 @@ class acc:
                     # 不再回退，让问题充分暴露
                     raise e
 
-                # === 调试输出：检查每个判断条件 ===
-                if hasattr(self.acc_decision_sppvt, 'debug') and self.acc_decision_sppvt.debug:
-                    print(f"\n=== Simulink ACC控制判断调试 ===")
-                    print(f"1. acc_system_enabled: {self.acc_system_enabled}")
-                    print(f"2. simulink_control_enabled: {unified_output.get('control_enabled', False)}")
-                    print(f"3. current_state: {unified_output.get('current_state', 'Unknown')}")
-                    print(f"4. current_decision: {unified_output.get('current_decision', 'None')}")
-                    print(f"5. torque_arbitration_active: {unified_output.get('torque_arbitration_active', False)}")
-                    print(f"6. manual_control_active: {self.manual_control_active}")
-                    print(f"7. V_target_kmh: {self.acc_params['V_target_kmh']:.1f}")
-                    print("=== 调试结束 ===\n")
+                # # === 调试输出：检查每个判断条件 ===
+                # if hasattr(self.acc_decision_sppvt, 'debug') and self.acc_decision_sppvt.debug:
+                #     print(f"\n=== Simulink ACC控制判断调试 ===")
+                #     print(f"1. acc_system_enabled: {self.acc_system_enabled}")
+                #     print(f"2. simulink_control_enabled: {unified_output.get('control_enabled', False)}")
+                #     print(f"3. current_state: {unified_output.get('current_state', 'Unknown')}")
+                #     print(f"4. current_decision: {unified_output.get('current_decision', 'None')}")
+                #     print(f"5. torque_arbitration_active: {unified_output.get('torque_arbitration_active', False)}")
+                #     print(f"6. manual_control_active: {self.manual_control_active}")
+                #     print(f"7. V_target_kmh: {self.acc_params['V_target_kmh']:.1f}")
+                #     print("=== 调试结束 ===\n")
 
                 # === 扭矩仲裁处理（油门指令时） ===
                 torque_arbitration = decision_output.get('torque_arbitration_active', False)
@@ -1314,7 +1315,8 @@ class acc:
 
             print("Cleaning up...")
             cv2.destroyAllWindows()
-            self.csv_file.close()
+            if self.csv_file:
+                self.csv_file.close()
             self.display_manager.destroy()
             self.destroy()
 

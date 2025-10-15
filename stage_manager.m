@@ -1,4 +1,4 @@
-  function [new_stage_offset, new_stage, sign_changed, stage_manager_states_out] = fcn(should_upgrade, error_value, sppvt_rho, prev_stage_offset, stage_manager_states_in)
+  function [new_stage_offset, new_stage, sign_changed, stage_manager_states_out] = fcn(should_upgrade, error_value, sppvt_rho, prev_stage_offset, stage_manager_states_in, com1, com2, com3)
   %#codegen
   % Stateless SPPVT Stage Manager with array-based state management
   % Compatible with 17/18-field bus design (3-element state array version)
@@ -65,4 +65,9 @@
   % 3-element state array: [new_stage, new_error_sign, upgrade_count]
   stage_manager_states_out = [double(new_stage); double(new_error_sign); double(upgrade_count)];
 
+  % Print the three conditional variables using fprintf
+  % Print the three conditional variables as 'true' or 'false' with detailed labels
+  fprintf('Condition 1 (com1): %s\n', string(com1));
+  fprintf('Condition 2 (com2): %s\n', string(com2));
+  fprintf('Condition 3 (com3): %s\n', string(com3));
   end
