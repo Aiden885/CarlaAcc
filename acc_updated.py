@@ -110,11 +110,12 @@ class acc:
         # 初始化 Carla 客户端
         self.client = carla.Client('localhost', 2000)
         self.client.set_timeout(60.0)
+        map_name = 'Town05'
         try:
             self.world = self.client.get_world()
-            self.world = self.client.load_world('Town05', carla.MapLayer.Buildings | carla.MapLayer.ParkedVehicles)
+            self.world = self.client.load_world(map_name, carla.MapLayer.Buildings | carla.MapLayer.ParkedVehicles)
         except RuntimeError as e:
-            raise RuntimeError(f"Failed to load map Town05: {e}")
+            raise RuntimeError(f"Failed to load map {map_name}: {e}")
 
         # 设置同步模式（放宽时间步长以匹配Simulink处理能力）
         settings = self.world.get_settings()
@@ -130,15 +131,16 @@ class acc:
         vehicle_bp = self.blueprint_library.filter('vehicle.tesla.model3')[0]
         ego_vehicle_bp = self.blueprint_library.filter('vehicle.audi.etron')[0]
 
-        # 定义固定生成点
+        # 定义固定生成点x=0.663731, y=-203.651886, z=0.5
         fixed_point = carla.Location(x=0.663731, y=-203.651886, z=0.5)
+        #fixed_point = carla.Location(x=-1239.380249, y=3104.088135, z=351.407501)
         waypoint = map.get_waypoint(fixed_point, project_to_road=True, lane_type=carla.LaneType.Driving)
         if waypoint is None:
             raise RuntimeError("Failed to find a valid waypoint near the specified location")
 
         # 生成目标车辆
         spawn_point = waypoint.transform
-        spawn_point.location.z += 0.05
+        spawn_point.location.z += 0.1
 
         vehicles = []
         target_vehicle = self.world.try_spawn_actor(vehicle_bp, spawn_point)
@@ -156,11 +158,12 @@ class acc:
             period=10.0
         )
 
-        # 生成自车
-        ego_spawn_point = carla.Transform()
-        ego_spawn_point.location = spawn_point.location
-        ego_spawn_point.location.x += 20
-        ego_spawn_point.rotation = spawn_point.rotation
+        # 生成自车：沿车道前进方向偏移一定距离以避免碰撞
+        ego_waypoints = waypoint.previous(20.0)
+        if not ego_waypoints:
+            raise RuntimeError("Failed to find a waypoint 20 meters ahead for ego vehicle spawn")
+        ego_spawn_point = ego_waypoints[0].transform
+        ego_spawn_point.location.z += 0.1
         self.ego_vehicle = self.world.try_spawn_actor(ego_vehicle_bp, ego_spawn_point)
 
         if self.ego_vehicle is None:
@@ -819,6 +822,9 @@ class acc:
                         'current_decision': unified_output['current_decision'],
                         'torque_arbitration_active': unified_output['torque_arbitration_active']
                     }
+
+                    # === 同步扭矩仲裁状态到acc_decision对象（用于pygame显示）===
+                    self.acc_decision_sppvt.torque_arbitration_active = unified_output.get('torque_arbitration_active', False)
 
                     # 获取Simulink的原始控制输出（与control_error同符号）
                     control_output = unified_output.get('target_accel', 0.0)
