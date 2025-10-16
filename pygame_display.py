@@ -101,8 +101,6 @@ class PygameDisplay:
              (0, 255, 0) if acc_params.get('is_active', False) else (255, 255, 255)),
             ("", "", (255, 255, 255)),
             ("ACC状态", acc_status['state_description'], (0, 255, 255)),
-            ("定速巡航", "开启" if acc_params.get('cruise_mode_active', False) else "关闭",
-             (255, 255, 0) if acc_params.get('cruise_mode_active', False) else (128, 128, 128)),
             ("", "", (255, 255, 255)),
             ("V3 (最大)", f"{acc_params['V3_kmh']:.1f} km/h", (255, 255, 255)),
             ("G1 (最小距离)", f"{acc_params['G1_m']:.1f} m", (255, 255, 255)),

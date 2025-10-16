@@ -18,7 +18,6 @@ class DataLogger:
             'V3_Setting',
             'G1_Setting',
             'G2_Setting',
-            'Cruise_Mode',
             'Manual_Throttle',
             'Manual_Brake',
             'Manual_Steer'
@@ -26,7 +25,7 @@ class DataLogger:
 
     def log_data(self, current_time, ego_speed, target_speed, vehicle_distance, desired_distance,
                  control_mode, lane_offset, acc_state, acc_active, v3_kmh, g1_m, g2_s,
-                 cruise_mode, throttle, brake, steer):
+                 throttle, brake, steer):
         """记录数据到CSV"""
         self.csv_writer.writerow([
             current_time,
@@ -41,7 +40,6 @@ class DataLogger:
             v3_kmh,
             g1_m,
             g2_s,
-            cruise_mode,
             throttle,
             brake,
             steer

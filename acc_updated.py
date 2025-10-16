@@ -19,7 +19,6 @@ from pygame.locals import *
 #升级条件: (acceleration < 0) && (|velocity| <= delta) && (|error| > eta)
 
 # ACC相关模块
-from acc_planning_control import ACCPlanningControl
 from sinusoidal_speed_controller import SinusoidalSpeedController
 from two_mode_controller import calculate_two_mode_desired_distance, set_two_mode_parameters, get_two_mode_status, two_mode_control, enhanced_two_mode_control
 from acc_decision_sppvt_interface import ACCDecisionSPPVTInterface
@@ -69,8 +68,7 @@ class acc:
             'V_min_kmh': 30.0,         # 最小速度阈值 - 传递给Simulink
             'G2_s': 2.0,               # 时距参数 - 传递给Simulink
             'V_threshold_kmh': 50.0,   # 模式切换阈值 - 用于Two Mode控制器
-            'speed_step': 5.0,         # 速度调整步长
-            'cruise_mode_active': True  # 巡航模式状态
+            'speed_step': 5.0          # 速度调整步长
         }
 
         # === 保持原有决策接口兼容性 ===
@@ -79,7 +77,6 @@ class acc:
         # === 控制状态 ===
         self.acc_system_enabled = False  # ACC系统开关（空格键）
         self.manual_control_active = True
-        self.current_cruise_speed_kmh = 50.0  # 当前巡航速度 (km/h)
         self.throttle = 0.0
         self.brake = 0.0
         self.steer = 0.0
@@ -245,7 +242,6 @@ class acc:
             'V_target_Setting',
             'V_min_Setting',
             'G2_Setting',
-            'Cruise_Mode',
             'Manual_Throttle',
             'Manual_Brake',
             'Manual_Steer'
@@ -276,7 +272,6 @@ class acc:
         """获取ACC状态信息，基于Simulink状态"""
         return {
             'state_description': 'Pure Simulink Mode',
-            'cruise_mode_active': self.acc_params['cruise_mode_active'],
             'system_enabled': self.acc_system_enabled
         }
 
@@ -460,7 +455,6 @@ class acc:
             acc_system_enabled=self.acc_system_enabled,
             acc_decision=self.acc_decision,
             acc_params=acc_params,
-            current_cruise_speed_kmh=self.current_cruise_speed_kmh,
             throttle=self.throttle,
             brake=self.brake,
             steer=self.steer,
@@ -531,14 +525,6 @@ class acc:
 
     def generate_target(self):
         """主循环 - 完整集成ACC决策、控制和显示"""
-        # 创建ACC控制器 - 使用统一的巡航速度
-        acc_controller = ACCPlanningControl(
-            self.ego_vehicle,
-            target_speed_kmh=self.current_cruise_speed_kmh,  # 使用统一的巡航速度
-            time_gap=2.0,
-            max_follow_distance=self.max_follow_distance
-        )
-        self.acc_controller = acc_controller  # 保存引用以便后续访问
         try:
             self.radar_2_world, self.world_2_camera = SensorTransforms.get_extrinsic_params(self.radar, self.camera)
             self.start_time = time.time()
@@ -685,14 +671,6 @@ class acc:
                     control_error = enhanced_two_mode_output['control_error']
                     control_mode_flag = enhanced_two_mode_output['control_mode_flag']
 
-                # === 确保ACC控制器的目标速度与当前巡航速度同步 ===
-                if hasattr(self, 'acc_controller') and self.acc_controller and self.acc_system_enabled:
-                    controller_speed_kmh = self.acc_controller.target_speed * 3.6
-                    if abs(controller_speed_kmh - self.current_cruise_speed_kmh) > 0.1:
-                        print(
-                            f"🔄 同步速度: 控制器{controller_speed_kmh:.1f} → 巡航{self.current_cruise_speed_kmh:.1f} km/h")
-                        self.acc_controller.target_speed = self.current_cruise_speed_kmh / 3.6
-
                 # === OpenCV图像处理（用于雷达和车道检测） ===
                 t0 = time.time()
                 if self.latest_camera_image is not None:
@@ -747,11 +725,6 @@ class acc:
                                 (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                                 (0, 255, 0) if self.acc_system_enabled else (255, 255, 255), 2)
                     y_offset += 25
-
-                    if self.acc_system_enabled:
-                        cv2.putText(image_with_radar, "CRUISE MODE", (10, y_offset),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-                        y_offset += 25
 
                     # 显示OpenCV窗口（如果启用）
                     if self.show_opencv:
@@ -894,62 +867,40 @@ class acc:
                     try:
                         lane_offset = (lane_center - 510) / 150
 
-                        # 根据控制激活状态决定控制方式
+                        # Decide control action based on enable flag
                         if decision_output.get('control_enabled', False):
-                            # ACC控制激活
-                            if sppvt_target_accel is not None:
-                                # 使用一体化接口的SPPVT输出
-                                # 将SPPVT加速度转换为车辆控制命令
-                                control = carla.VehicleControl()
-                                control.manual_gear_shift = False
-                                control.gear = 1
+                            # ACC control active; build control command
+                            control = carla.VehicleControl()
+                            control.manual_gear_shift = False
+                            control.gear = 1
 
+                            if sppvt_target_accel is not None:
                                 if sppvt_target_accel > 0:
-                                    control.throttle = min(sppvt_target_accel / 2.0, 1.0)  # 归一化到[0,1]
+                                    control.throttle = min(sppvt_target_accel / 2.0, 1.0)  # normalize to [0,1]
                                     control.brake = 0.0
                                 else:
                                     control.throttle = 0.0
-                                    control.brake = min(-sppvt_target_accel / 4.0, 1.0)  # 归一化到[0,1]
-
-                                # 横向控制使用现有逻辑
-                                control.steer = np.clip(lane_offset * 0.04, -0.4, 0.4)  # 简化转向控制
-
-                                # === W/S键处理：始终生效 ===
-                                if self.manual_throttle_input > 0:
-                                    if torque_arbitration:
-                                        # 扭矩仲裁激活：取max(SPPVT, W键)
-                                        final_throttle = max(control.throttle, self.manual_throttle_input)
-                                        control.throttle = final_throttle
-                                    else:
-                                        # 扭矩仲裁未激活：直接使用W键输入
-                                        control.throttle = self.manual_throttle_input
-                                        control.brake = 0.0
-
-                                if self.manual_brake_input > 0:
-                                    # S键刹车：始终覆盖
-                                    control.throttle = 0.0
-                                    control.brake = self.manual_brake_input
-
+                                    control.brake = min(-sppvt_target_accel / 4.0, 1.0)  # normalize to [0,1]
                             else:
-                                # 回退到传统ACC控制
-                                acc_control = acc_controller.cruise_control(lane_offset, target_info)
-                                control = acc_control
+                                # No valid SPPVT output; keep longitudinal command zero
+                                control.throttle = 0.0
+                                control.brake = 0.0
 
-                                # === W/S键处理：始终生效 ===
-                                if self.manual_throttle_input > 0:
-                                    if torque_arbitration:
-                                        # 扭矩仲裁激活：取max(ACC, W键)
-                                        final_throttle = max(control.throttle, self.manual_throttle_input)
-                                        control.throttle = final_throttle
-                                    else:
-                                        # 扭矩仲裁未激活：直接使用W键输入
-                                        control.throttle = self.manual_throttle_input
-                                        control.brake = 0.0
+                            # Apply lateral steering based on lane offset
+                            control.steer = np.clip(lane_offset * 0.04, -0.4, 0.4)  # simple steering
 
-                                if self.manual_brake_input > 0:
-                                    # S键刹车：始终覆盖
-                                    control.throttle = 0.0
-                                    control.brake = self.manual_brake_input
+                            # === Handle W/S override ===
+                            if self.manual_throttle_input > 0:
+                                if torque_arbitration:
+                                    final_throttle = max(control.throttle, self.manual_throttle_input)
+                                    control.throttle = final_throttle
+                                else:
+                                    control.throttle = self.manual_throttle_input
+                                    control.brake = 0.0
+
+                            if self.manual_brake_input > 0:
+                                control.throttle = 0.0
+                                control.brake = self.manual_brake_input
 
                         else:
                             # ACC未激活：不执行控制或使用巡航模式
@@ -1079,7 +1030,6 @@ class acc:
                     acc_params['V_target_kmh'],
                     acc_params['V_min_kmh'],
                     acc_params['G2_s'],
-                    acc_params.get('cruise_mode_active', False),
                     self.throttle,
                     self.brake,
                     self.steer

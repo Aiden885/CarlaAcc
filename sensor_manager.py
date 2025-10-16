@@ -220,11 +220,6 @@ class SensorManager:
                     (0, 255, 0) if acc_control_active else (255, 255, 255), 2)
         y_offset += 25
 
-        if acc_params.get('cruise_mode_active', False):
-            cv2.putText(image_with_radar, "CRUISE MODE", (10, y_offset),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-            y_offset += 25
-
         if self.show_opencv:
             cv2.imshow("Radar and Lane Detection", image_with_radar)
             cv2.waitKey(1)

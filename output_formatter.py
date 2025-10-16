@@ -72,11 +72,15 @@ class OutputFormatter:
             control_output = env_data.get('control_output', 0.0)
             target_accel = env_data.get('sppvt_target_accel', 0.0)
 
+            # 根据控制模式确定 control_error 的单位
+            control_mode_flag = env_data.get('control_mode_flag', 1)
+            control_error_unit = "s" if control_mode_flag == 1 else "m/s"
+
             print(f"  自车     前车      实际距离  期望距离  距离误差  模式      control_error  control_output  accel(转换后)")
             print(f"  {env_data.get('ego_speed_kmh', 0.0):.1f}km/h {target_speed_str:8s}  "
                   f"{env_data.get('vehicle_distance', 0.0):.2f}m   {env_data.get('desired_distance', 0.0):.2f}m   "
                   f"{distance_error_str:8s} {control_mode:8s}  "
-                  f"{env_data.get('control_error', 0.0):+.3f}s      "
+                  f"{env_data.get('control_error', 0.0):+.3f}{control_error_unit:4s}  "
                   f"{control_output:+.3f}         {target_accel:+.3f}")
             print(f"  ")
 
@@ -105,8 +109,11 @@ class OutputFormatter:
         print(f"[键盘] {cmd_str} | ACC:{acc_status} | W:{w_status} S:{s_status}")
 
         # [Simulink→] - 紧凑单行
+        # 根据控制模式确定 control_error 的单位
+        input_control_mode_flag = unified_input.get('control_mode_flag', 1)
+        input_error_unit = "s" if input_control_mode_flag == 1 else "m/s"
         print(f"[Simulink→] 速度{unified_input['ego_speed_kmh']:.1f}km/h cmd:{unified_input['command_type']} "
-              f"err:{unified_input['control_error']:.3f}s mode:{unified_input['control_mode_flag']} "
+              f"err:{unified_input['control_error']:.3f}{input_error_unit} mode:{unified_input['control_mode_flag']} "
               f"V_target:{unified_input['V_target_kmh']:.1f} G2:{unified_input['G2_s']:.1f}")
 
         # [Simulink←] - 紧凑单行
@@ -140,7 +147,7 @@ class OutputFormatter:
 
     @staticmethod
     def format_system_info(ego_vehicle, target_vehicle, acc_system_enabled, acc_decision,
-                          acc_params, current_cruise_speed_kmh, throttle, brake, steer,
+                          acc_params, throttle, brake, steer,
                           get_vehicle_speed_func, get_vehicle_distance_func):
         """
         获取系统状态信息，用于显示
@@ -151,7 +158,6 @@ class OutputFormatter:
             acc_system_enabled: ACC系统是否开启
             acc_decision: ACC决策对象
             acc_params: ACC参数字典
-            current_cruise_speed_kmh: 当前巡航速度
             throttle: 当前油门值
             brake: 当前刹车值
             steer: 当前转向值
@@ -176,8 +182,6 @@ class OutputFormatter:
             'acc_state': 'Pure Simulink Mode',  # 状态描述
             'torque_arbitration_active': (hasattr(acc_decision, 'torque_arbitration_active') and
                                           acc_decision.torque_arbitration_active),
-            'cruise_mode': acc_params.get('cruise_mode_active', False),
-            'cruise_speed_kmh': current_cruise_speed_kmh,
             'V_target_kmh': acc_params['V_target_kmh'],
             'V_min_kmh': acc_params['V_min_kmh'],
             'G2_s': acc_params['G2_s'],
