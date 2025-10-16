@@ -3,7 +3,6 @@ import math
 import numpy as np
 import cv2
 import csv
-import json
 import time
 import lane_detection
 import kalman_filter
@@ -28,6 +27,11 @@ from acc_decision import ACCCommand, ACCState  # 保留命令和状态定义
 
 # 导入显示管理器
 from display_manager import DisplayManager
+
+# 导入拆分后的工具模块
+from vehicle_utils import VehicleUtils
+from sensor_transforms import SensorTransforms
+from output_formatter import OutputFormatter
 
 
 class acc:
@@ -447,162 +451,22 @@ class acc:
         }
         print(f"⌨️ 已记录键盘指令: {description} (将在下一帧处理)")
 
-    def _print_simulink_io(self, frame_num, current_time, unified_input, unified_output, duration_ms,
-                           command_description=None, final_control=None, env_data=None):
-        """
-        格式化输出Simulink输入输出信息
-
-        Args:
-            frame_num: 帧编号
-            current_time: 当前时间(秒)
-            unified_input: Simulink输入字典
-            unified_output: Simulink输出字典
-            duration_ms: Simulink调用耗时(毫秒)
-            command_description: 键盘指令描述(可选)
-            final_control: 最终控制输出(油门/刹车/转向, 可选)
-            env_data: 环境感知数据字典(可选)
-        """
-        # 指令名称映射
-        cmd_names = {
-            0: "NONE",
-            1: "I0(降速)",
-            2: "I1(增速)",
-            3: "I2(降距)",
-            4: "I3(增距)",
-            5: "I4(油门)",
-            6: "I5(刹车)",
-            7: "I6(取消)"
-        }
-
-        # 控制模式名称
-        mode_names = {
-            1: "TIME模式",
-            2: "SPEED模式"
-        }
-
-        print(f"\n{'='*80}")
-        print(f"帧#{frame_num} | 时间:{current_time:.2f}s | Simulink:{duration_ms:.1f}ms")
-        print(f"{'='*80}")
-
-        # [环境感知] - 表格式
-        if env_data:
-            print(f"[环境感知]")
-            has_target_str = "✓" if env_data.get('has_target', False) else "✗"
-            target_speed_str = f"{env_data.get('target_speed_kmh', 0.0):.1f}km/h" if env_data.get('has_target', False) else "N/A"
-
-            # 距离误差符号
-            distance_error = env_data.get('distance_error', 0.0)
-            distance_error_str = f"{distance_error:+.2f}m" if env_data.get('has_target', False) else "N/A"
-
-            # 车道偏移符号
-            lane_offset = env_data.get('lane_offset', 0.0)
-            lane_offset_str = f"{lane_offset:+.2f}m"
-
-            # 控制模式
-            control_mode = env_data.get('control_mode_name', 'Unknown')
-
-            # control_output 和 accel (转换后)
-            control_output = env_data.get('control_output', 0.0)
-            target_accel = env_data.get('sppvt_target_accel', 0.0)
-
-            print(f"  自车     前车      实际距离  期望距离  距离误差  模式      control_error  control_output  accel(转换后)")
-            print(f"  {env_data.get('ego_speed_kmh', 0.0):.1f}km/h {target_speed_str:8s}  "
-                  f"{env_data.get('vehicle_distance', 0.0):.2f}m   {env_data.get('desired_distance', 0.0):.2f}m   "
-                  f"{distance_error_str:8s} {control_mode:8s}  "
-                  f"{env_data.get('control_error', 0.0):+.3f}s      "
-                  f"{control_output:+.3f}         {target_accel:+.3f}")
-            print(f"  ")
-
-            # Two-Mode计算说明
-            if env_data.get('has_target', False):
-                if env_data.get('control_mode_flag', 1) == 1:
-                    print(f"[Two-Mode计算] control_error = 距离误差({distance_error:.2f}m) ÷ 自车速度({env_data.get('ego_speed_ms', 0.0):.2f}m/s) = {env_data.get('control_error', 0.0):.3f}s")
-                else:
-                    print(f"[Two-Mode计算] control_error = 前车速度({env_data.get('target_speed_ms', 0.0):.2f}m/s) - 自车速度({env_data.get('ego_speed_ms', 0.0):.2f}m/s) = {env_data.get('control_error', 0.0):.3f}m/s")
-            else:
-                print(f"[Two-Mode计算] 无前车 | control_error = 目标速度({env_data.get('target_speed_ms', 0.0):.2f}m/s) - 自车速度({env_data.get('ego_speed_ms', 0.0):.2f}m/s) = {env_data.get('control_error', 0.0):.3f}m/s")
-
-            print(f"[ACC参数] V_target:{unified_input['V_target_kmh']:.1f}km/h | G2:{unified_input['G2_s']:.1f}s | V_min:{unified_input['V_min_kmh']:.1f}km/h | 手动: 油门{self.manual_throttle_input:.2f} 刹车{self.manual_brake_input:.2f}")
-            print(f"")
-
-        # [键盘] - 紧凑单行
-        if command_description:
-            cmd_str = command_description
-        else:
-            cmd_type = unified_input['command_type']
-            cmd_str = cmd_names.get(cmd_type, f'Unknown({cmd_type})')
-
-        acc_status = "开启" if self.acc_system_enabled else "关闭"
-        w_status = "按下" if self.w_key_pressed else "松开"
-        s_status = "按下" if self.s_key_pressed else "松开"
-        print(f"[键盘] {cmd_str} | ACC:{acc_status} | W:{w_status} S:{s_status}")
-
-        # [Simulink→] - 紧凑单行
-        print(f"[Simulink→] 速度{unified_input['ego_speed_kmh']:.1f}km/h cmd:{unified_input['command_type']} "
-              f"err:{unified_input['control_error']:.3f}s mode:{unified_input['control_mode_flag']} "
-              f"V_target:{unified_input['V_target_kmh']:.1f} G2:{unified_input['G2_s']:.1f}")
-
-        # [Simulink←] - 紧凑单行
-        old_V = unified_input['V_target_kmh']
-        new_V = unified_output.get('updated_V_target_kmh', old_V)
-        old_G2 = unified_input['G2_s']
-        new_G2 = unified_output.get('updated_G2_s', old_G2)
-
-        print(f"[Simulink←] accel:{unified_output.get('target_accel', 0.0):.3f} "
-              f"enabled:{unified_output.get('control_enabled', False)} "
-              f"state:{unified_output.get('current_state', 'Unknown')} "
-              f"R{unified_output.get('current_decision', 0)} "
-              f"stage:{unified_output.get('sppvt_stage', 0)} "
-              f"仲裁:{unified_output.get('torque_arbitration_active', False)}")
-
-        # 参数变化检查
-        if abs(new_V - old_V) > 0.1 or abs(new_G2 - old_G2) > 0.1:
-            print(f"            参数变化: V_target:{old_V:.1f}→{new_V:.1f} G2:{old_G2:.1f}→{new_G2:.1f}")
-
-        # [控制执行] - 紧凑单行
-        if final_control:
-            mode_str = final_control.get('mode', 'Unknown')
-            print(f"[控制执行] {mode_str} | 油门:{final_control.get('throttle', 0.0):.2f} "
-                  f"刹车:{final_control.get('brake', 0.0):.2f} 转向:{final_control.get('steer', 0.0):.3f}")
-
-            # 扭矩仲裁信息
-            if final_control.get('torque_arbitration'):
-                print(f"            ⚖️ 扭矩仲裁: SPPVT={final_control.get('sppvt_throttle', 0.0):.2f} + Driver={final_control.get('driver_throttle', 0.0):.2f}")
-
-        print(f"{'='*80}\n")
-
     def get_system_info(self):
         """获取系统状态信息，用于显示 """
-        ego_speed = self.get_vehicle_speed(self.ego_vehicle)
-        target_distance = self.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
-        has_target = target_distance < 50.0
         acc_params = self.get_current_parameters()
-        acc_status = self.get_status_info()
-
-        return {
-            'ego_speed': ego_speed,
-            'target_distance': target_distance,
-            'has_target': has_target,
-            'acc_system_enabled': self.acc_system_enabled,  # ACC系统开关状态（空格键）
-            'acc_control_active': self.acc_decision.current_state == ACCState.IN_CONTROL,
-            'acc_state': acc_status['state_description'],
-            'torque_arbitration_active': (hasattr(self.acc_decision, 'torque_arbitration_active') and
-                                          self.acc_decision.torque_arbitration_active),
-            'cruise_mode': acc_params.get('cruise_mode_active', False),
-            'cruise_speed_kmh': self.current_cruise_speed_kmh,
-            'V_target_kmh': acc_params['V_target_kmh'],
-            'V_min_kmh': acc_params['V_min_kmh'],
-            'G2_s': acc_params['G2_s'],
-            'throttle': self.throttle,
-            'brake': self.brake,
-            'steer': self.steer
-        }
-
-    def get_vehicle_speed(self, vehicle):
-        velocity = vehicle.get_velocity()
-        speed_m_s = math.sqrt(velocity.x ** 2 + velocity.y ** 2 + velocity.z ** 2)
-        speed_kmh = speed_m_s * 3.6
-        return speed_kmh
+        return OutputFormatter.format_system_info(
+            ego_vehicle=self.ego_vehicle,
+            target_vehicle=self.target_vehicle,
+            acc_system_enabled=self.acc_system_enabled,
+            acc_decision=self.acc_decision,
+            acc_params=acc_params,
+            current_cruise_speed_kmh=self.current_cruise_speed_kmh,
+            throttle=self.throttle,
+            brake=self.brake,
+            steer=self.steer,
+            get_vehicle_speed_func=VehicleUtils.get_vehicle_speed,
+            get_vehicle_distance_func=VehicleUtils.get_vehicle_distance
+        )
 
     def calculate_desired_following_distance(self, ego_speed_kmh, time_gap=2.0, min_distance=5.0):
         """使用两模式控制计算期望跟车距离"""
@@ -613,7 +477,7 @@ class acc:
     def radar_callback(self, radar_data):
         self.radar_points = []
         self.filted_points = []
-        ego_velocity = self.get_vehicle_speed(self.ego_vehicle) / 3.6
+        ego_velocity = VehicleUtils.get_vehicle_speed(self.ego_vehicle) / 3.6
         velocity_tolerance = 1.0
         for detection in radar_data:
             try:
@@ -665,93 +529,6 @@ class acc:
             points.append([x, y, z, intensity])
         self.latest_lidar_points = points
 
-    def get_extrinsic_params(self, radar_sensor, camera_sensor):
-        self.radar_2_world = radar_sensor.get_transform().get_matrix()
-        self.world_2_camera = np.array(camera_sensor.get_transform().get_inverse_matrix())
-
-    def project_radar_to_camera(self, radar_points, image_width=1280, image_height=720, fov=90):
-        fx = image_width / (2.0 * np.tan(fov * np.pi / 360.0))
-        fy = image_height / (2.0 * np.tan(fov * np.pi / 360.0))
-        cx = image_width / 2
-        cy = image_height / 2
-        projected_points = []
-        for x, y, z, w, l, h, vx, vy, vz, id in radar_points:
-            radar_point = np.array([x, y, z, 1])
-            world_point = np.dot(self.radar_2_world, radar_point)
-            camera_point = np.dot(self.world_2_camera, world_point)
-            point_in_camera_coords = np.array([
-                camera_point[1],
-                camera_point[2] * -1,
-                camera_point[0]])
-            u = cx + (fx * point_in_camera_coords[0] / point_in_camera_coords[2])
-            v = cy + (fy * point_in_camera_coords[1] / point_in_camera_coords[2])
-            ipm_point = np.dot(self.lane_detector.M, np.array([u, v - 300, 1]))
-            ipm_point[0] = ipm_point[0] / ipm_point[2]
-            ipm_point[1] = ipm_point[1] / ipm_point[2]
-            projected_points.append([int(u), int(v), int(ipm_point[0]), int(ipm_point[1])])
-        return projected_points
-
-    def get_vehicle_distance(self, vehicle1, vehicle2):
-        """计算两个车辆之间的距离（米）"""
-        if vehicle1 is None or vehicle2 is None:
-            return float('inf')
-
-        loc1 = vehicle1.get_location()
-        loc2 = vehicle2.get_location()
-
-        distance = math.sqrt((loc1.x - loc2.x) ** 2 + (loc1.y - loc2.y) ** 2)
-        return distance
-
-    def find_best_target(self, track_id, projected_points):
-        """优化的目标选择算法"""
-        current_target_idx = -1
-        min_distance = float('inf')
-
-        for idx in range(len(track_id)):
-            if -3 < track_id[idx][1] < 3:  # Y坐标在车道内
-                if track_id[idx][0] < min_distance:  # 选择最近的
-                    min_distance = track_id[idx][0]
-                    current_target_idx = idx
-
-        return current_target_idx
-
-    def get_lane_offset(self):
-        """获取车辆相对于车道中心的偏移量"""
-        if self.world is None:
-            return 0.0
-
-        carla_map = self.world.get_map()
-        if carla_map is None:
-            return 0.0
-
-        vehicle_location = self.ego_vehicle.get_location()
-        self.current_waypoint = carla_map.get_waypoint(
-            vehicle_location,
-            project_to_road=True,
-            lane_type=carla.LaneType.Driving
-        )
-
-        if self.current_waypoint is None:
-            return 0.0
-
-        lane_center = self.current_waypoint.transform.location
-        lane_direction = self.current_waypoint.transform.get_forward_vector()
-
-        to_center_vector = carla.Vector3D(
-            lane_center.x - vehicle_location.x,
-            lane_center.y - vehicle_location.y,
-            0
-        )
-
-        right_direction = carla.Vector3D(
-            -lane_direction.y,
-            lane_direction.x,
-            0
-        ).make_unit_vector()
-
-        offset = to_center_vector.dot(right_direction)
-        return offset
-
     def generate_target(self):
         """主循环 - 完整集成ACC决策、控制和显示"""
         # 创建ACC控制器 - 使用统一的巡航速度
@@ -763,7 +540,7 @@ class acc:
         )
         self.acc_controller = acc_controller  # 保存引用以便后续访问
         try:
-            self.get_extrinsic_params(self.radar, self.camera)
+            self.radar_2_world, self.world_2_camera = SensorTransforms.get_extrinsic_params(self.radar, self.camera)
             self.start_time = time.time()
             frame_count = 0
 
@@ -880,9 +657,9 @@ class acc:
 
                 t0 = time.time()
                 # 获取车辆状态
-                ego_speed = self.get_vehicle_speed(self.ego_vehicle)
-                target_speed = self.get_vehicle_speed(self.target_vehicle) if self.target_vehicle else 0.0
-                vehicle_distance = self.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
+                ego_speed = VehicleUtils.get_vehicle_speed(self.ego_vehicle)
+                target_speed = VehicleUtils.get_vehicle_speed(self.target_vehicle) if self.target_vehicle else 0.0
+                vehicle_distance = VehicleUtils.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
                 has_target = vehicle_distance < 50.0
 
                 # === 使用Simulink一体化接口进行决策和控制 ===
@@ -895,7 +672,7 @@ class acc:
 
                 # 为一体化接口准备输入数据
                 ego_speed_ms = ego_speed / 3.6
-                lane_offset = self.get_lane_offset()
+                lane_offset = VehicleUtils.get_lane_offset(self.ego_vehicle, self.world)
 
                 # 获取增强两模式控制信息用于Simulink接口
                 if has_target:
@@ -927,8 +704,8 @@ class acc:
 
                     if track_id:
                         try:
-                            projected_points = self.project_radar_to_camera(track_id)
-                            current_target_idx = self.find_best_target(track_id, projected_points)
+                            projected_points = SensorTransforms.project_radar_to_camera(self.radar_2_world, self.world_2_camera, self.lane_detector.M, track_id)
+                            current_target_idx = VehicleUtils.find_best_target(track_id, projected_points)
 
                             # 绘制检测目标
                             for idx in range(min(len(track_id), len(projected_points))):
@@ -1036,11 +813,29 @@ class acc:
                     perf_times['0_simulink'].append((time.time() - t0))
 
                     # === 同步Simulink输出的参数回到系统 ===
-                    # V_target_kmh可能被Simulink修改（无继控制时）
+                    # V_target_kmh和G2_s可能被Simulink修改（键盘指令）
+                    params_changed = False
                     if 'updated_V_target_kmh' in unified_output:
-                        self.acc_params['V_target_kmh'] = unified_output['updated_V_target_kmh']
+                        old_V_target = self.acc_params['V_target_kmh']
+                        new_V_target = unified_output['updated_V_target_kmh']
+                        if abs(new_V_target - old_V_target) > 0.1:
+                            self.acc_params['V_target_kmh'] = new_V_target
+                            params_changed = True
+
                     if 'updated_G2_s' in unified_output:
-                        self.acc_params['G2_s'] = unified_output['updated_G2_s']
+                        old_G2 = self.acc_params['G2_s']
+                        new_G2 = unified_output['updated_G2_s']
+                        if abs(new_G2 - old_G2) > 0.01:
+                            self.acc_params['G2_s'] = new_G2
+                            params_changed = True
+
+                    # 同步到 two_mode_controller（关键修复：确保误差计算使用最新G2）
+                    if params_changed:
+                        set_two_mode_parameters(
+                            V_threshold_kmh=self.acc_params['V_target_kmh'],
+                            G2_s=self.acc_params['G2_s'],
+                            target_speed_kmh=self.acc_params['V_target_kmh']
+                        )
 
                     # 键盘调整将通过Simulink输入输出处理，不再使用备用决策
 
@@ -1075,18 +870,6 @@ class acc:
                     traceback.print_exc()
                     # 不再回退，让问题充分暴露
                     raise e
-
-                # # === 调试输出：检查每个判断条件 ===
-                # if hasattr(self.acc_decision_sppvt, 'debug') and self.acc_decision_sppvt.debug:
-                #     print(f"\n=== Simulink ACC控制判断调试 ===")
-                #     print(f"1. acc_system_enabled: {self.acc_system_enabled}")
-                #     print(f"2. simulink_control_enabled: {unified_output.get('control_enabled', False)}")
-                #     print(f"3. current_state: {unified_output.get('current_state', 'Unknown')}")
-                #     print(f"4. current_decision: {unified_output.get('current_decision', 'None')}")
-                #     print(f"5. torque_arbitration_active: {unified_output.get('torque_arbitration_active', False)}")
-                #     print(f"6. manual_control_active: {self.manual_control_active}")
-                #     print(f"7. V_target_kmh: {self.acc_params['V_target_kmh']:.1f}")
-                #     print("=== 调试结束 ===\n")
 
                 # === 扭矩仲裁处理（油门指令时） ===
                 torque_arbitration = decision_output.get('torque_arbitration_active', False)
@@ -1178,7 +961,13 @@ class acc:
 
                         # 收集最终控制信息
                         if sppvt_target_accel is not None:
-                            current_mode = f"UNIFIED_SPPVT_{unified_output.get('sppvt_stage', 'Unknown')}"
+                            # 使用正确的键名：sppvt_stage_output（与Simulink总线定义一致）
+                            sppvt_stage = unified_output.get('sppvt_stage_output', 0)
+                            # SPPVT阶段：0=未知, 1=Stage1, 2=Stage2, 3=Stage3
+                            if sppvt_stage >= 1:
+                                current_mode = f"UNIFIED_SPPVT_Stage{int(sppvt_stage)}"
+                            else:
+                                current_mode = "UNIFIED_SPPVT_Unknown"
                         else:
                             current_mode = decision_output.get('current_control_mode', 'Unknown')
 
@@ -1257,12 +1046,17 @@ class acc:
                 }
 
                 # === 格式化输出Simulink I/O信息 ===
-                self._print_simulink_io(
+                OutputFormatter.print_simulink_io(
                     frame_num=frame_count,
                     current_time=time.time() - self.start_time,
                     unified_input=unified_input,
                     unified_output=unified_output,
                     duration_ms=simulink_duration_ms,
+                    manual_throttle_input=self.manual_throttle_input,
+                    manual_brake_input=self.manual_brake_input,
+                    w_key_pressed=self.w_key_pressed,
+                    s_key_pressed=self.s_key_pressed,
+                    acc_system_enabled=self.acc_system_enabled,
                     command_description=command_description,
                     final_control=final_control,
                     env_data=env_data
@@ -1279,7 +1073,7 @@ class acc:
                     vehicle_distance,
                     desired_distance,
                     control_mode,
-                    self.get_lane_offset(),
+                    VehicleUtils.get_lane_offset(self.ego_vehicle, self.world),
                     acc_status['state_description'],
                     self.acc_system_enabled,
                     acc_params['V_target_kmh'],

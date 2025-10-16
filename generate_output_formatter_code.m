@@ -30,7 +30,8 @@ integrated_output.updated_G2_s = decision_output.updated_G2_s;
 integrated_output.sppvt_control_output = double(sppvt_output1);
 integrated_output.sppvt_velocity_output = double(sppvt_output2);
 integrated_output.sppvt_acceleration_output = double(sppvt_output3);
-integrated_output.sppvt_stage_output = double(sppvt_output4);
+% 注意：sppvt_output4是jerk，不是stage！stage来自Stage_Manager
+integrated_output.sppvt_stage_output = double(stage_manager_states_out(1));  % 从Stage_Manager获取stage值
 integrated_output.sppvt_status_output = double(sppvt_output5);
 
 % 12: 调试信息（组合状态码）
