@@ -32,24 +32,59 @@ from vehicle_utils import VehicleUtils
 from sensor_transforms import SensorTransforms
 from output_formatter import OutputFormatter
 
+# 导入横向PID控制器
+from lateral_pid_controller import LateralPIDController
+
 
 class acc:
-    def __init__(self):
+    def __init__(self, perception_mode='carla'):
+        """
+        初始化ACC系统
+        Args:
+            perception_mode (str): 感知模式
+                - 'carla': 使用CARLA API直接获取距离和车道信息（默认）
+                - 'vision': 使用雷达+相机+视觉算法
+        """
         # === 显示管理器初始化 ===
         self.display_manager = DisplayManager(1280, 720)
         self.show_opencv = True  # 是否显示OpenCV窗口
 
-        # === 原有的传感器和检测模块 ===
-        self.tracker = kalman_filter.RadarTracker()
-        self.lane_detector = lane_detection.LaneDetector()
-        self.radar_point_cluster = radar_cluster.RadarClusterNode()
+        # === 感知模式配置 ===
+        self.perception_mode = perception_mode
+        print(f"\n🔍 感知模式: {perception_mode.upper()}")
+        if perception_mode == 'carla':
+            print("   使用CARLA API获取前车距离和车道偏移")
+        else:
+            print("   使用雷达+相机视觉方案")
+
+        # === CARLA API感知模块（仅carla模式使用）===
+        self.carla_perception = None  # 将在init_carla()后初始化
+
+        # === 视觉感知模块（条件初始化）===
+        if perception_mode == 'vision':
+            self.tracker = kalman_filter.RadarTracker()
+            self.lane_detector = lane_detection.LaneDetector()
+            self.radar_point_cluster = radar_cluster.RadarClusterNode()
+            self.radar_detections = []
+            self.latest_camera_image = None
+            self.radar_2_world = []
+            self.world_2_camera = []
+            self.cluster = []
+            self.track_id = []
+        else:
+            # carla模式下设为None
+            self.tracker = None
+            self.lane_detector = None
+            self.radar_point_cluster = None
+            self.radar_detections = None
+            self.latest_camera_image = None
+            self.radar_2_world = None
+            self.world_2_camera = None
+            self.cluster = None
+            self.track_id = None
+
+        # === 通用变量 ===
         self.max_follow_distance = 50
-        self.radar_detections = []
-        self.latest_camera_image = None
-        self.radar_2_world = []
-        self.world_2_camera = []
-        self.cluster = []
-        self.track_id = []
         self.image_width = 1280
         self.image_height = 720
         self.target_vehicle = None
@@ -93,6 +128,15 @@ class acc:
         # 键盘指令队列（单帧有效，只记录指令不立即调用Simulink）
         self.pending_keyboard_command = None  # 格式: {'code': int, 'description': str}
 
+        # === 横向PID控制器 ===
+        # 根据感知模式使用不同的PID参数
+        if perception_mode == 'carla':
+            # CARLA API模式：误差单位为米，需要更大的增益
+            self.lateral_pid = LateralPIDController(kp=0.02, ki=0.02, kd=0.4)
+        else:
+            # Vision模式：误差是归一化值，使用较小的增益
+            self.lateral_pid = LateralPIDController(kp=0.04, ki=0.001, kd=0.01)
+
         # === 运行控制 ===
         self.running = True
 
@@ -110,7 +154,7 @@ class acc:
         # 初始化 Carla 客户端
         self.client = carla.Client('localhost', 2000)
         self.client.set_timeout(60.0)
-        map_name = 'Town05'
+        map_name = 'Town04'
         try:
             self.world = self.client.get_world()
             self.world = self.client.load_world(map_name, carla.MapLayer.Buildings | carla.MapLayer.ParkedVehicles)
@@ -196,37 +240,58 @@ class acc:
             tl.set_state(carla.TrafficLightState.Green)
             tl.freeze(True)
 
-        # 配置传感器
-        # 雷达
-        radar_bp = self.blueprint_library.find('sensor.other.radar')
-        RADAR_CONFIG = {
-            'range': '100.0',
-            'horizontal_fov': '120.0',
-            'vertical_fov': '30.0',
-            'points_per_second': '20000'
-        }
-        for attr, value in RADAR_CONFIG.items():
-            radar_bp.set_attribute(attr, value)
-        radar_transform = carla.Transform(carla.Location(x=2.0, z=1.0))
-        self.radar = self.world.spawn_actor(radar_bp, radar_transform, attach_to=self.ego_vehicle)
+        # === 条件化传感器初始化 ===
+        if self.perception_mode == 'vision':
+            print("   初始化视觉传感器（雷达+相机+激光雷达）...")
 
-        # 相机（用于OpenCV处理）
-        camera_bp = self.blueprint_library.find('sensor.camera.rgb')
-        camera_bp.set_attribute('image_size_x', '1280')
-        camera_bp.set_attribute('image_size_y', '720')
-        camera_bp.set_attribute('fov', '90')
-        camera_transform = carla.Transform(carla.Location(x=1.5, z=1.5))
-        self.camera = self.world.spawn_actor(camera_bp, camera_transform, attach_to=self.ego_vehicle)
+            # 雷达
+            radar_bp = self.blueprint_library.find('sensor.other.radar')
+            RADAR_CONFIG = {
+                'range': '100.0',
+                'horizontal_fov': '120.0',
+                'vertical_fov': '30.0',
+                'points_per_second': '20000'
+            }
+            for attr, value in RADAR_CONFIG.items():
+                radar_bp.set_attribute(attr, value)
+            radar_transform = carla.Transform(carla.Location(x=2.0, z=1.0))
+            self.radar = self.world.spawn_actor(radar_bp, radar_transform, attach_to=self.ego_vehicle)
 
-        # 激光雷达
-        lidar_bp = self.blueprint_library.find('sensor.lidar.ray_cast')
-        lidar_bp.set_attribute('range', '100.0')
-        lidar_bp.set_attribute('points_per_second', '1000')
-        lidar_bp.set_attribute('rotation_frequency', '10')
-        lidar_bp.set_attribute('upper_fov', '10')
-        lidar_bp.set_attribute('lower_fov', '-10')
-        lidar_transform = carla.Transform(carla.Location(x=0.0, z=2.0))
-        self.lidar = self.world.spawn_actor(lidar_bp, lidar_transform, attach_to=self.ego_vehicle)
+            # 相机（用于OpenCV处理）
+            camera_bp = self.blueprint_library.find('sensor.camera.rgb')
+            camera_bp.set_attribute('image_size_x', '1280')
+            camera_bp.set_attribute('image_size_y', '720')
+            camera_bp.set_attribute('fov', '90')
+            camera_transform = carla.Transform(carla.Location(x=1.5, z=1.5))
+            self.camera = self.world.spawn_actor(camera_bp, camera_transform, attach_to=self.ego_vehicle)
+
+            # 激光雷达
+            lidar_bp = self.blueprint_library.find('sensor.lidar.ray_cast')
+            lidar_bp.set_attribute('range', '100.0')
+            lidar_bp.set_attribute('points_per_second', '1000')
+            lidar_bp.set_attribute('rotation_frequency', '10')
+            lidar_bp.set_attribute('upper_fov', '10')
+            lidar_bp.set_attribute('lower_fov', '-10')
+            lidar_transform = carla.Transform(carla.Location(x=0.0, z=2.0))
+            self.lidar = self.world.spawn_actor(lidar_bp, lidar_transform, attach_to=self.ego_vehicle)
+
+            print("   ✅ 视觉传感器初始化完成")
+        else:
+            # CARLA API模式：不创建传感器
+            self.radar = None
+            self.camera = None
+            self.lidar = None
+            print("   ⏭️  跳过传感器初始化（使用CARLA API）")
+
+        # === 初始化CARLA API感知模块 ===
+        if self.perception_mode == 'carla':
+            from carla_perception import CarlaPerception
+            self.carla_perception = CarlaPerception(
+                self.world,
+                self.ego_vehicle,
+                self.target_vehicle
+            )
+            print("   ✅ CARLA API感知模块初始化完成\n")
 
     def init_csv(self):
         """初始化CSV文件"""
@@ -529,7 +594,12 @@ class acc:
     def generate_target(self):
         """主循环 - 完整集成ACC决策、控制和显示"""
         try:
-            self.radar_2_world, self.world_2_camera = SensorTransforms.get_extrinsic_params(self.radar, self.camera)
+            # === 初始化外参矩阵（仅vision模式需要）===
+            if self.perception_mode == 'vision':
+                self.radar_2_world, self.world_2_camera = SensorTransforms.get_extrinsic_params(self.radar, self.camera)
+            else:
+                self.radar_2_world, self.world_2_camera = None, None
+
             self.start_time = time.time()
             frame_count = 0
 
@@ -645,10 +715,20 @@ class acc:
                     last_perf_report_time = current_time
 
                 t0 = time.time()
-                # 获取车辆状态
+                # === 获取车辆状态（根据感知模式选择数据源）===
                 ego_speed = VehicleUtils.get_vehicle_speed(self.ego_vehicle)
                 target_speed = VehicleUtils.get_vehicle_speed(self.target_vehicle) if self.target_vehicle else 0.0
-                vehicle_distance = VehicleUtils.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
+
+                # 条件化距离和车道偏移获取
+                if self.perception_mode == 'carla':
+                    # CARLA API模式：使用carla_perception模块
+                    vehicle_distance = self.carla_perception.get_vehicle_distance()
+                    lane_offset = self.carla_perception.get_lane_offset()
+                else:
+                    # Vision模式：使用VehicleUtils
+                    vehicle_distance = VehicleUtils.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
+                    lane_offset = VehicleUtils.get_lane_offset(self.ego_vehicle, self.world)
+
                 has_target = vehicle_distance < 50.0
 
                 # === 使用Simulink一体化接口进行决策和控制 ===
@@ -661,7 +741,6 @@ class acc:
 
                 # 为一体化接口准备输入数据
                 ego_speed_ms = ego_speed / 3.6
-                lane_offset = VehicleUtils.get_lane_offset(self.ego_vehicle, self.world)
 
                 # 获取增强两模式控制信息用于Simulink接口
                 if has_target:
@@ -674,9 +753,9 @@ class acc:
                     control_error = enhanced_two_mode_output['control_error']
                     control_mode_flag = enhanced_two_mode_output['control_mode_flag']
 
-                # === OpenCV图像处理（用于雷达和车道检测） ===
+                # === OpenCV图像处理（仅vision模式） ===
                 t0 = time.time()
-                if self.latest_camera_image is not None:
+                if self.perception_mode == 'vision' and self.latest_camera_image is not None:
                     image_with_radar = self.latest_camera_image.copy()
 
                     # 目标检测和轨迹处理
@@ -871,7 +950,20 @@ class acc:
                 if acc_should_control:
                     # ACC控制模式 - 只有在主动控制模式下才执行
                     try:
-                        lane_offset = (lane_center - 510) / 150
+                        # === 横向控制：使用PID控制器计算转向 ===
+                        # 在vision模式下，使用OpenCV检测的lane_center重新计算lane_offset
+                        # 在carla模式下，使用已获取的lane_offset (从carla_perception)
+                        if self.perception_mode == 'vision' and 'lane_center' in locals():
+                            # Vision模式：归一化像素偏移
+                            lateral_error = (lane_center - 510) / 150
+                        else:
+                            # CARLA API模式：米为单位
+                            # 符号约定：carla_perception返回"左负右正"
+                            # PID控制器期望：车偏左为负，需要向右转=负转向
+                            lateral_error = -lane_offset  # 反转符号
+
+                        # 使用PID控制器计算转向输出
+                        steer_output = self.lateral_pid.update(lateral_error, dt=0.05)
 
                         # Decide control action based on enable flag
                         if decision_output.get('control_enabled', False):
@@ -892,8 +984,8 @@ class acc:
                                 control.throttle = 0.0
                                 control.brake = 0.0
 
-                            # Apply lateral steering based on lane offset
-                            control.steer = np.clip(lane_offset * 0.04, -0.4, 0.4)  # simple steering
+                            # Apply PID-based lateral steering
+                            control.steer = steer_output
 
                             # === Handle W/S override ===
                             if self.manual_throttle_input > 0:
@@ -1071,15 +1163,21 @@ class acc:
             self.destroy()
 
     def destroy(self):
-        # 停止传感器
-        self.radar.stop()
-        self.camera.stop()
-        self.lidar.stop()
+        # 停止传感器（仅vision模式）
+        if self.radar is not None:
+            self.radar.stop()
+        if self.camera is not None:
+            self.camera.stop()
+        if self.lidar is not None:
+            self.lidar.stop()
 
-        # 销毁传感器
-        self.radar.destroy()
-        self.camera.destroy()
-        self.lidar.destroy()
+        # 销毁传感器（仅vision模式）
+        if self.radar is not None:
+            self.radar.destroy()
+        if self.camera is not None:
+            self.camera.destroy()
+        if self.lidar is not None:
+            self.lidar.destroy()
 
         # 销毁车辆
         for vehicle in self.vehicles:
@@ -1092,36 +1190,66 @@ class acc:
             settings.synchronous_mode = False
             self.world.apply_settings(settings)
 
-        print(f"Destroyed {len(self.vehicles)} vehicles, ego vehicle, sensors, and restored settings.")
+        sensor_count = sum([1 for s in [self.radar, self.camera, self.lidar] if s is not None])
+        print(f"Destroyed {len(self.vehicles)} vehicles, ego vehicle, {sensor_count} sensors, and restored settings.")
 
 
 def main():
-    acc_actor = acc()
+    """
+    主函数 - 支持命令行参数配置感知模式
 
-    # 创建传感器监听线程
-    thread_1 = threading.Thread(target=acc_actor.radar.listen, args=(acc_actor.radar_callback,), name='T1')
-    thread_2 = threading.Thread(target=acc_actor.camera.listen, args=(acc_actor.camera_callback,), name='T2')
-    thread_3 = threading.Thread(target=acc_actor.lidar.listen, args=(acc_actor.lidar_callback,), name='T3')
+    Usage:
+        python acc_updated.py              # 默认使用CARLA API模式
+        python acc_updated.py --mode carla  # 显式指定CARLA API模式
+        python acc_updated.py --mode vision # 使用视觉传感器模式
+    """
+    import argparse
 
-    thread_1.start()
-    thread_2.start()
-    thread_3.start()
+    parser = argparse.ArgumentParser(description='ACC System with configurable perception mode')
+    parser.add_argument('--mode', type=str, default='carla',
+                       choices=['carla', 'vision'],
+                       help='Perception mode: carla (API-based) or vision (sensor-based)')
+
+    args = parser.parse_args()
+
+    # 创建ACC实例，传入感知模式
+    acc_actor = acc(perception_mode=args.mode)
+
+    # 创建传感器监听线程（仅vision模式）
+    threads = []
+    if acc_actor.perception_mode == 'vision':
+        print("启动传感器监听线程...")
+        thread_1 = threading.Thread(target=acc_actor.radar.listen, args=(acc_actor.radar_callback,), name='T1')
+        thread_2 = threading.Thread(target=acc_actor.camera.listen, args=(acc_actor.camera_callback,), name='T2')
+        thread_3 = threading.Thread(target=acc_actor.lidar.listen, args=(acc_actor.lidar_callback,), name='T3')
+
+        thread_1.start()
+        thread_2.start()
+        thread_3.start()
+
+        threads = [thread_1, thread_2, thread_3]
+        print("✅ 传感器监听线程已启动\n")
+    else:
+        print("⏭️  跳过传感器监听线程（CARLA API模式）\n")
 
     try:
         acc_actor.generate_target()
     except KeyboardInterrupt:
         print("Program interrupted.")
     finally:
-        # 停止传感器监听
-        acc_actor.radar.stop()
-        acc_actor.camera.stop()
-        acc_actor.lidar.stop()
+        # 停止传感器监听（仅vision模式）
+        if acc_actor.perception_mode == 'vision':
+            if acc_actor.radar is not None:
+                acc_actor.radar.stop()
+            if acc_actor.camera is not None:
+                acc_actor.camera.stop()
+            if acc_actor.lidar is not None:
+                acc_actor.lidar.stop()
 
-        # 等待线程结束
-        thread_1.join()
-        thread_2.join()
-        thread_3.join()
-        print("All threads terminated.")
+            # 等待线程结束
+            for thread in threads:
+                thread.join()
+            print("All sensor threads terminated.")
 
 
 if __name__ == '__main__':
