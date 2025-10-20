@@ -1,0 +1,56 @@
+========================================
+ACC_Decision_SPPVT_Integrated.slx 频率配置报告
+测试时间: 2025-10-20
+========================================
+
+【模型整体配置】
+✓ 求解器类型: Fixed-step (固定步长)
+✓ 固定步长: 0.02 秒
+✓ 采样频率: 50.00 Hz
+✓ 开始时间: 0.0 秒
+✓ 停止时间: 0.02 秒
+
+【重要发现】
+1. 实际模型频率是 50Hz (0.02秒)，而不是build脚本中的20Hz (0.05秒)
+2. 这说明slx文件创建后被手动修改过，频率从20Hz提升到了50Hz
+3. 停止时间设置为0.02秒，表示模型配置为只运行一个采样周期
+
+【各模块采样时间】
+所有顶层模块的SampleTime设置为 "-1"，表示：
+- 继承模型的固定步长（0.02秒）
+- 所有模块运行在统一的50Hz频率上
+
+包括以下模块：
+- Input (输入端口): -1 (继承，即50Hz)
+- Output (输出端口): -1 (继承，即50Hz)
+- Decision_Function (决策功能): 继承50Hz
+- Input_Validator (输入验证): 继承50Hz
+- Output_Formatter (输出格式化): 继承50Hz
+- SPPVT_Adapter (SPPVT适配器): 继承50Hz
+- Stage_Manager (状态管理器): 继承50Hz
+- Parameter_Manager (参数管理): 继承50Hz
+- Subsystem (子系统): 继承50Hz
+- 所有Scope和Display模块: 继承50Hz
+
+【子系统列表】
+- Decision_Function
+- Input_Validator
+- Output_Formatter
+- Parameter_Manager
+- SPPVT_Adapter
+- Stage_Manager
+- Subsystem
+  - Core_Control_Subsystem
+  - Derivatives_Subsystem
+  - Upgrade_Condition_Subsystem
+
+【结论】
+✅ 整个模型采用统一的采样频率：50Hz (0.02秒/20ms)
+✅ 所有模块都运行在相同的频率下，确保数据同步
+✅ 比原始build脚本的20Hz提升了2.5倍，控制响应更快
+
+【与Python代码集成建议】
+如果Python代码(acc_updated.py)需要与此模型交互，应确保：
+1. Python端的控制周期也设置为0.02秒（20ms）
+2. 或者在接口层做好频率转换处理
+========================================

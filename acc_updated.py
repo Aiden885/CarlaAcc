@@ -7,6 +7,7 @@ import time
 import lane_detection
 import kalman_filter
 import radar_cluster
+
 import threading
 
 # Pygame相关
@@ -34,6 +35,7 @@ from output_formatter import OutputFormatter
 
 # 导入横向PID控制器
 from lateral_pid_controller import LateralPIDController
+from manual_input_controller import ManualSteeringController
 
 
 class acc:
@@ -117,13 +119,17 @@ class acc:
         self.steer = 0.0
         
         # === 手动输入状态（用于扭矩仲裁）===
+        self.manual_steering_controller = ManualSteeringController()
         self.manual_throttle_input = 0.0
         self.manual_brake_input = 0.0
         self.manual_steer_input = 0.0
+        self._last_manual_steer_update = time.time()
 
         # 按键按下状态跟踪
         self.w_key_pressed = False  # W键（油门）是否按下
         self.s_key_pressed = False  # S键（刹车）是否按下
+        self.a_key_pressed = False  # A键（左转）是否按下
+        self.d_key_pressed = False  # D键（右转）是否按下
 
         # 键盘指令队列（单帧有效，只记录指令不立即调用Simulink）
         self.pending_keyboard_command = None  # 格式: {'code': int, 'description': str}
@@ -291,7 +297,7 @@ class acc:
                 self.ego_vehicle,
                 self.target_vehicle
             )
-            print("   ✅ CARLA API感知模块初始化完成\n")
+            print("   ✅ CARLA API感知模块初始化完成")
 
     def init_csv(self):
         """初始化CSV文件"""
@@ -382,8 +388,7 @@ class acc:
                 self.ego_vehicle.apply_control(control)
 
     def handle_events(self):
-        """处理事件"""
-        # 处理显示管理器的事件
+        """Process display events and translate them into ACC actions."""
         display_events = self.display_manager.handle_display_events()
 
         for event_type, event_data in display_events:
@@ -391,111 +396,67 @@ class acc:
                 self.running = False
                 return
 
-            elif event_type == 'keydown':
-                # 退出
+            if event_type == 'keydown':
                 if event_data == K_ESCAPE:
                     self.running = False
-
-                # OpenCV窗口控制
                 elif event_data == K_o:
                     self.show_opencv = not self.show_opencv
-                    print(f"OpenCV窗口: {'开启' if self.show_opencv else '关闭'}")
-
+                    print(f"OpenCV window: {'ON' if self.show_opencv else 'OFF'}")
                 elif event_data == K_p:
-                    debug_state = not self.acc_decision.debug
-                    self.acc_decision.debug = debug_state
-                    print(f"ACC调试模式: {'开启' if debug_state else '关闭'}")
-
-                # === ACC系统总开关 ===
+                    self.acc_decision.debug = not self.acc_decision.debug
+                    print(f"ACC debug: {'ON' if self.acc_decision.debug else 'OFF'}")
                 elif event_data == K_SPACE:
                     self.acc_system_enabled = not self.acc_system_enabled
-                    status = "开启" if self.acc_system_enabled else "关闭"
-                    print(f"🔄 ACC系统总开关: {status}")
-                    if self.acc_system_enabled:
-                        print(f"🟢 ACC系统已开启，当前状态: {self.acc_decision.current_state.value}")
-                        print(f"🟡 请按E键启动ACC控制（当速启控）")
-                    else:
-                        # 关闭ACC时重置决策模块
+                    status = 'ON' if self.acc_system_enabled else 'OFF'
+                    print(f"?? ACC master switch: {status}")
+                    if not self.acc_system_enabled:
                         self.acc_decision.reset()
-                        print(f"🔴 ACC系统已关闭")
-
-                # === ACC功能指令（使用标准I0-I6指令） ===
-                elif event_data == K_q:
-                    if self.acc_system_enabled:
-                        # Q键增速 -> I1 (增速指令)
-                        self._send_keyboard_command_to_simulink(2, "Q键增速(I1)")
+                elif event_data in (K_q, K_e, K_r, K_t, K_c):
+                    if not self.acc_system_enabled:
+                        print('?? ACC disabled, press SPACE to enable')
                     else:
-                        print(f"⚠️ Q键被按下但ACC系统未开启，请先按空格键开启ACC系统")
-
-                elif event_data == K_e:
-                    if self.acc_system_enabled:
-                        # E键减速 -> I0 (降速指令)
-                        self._send_keyboard_command_to_simulink(1, "E键减速(I0)")
-                    else:
-                        print(f"⚠️ E键被按下但ACC系统未开启，请先按空格键开启ACC系统")
-
-                elif event_data == K_r:
-                    if self.acc_system_enabled:
-                        # R键增距 -> I3 (增距指令)
-                        self._send_keyboard_command_to_simulink(4, "R键增距(I3)")
-
-                elif event_data == K_t:
-                    if self.acc_system_enabled:
-                        # T键减距 -> I2 (降距指令)
-                        self._send_keyboard_command_to_simulink(3, "T键减距(I2)")
-
-                elif event_data == K_c:
-                    if self.acc_system_enabled:
-                        # C键取消 -> I6 (取消ACC指令)
-                        self._send_keyboard_command_to_simulink(7, "C键取消(I6)")
-
-                # === 人工干预指令（WASD） ===
+                        mapping = {
+                            K_q: (2, 'Q???(I1)'),
+                            K_e: (1, 'E???(I0)'),
+                            K_r: (4, 'R???(I3)'),
+                            K_t: (3, 'T???(I2)'),
+                            K_c: (7, 'C???(I6)')
+                        }
+                        self._send_keyboard_command_to_simulink(*mapping[event_data])
                 elif event_data == K_w:
-                    # W键按下：标记按键状态（无论ACC是否开启）
                     self.w_key_pressed = True
                     if self.acc_system_enabled:
-                        # ACC开启时，发送油门指令给Simulink触发扭矩仲裁
-                        self._send_keyboard_command_to_simulink(5, "W键油门(I4)")
-
+                        self._send_keyboard_command_to_simulink(5, 'W???(I4)')
                 elif event_data == K_s:
-                    # S键按下：标记按键状态（无论ACC是否开启）
                     self.s_key_pressed = True
                     if self.acc_system_enabled:
-                        # ACC开启时，发送刹车指令给Simulink
-                        self._send_keyboard_command_to_simulink(6, "S键刹车(I5)")
+                        self._send_keyboard_command_to_simulink(6, 'S???(I5)')
+                elif event_data == K_a:
+                    self.a_key_pressed = True
+                elif event_data == K_d:
+                    self.d_key_pressed = True
 
             elif event_type == 'keyup':
-                # 按键松开事件处理
                 if event_data == K_w:
-                    # W键松开：重置油门开度
                     self.w_key_pressed = False
                     self.manual_throttle_input = 0.0
-                    print("🔵 油门松开，开度归零")
-
+                    self.throttle = 0.0
+                    print('?? ?????????')
                 elif event_data == K_s:
-                    # S键松开：重置刹车开度
                     self.s_key_pressed = False
                     self.manual_brake_input = 0.0
-                    print("🔵 刹车松开，开度归零")
-
+                    self.brake = 0.0
+                    print('?? ?????????')
                 elif event_data == K_a:
-                    # 向左转向辅助
-                    self._manual_steering(-0.3)
-
+                    self.a_key_pressed = False
+                    if not self.d_key_pressed:
+                        self.manual_steering_controller.reset()
+                        self.manual_steer_input = 0.0
                 elif event_data == K_d:
-                    # 向右转向辅助
-                    self._manual_steering(0.3)
-
-    def _manual_steering(self, steer_value):
-        """手动转向辅助"""
-        if self.ego_vehicle:
-            control = carla.VehicleControl()
-            control.steer = steer_value
-            control.throttle = 0.0
-            control.brake = 0.0
-            self.ego_vehicle.apply_control(control)
-            direction = "左" if steer_value < 0 else "右"
-            print(f"🔄 手动转向: {direction} ({steer_value:.1f})")
+                    self.d_key_pressed = False
+                    if not self.a_key_pressed:
+                        self.manual_steering_controller.reset()
+                        self.manual_steer_input = 0.0
 
     def _send_keyboard_command_to_simulink(self, command_code, description):
         """
@@ -616,7 +577,7 @@ class acc:
             print("  W/S: 油门/刹车  A/D: 转向")
             print("  I: 信息显示  O: OpenCV窗口  P: 调试模式  ESC: 退出")
             print(f"\n当前状态: ACC系统关闭, 请先按空格键开启")
-            print("\n")
+            print("")
 
             # 性能分析器
             import collections
@@ -663,7 +624,7 @@ class acc:
                     if total_avg > 0:
                         fps = 1000.0 / total_avg
                         print(f"{'理论帧率':20s}: {fps:6.2f} FPS")
-                print("="*60 + "\n")
+                print("="*60 + "")
 
             while self.running:
                 # === 性能分析：记录每个周期开始时间 ===
@@ -690,6 +651,16 @@ class acc:
                 else:
                     # S键未按下时，确保刹车归零
                     self.manual_brake_input = 0.0
+
+                # 手动转向按键：基于真实帧间隔的累加逻辑
+                current_time = time.time()
+                dt = current_time - self._last_manual_steer_update
+                self.manual_steer_input = self.manual_steering_controller.update(
+                    steer_left=self.a_key_pressed,
+                    steer_right=self.d_key_pressed,
+                    dt_seconds=dt
+                )
+                self._last_manual_steer_update = current_time
 
                 # 更新前车速度控制
                 t0 = time.time()
@@ -1005,8 +976,11 @@ class acc:
                             control = carla.VehicleControl()
 
                         if control.brake < 0.01:
-                            control.brake = 0
+                            control.brake = 0.0
                         self.ego_vehicle.apply_control(control)
+                        self.throttle = control.throttle
+                        self.brake = control.brake
+                        self.steer = control.steer
 
                         # 收集最终控制信息
                         if sppvt_target_accel is not None:
@@ -1047,18 +1021,23 @@ class acc:
                     # === 处理手动油门/刹车输入（独立于ACC控制状态）===
                     if self.manual_throttle_input > 0 or self.manual_brake_input > 0:
                         control = carla.VehicleControl()
+                        manual_steer_active = self.manual_steer_input
 
                         # 刹车优先级高于油门
                         if self.manual_brake_input > 0:
                             control.throttle = 0.0
                             control.brake = self.manual_brake_input
-                            control.steer = 0.0
+                            control.steer = manual_steer_active
                         elif self.manual_throttle_input > 0:
                             control.throttle = self.manual_throttle_input
                             control.brake = 0.0
-                            control.steer = 0.0
+                            control.steer = manual_steer_active
 
-                        self.ego_vehicle.apply_control(control)
+                        if self.ego_vehicle:
+                            self.ego_vehicle.apply_control(control)
+                        self.throttle = control.throttle
+                        self.brake = control.brake
+                        self.steer = control.steer
 
                         # 收集手动控制信息
                         final_control.update({
@@ -1067,6 +1046,27 @@ class acc:
                             'steer': control.steer,
                             'mode': 'MANUAL'
                         })
+                    else:
+                        manual_steer_active = self.manual_steer_input
+                        if manual_steer_active != 0.0:
+                            control = carla.VehicleControl()
+                            control.throttle = 0.0
+                            control.brake = 0.0
+                            control.steer = manual_steer_active
+                            if self.ego_vehicle:
+                                self.ego_vehicle.apply_control(control)
+                            self.throttle = control.throttle
+                            self.brake = control.brake
+                            self.steer = control.steer
+                            final_control.update({
+                                'steer': manual_steer_active,
+                                'mode': 'MANUAL'
+                            })
+                        else:
+                            # 无任何输入时保持仪表显示为零
+                            self.throttle = 0.0
+                            self.brake = 0.0
+                            self.steer = 0.0
 
                 # === 收集环境数据用于输出 ===
                 # 计算期望距离和距离误差
@@ -1228,9 +1228,9 @@ def main():
         thread_3.start()
 
         threads = [thread_1, thread_2, thread_3]
-        print("✅ 传感器监听线程已启动\n")
+        print("✅ 传感器监听线程已启动")
     else:
-        print("⏭️  跳过传感器监听线程（CARLA API模式）\n")
+        print("⏭️  跳过传感器监听线程（CARLA API模式）")
 
     try:
         acc_actor.generate_target()

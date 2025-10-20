@@ -173,6 +173,14 @@ class OutputFormatter:
         target_distance = get_vehicle_distance_func(ego_vehicle, target_vehicle)
         has_target = target_distance < 50.0
 
+        from vehicle_utils import VehicleUtils
+
+        lane_offset = 0.0
+        try:
+            lane_offset = VehicleUtils.get_lane_offset(ego_vehicle, ego_vehicle.get_world())
+        except Exception:
+            lane_offset = 0.0
+
         return {
             'ego_speed': ego_speed,
             'target_distance': target_distance,
@@ -187,5 +195,6 @@ class OutputFormatter:
             'G2_s': acc_params['G2_s'],
             'throttle': throttle,
             'brake': brake,
-            'steer': steer
+            'steer': steer,
+            'lane_offset': lane_offset
         }

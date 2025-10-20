@@ -52,10 +52,6 @@ python test_simulink_decision_control.py
 - 生成状态转移覆盖矩阵
 - 生成交互式HTML测试报告
 
-**运行方式:**
-```bash
-python test_simulink_with_visualization.py
-```
 
 **生成文件:**
 - `simulink_test_report.html` - 交互式HTML报告(推荐优先查看)
@@ -282,9 +278,6 @@ def test_custom_scenario(self):
    python test_simulink_decision_control.py
    ```
 
-2. **完整验证**: 运行可视化版,生成详细报告
-   ```bash
-   python test_simulink_with_visualization.py
    ```
 
 3. **查看报告**: 用浏览器打开`simulink_test_report.html`
