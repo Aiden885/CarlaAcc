@@ -33,8 +33,8 @@ from vehicle_utils import VehicleUtils
 from sensor_transforms import SensorTransforms
 from output_formatter import OutputFormatter
 
-# 导入横向PID控制器
-from lateral_pid_controller import LateralPIDController
+# 导入横向Stanley控制器
+from lateral_stanley_controller import LateralStanleyController
 from manual_input_controller import ManualSteeringController
 
 
@@ -102,7 +102,7 @@ class acc:
         # === ACC系统可配置参数 (环境相关，需要传递给Simulink) ===
         self.acc_params = {
             'V_target_kmh': 50.0,      # 默认巡航速度 - 传递给Simulink
-            'V_min_kmh': 30.0,         # 最小速度阈值 - 传递给Simulink
+            'V_min_kmh': 20.0,         # 最小速度阈值 - 传递给Simulink
             'G2_s': 2.0,               # 时距参数 - 传递给Simulink
             'V_threshold_kmh': 50.0,   # 模式切换阈值 - 用于Two Mode控制器
             'speed_step': 5.0          # 速度调整步长
@@ -134,14 +134,26 @@ class acc:
         # 键盘指令队列（单帧有效，只记录指令不立即调用Simulink）
         self.pending_keyboard_command = None  # 格式: {'code': int, 'description': str}
 
-        # === 横向PID控制器 ===
-        # 根据感知模式使用不同的PID参数
+        # === 横向Stanley控制器 ===
+        # Stanley算法适用于全速域，特别优化高速（>100km/h）场景
         if perception_mode == 'carla':
-            # CARLA API模式：误差单位为米，需要更大的增益
-            self.lateral_pid = LateralPIDController(kp=0.02, ki=0.02, kd=0.4)
+            # CARLA API模式：使用前轴参考点和航向误差的Stanley控制器
+            # k: 横向误差增益（高速场景优化）
+            # k_soft: 软化因子（防止低速时增益过大）
+            self.lateral_controller = LateralStanleyController(
+                k=4.0,
+                k_soft=1.0,
+                output_limits=(-0.5, 0.5)
+            )
+            print("   🎯 横向控制：Stanley算法（k=4.0，适用于高速场景）")
         else:
-            # Vision模式：误差是归一化值，使用较小的增益
-            self.lateral_pid = LateralPIDController(kp=0.04, ki=0.001, kd=0.01)
+            # Vision模式：使用简化的Stanley控制器（无航向误差输入）
+            self.lateral_controller = LateralStanleyController(
+                k=1.5,
+                k_soft=1.0,
+                output_limits=(-0.4, 0.4)
+            )
+            print("   🎯 横向控制：Stanley算法（k=1.5，Vision模式）")
 
         # === 运行控制 ===
         self.running = True
@@ -150,8 +162,6 @@ class acc:
         self.init_carla()
         self.init_csv()
 
-        # 初始化两模式参数 - 已集成到Simulink，无需外部同步
-        
         # 初始化一体化接口的两模式控制器
         if hasattr(self.acc_decision_sppvt, 'init_two_mode_controller'):
             self.acc_decision_sppvt.init_two_mode_controller()
@@ -921,20 +931,59 @@ class acc:
                 if acc_should_control:
                     # ACC控制模式 - 只有在主动控制模式下才执行
                     try:
-                        # === 横向控制：使用PID控制器计算转向 ===
-                        # 在vision模式下，使用OpenCV检测的lane_center重新计算lane_offset
-                        # 在carla模式下，使用已获取的lane_offset (从carla_perception)
-                        if self.perception_mode == 'vision' and 'lane_center' in locals():
-                            # Vision模式：归一化像素偏移
-                            lateral_error = (lane_center - 510) / 150
-                        else:
-                            # CARLA API模式：米为单位
-                            # 符号约定：carla_perception返回"左负右正"
-                            # PID控制器期望：车偏左为负，需要向右转=负转向
-                            lateral_error = -lane_offset  # 反转符号
+                        # === 横向控制：使用Stanley算法计算转向 ===
+                        # Stanley算法结合航向误差和横向误差，适用于高速场景
+                        if self.perception_mode == 'carla':
+                            # CARLA API模式：获取完整的Stanley控制所需状态量
 
-                        # 使用PID控制器计算转向输出
-                        steer_output = self.lateral_pid.update(lateral_error, dt=0.05)
+                            # 1. 航向误差（弧度）
+                            # get_heading_error()返回: path_yaw - ego_yaw (左正右负)
+                            # CARLA转向约定: steer>0向右, steer<0向左
+                            # Stanley期望: 车朝向偏左需要steer>0向右转修正
+                            # 因此需要取反: heading_error = ego_yaw - path_yaw
+                            heading_error = -self.carla_perception.get_heading_error()
+
+                            # 2. 横向误差（米）
+                            # get_front_axle_offset()返回: 左负右正
+                            # Stanley期望: 车偏左需要steer>0向右转修正
+                            # 因此需要取反: cross_track_error = 左正右负
+                            cross_track_error = -self.carla_perception.get_front_axle_offset()
+
+                            # 3. 当前车速（m/s）
+                            current_velocity = VehicleUtils.get_vehicle_speed(self.ego_vehicle) / 3.6
+
+                            # 调用Stanley控制器计算转向角
+                            steer_output = self.lateral_controller.update(
+                                heading_error=heading_error,
+                                cross_track_error=cross_track_error,
+                                velocity=current_velocity
+                            )
+                        else:
+                            # Vision模式：使用简化的Stanley控制器
+                            # 只使用横向误差（无法获取精确航向误差）
+                            if 'lane_center' in locals():
+                                # 归一化像素偏移
+                                cross_track_error = (lane_center - 510) / 150
+                            else:
+                                cross_track_error = 0.0
+
+                            current_velocity = VehicleUtils.get_vehicle_speed(self.ego_vehicle) / 3.6
+
+                            # 航向误差设为0（Vision模式简化）
+                            steer_output = self.lateral_controller.update(
+                                heading_error=0.0,
+                                cross_track_error=cross_track_error,
+                                velocity=current_velocity
+                            )
+
+                        # === 横向控制调试 ===
+                        if frame_count % 30 == 0 and self.perception_mode == 'carla':
+                            from debug_lateral_control import debug_lateral_control
+                            debug_lateral_control(
+                                frame_count, self.ego_vehicle, self.carla_perception,
+                                self.lateral_controller, steer_output, steer_output,
+                                print_interval=30
+                            )
 
                         # Decide control action based on enable flag
                         if decision_output.get('control_enabled', False):
