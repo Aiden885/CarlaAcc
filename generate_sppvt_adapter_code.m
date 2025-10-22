@@ -52,8 +52,8 @@ mode_flag = double(validated_input.control_mode_flag); % [12] 控制模式标志
 %% 输出adapter状态数组（第13个输出）
 % 用于Output_Formatter的new_adapter_states字段
 % 格式: [new_control_error, new_velocity, new_accel]
-% 注意：new_accel将在Output_Formatter中被SPPVT控制输出覆盖
-adapter_states_out = [error_value; validated_input.ego_speed_ms; 0.0];
+% 注意：第2、3个元素是占位值，将在Output_Formatter中被SPPVT实际输出替换
+adapter_states_out = [error_value; 0.0; 0.0];
 
 % 调试输出 - 显示关键参数
 if abs(error_value) > 0.01

@@ -5,11 +5,6 @@ function create_decision_sppvt_bus()
 %   此函数创建以下总线：
 %   - DecisionSPPVTInputExtended: 17个输入字段 (原有11个 + 3个决策状态 + 3个SPPVT状态字段)
 %   - DecisionSPPVTOutputExtended: 18个输出字段 (原有12个 + 3个决策状态输出 + 3个SPPVT状态输出字段)
-%
-%   状态外化精简设计：
-%   - Python维护3个关键状态：stage_offset + 2个数组状态
-%   - 最小化总线复杂度，保持现有架构不变
-%   - 数组化状态管理，减少连接修改
 
 
     fprintf('创建ACC决策+SPPVT一体化总线定义...\n');

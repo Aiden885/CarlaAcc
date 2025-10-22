@@ -148,6 +148,7 @@ class DisplayManager:
             "  I  : Toggle Info Display",
             "  O  : Toggle OpenCV Window",
             "  H  : Toggle Help Overlay",
+            "  V  : Toggle Camera View",
             "  P  : Toggle ACC Debug Mode",
             "",
             "System:",
@@ -169,7 +170,7 @@ class DisplayManager:
                     self.show_help = not self.show_help
                 elif event.key == K_i:
                     self.show_info = not self.show_info
-                elif event.key == K_c:
+                elif event.key == K_v:
                     if self.camera_manager:
                         self.camera_manager.toggle_camera()
                 else:

@@ -54,11 +54,32 @@ integrated_output.new_stage_offset = double(new_stage_offset);
 integrated_output.new_stage_manager_states = double(stage_manager_states_out);
 
 % 18: Adapter状态 (数组) - [new_control_error, new_velocity, new_accel]
-% 特殊处理：用实际SPPVT控制输出覆盖new_accel
+% 修正：用SPPVT实际计算的导数值替换adapter传来的占位值
 adapter_states_corrected = adapter_states_out;
-adapter_states_corrected(3) = double(sppvt_output1);  % 用真实SPPVT输出作为new_accel
+
+% 调试：打印 adapter_states_out 的维度和值
+fprintf('DEBUG: adapter_states_out size = [%d, %d], values = [', int32(size(adapter_states_out, 1)), int32(size(adapter_states_out, 2)));
+for i = 1:length(adapter_states_out)
+    fprintf('%.3f ', adapter_states_out(i));
+end
+fprintf(']\n');
+
+adapter_states_corrected(2) = double(sppvt_output2);  % new_velocity = 误差的一阶导数
+adapter_states_corrected(3) = double(sppvt_output3);  % new_accel = 误差的二阶导数
+
+fprintf('DEBUG: adapter_states_corrected size = [%d, %d], values = [', int32(size(adapter_states_corrected, 1)), int32(size(adapter_states_corrected, 2)));
+for i = 1:length(adapter_states_corrected)
+    fprintf('%.3f ', adapter_states_corrected(i));
+end
+fprintf(']\n');
 
 integrated_output.new_adapter_states = double(adapter_states_corrected);
+
+% 维度检查断言 - 确保输出是3元素
+assert(length(adapter_states_corrected) == 3, 'ERROR: adapter_states_corrected must have 3 elements!');
+fprintf('DEBUG: Assigned new_adapter_states, size = [%d, %d]\n', ...
+        int32(size(integrated_output.new_adapter_states, 1)), ...
+        int32(size(integrated_output.new_adapter_states, 2)));
 
 % 调试输出（18字段版本，包含完整状态外化信息）
 if mod(decision_output.debug_message, 50) == 0

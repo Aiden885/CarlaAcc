@@ -454,6 +454,31 @@ class ACCDecisionSPPVTInterface:
         import numpy as np
         return [self._sanitize_value(v, default) for v in arr]
 
+    @staticmethod
+    def _flatten_matlab_vector(mat_arr, expected_len=3, default=0.0):
+        """将MATLAB double行/列向量展开为固定长度列表"""
+        values = []
+
+        if hasattr(mat_arr, '_data'):
+            values = [float(x) for x in mat_arr._data]
+        elif isinstance(mat_arr, (list, tuple)):
+            def _flatten_seq(seq):
+                for item in seq:
+                    if isinstance(item, (list, tuple)):
+                        yield from _flatten_seq(item)
+                    else:
+                        yield float(item)
+            values = list(_flatten_seq(mat_arr))
+        elif mat_arr is not None:
+            values = [float(mat_arr)]
+
+        if len(values) > expected_len:
+            values = values[:expected_len]
+        elif len(values) < expected_len:
+            values.extend([default] * (expected_len - len(values)))
+
+        return values
+
     def _prepare_simulink_input(self, input_data):
         """准备Simulink输入数据格式 - 创建正确的timeseries格式"""
 
@@ -553,15 +578,48 @@ class ACCDecisionSPPVTInterface:
             new_stage_offset = float(self.matlab_engine.eval("output_data{1}.Values.new_stage_offset.Data(end)"))
             # Extract array fields (need special handling for MATLAB arrays)
             try:
-                new_stage_manager_states_raw = self.matlab_engine.eval("output_data{1}.Values.new_stage_manager_states.Data(end,:)")
-                new_stage_manager_states = [float(x) for x in new_stage_manager_states_raw[0]]
-            except:
+                raw_manager = self.matlab_engine.eval(
+                    "squeeze(output_data{1}.Values.new_stage_manager_states.Data(end,:,:))"
+                )
+                new_stage_manager_states = self._flatten_matlab_vector(raw_manager)
+                new_stage_manager_states = self._sanitize_array(new_stage_manager_states, 0.0)
+            except Exception as exc:
+                if self.debug:
+                    _ = exc
                 new_stage_manager_states = [0.0, 0.0, 0.0]  # Fallback to default values
 
             try:
-                new_adapter_states_raw = self.matlab_engine.eval("output_data{1}.Values.new_adapter_states.Data(end,:)")
-                new_adapter_states = [float(x) for x in new_adapter_states_raw[0]]
-            except:
+                # 先提取并 squeeze，然后逐个元素访问
+                # timeseries 的 Data 格式可能是 [时间点, 1, 3] 或 [时间点, 3, 1]
+                raw_adapter = self.matlab_engine.eval(
+                    "squeeze(output_data{1}.Values.new_adapter_states.Data(end,:,:))"
+                )
+
+                if self.debug:
+                    _ = raw_adapter
+
+                # 使用 MATLAB 命令分步提取
+                # 先赋值到临时变量
+                self.matlab_engine.eval("temp_adapter = squeeze(output_data{1}.Values.new_adapter_states.Data(end,:,:));", nargout=0)
+
+                # 检查维度
+                temp_size = self.matlab_engine.eval("length(temp_adapter)")
+
+                # 提取各个元素
+                adapter_val1 = float(self.matlab_engine.eval("temp_adapter(1)"))
+                adapter_val2 = float(self.matlab_engine.eval("temp_adapter(2)"))
+                adapter_val3 = float(self.matlab_engine.eval("temp_adapter(3)"))
+
+                new_adapter_states = [
+                    self._sanitize_value(adapter_val1, 0.0),
+                    self._sanitize_value(adapter_val2, 0.0),
+                    self._sanitize_value(adapter_val3, 0.0)
+                ]
+                if self.debug:
+                    _ = temp_size
+            except Exception as exc:
+                if self.debug:
+                    _ = exc
                 new_adapter_states = [0.0, 0.0, 0.0]  # Fallback to default values
 
             # 更新决策状态字典

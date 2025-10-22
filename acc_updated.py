@@ -102,7 +102,7 @@ class acc:
         # === ACC系统可配置参数 (环境相关，需要传递给Simulink) ===
         self.acc_params = {
             'V_target_kmh': 50.0,      # 默认巡航速度 - 传递给Simulink
-            'V_min_kmh': 30.0,         # 最小速度阈值 - 传递给Simulink
+            'V_min_kmh': 20.0,         # 最小速度阈值 - 传递给Simulink
             'G2_s': 2.0,               # 时距参数 - 传递给Simulink
             'V_threshold_kmh': 50.0,   # 模式切换阈值 - 用于Two Mode控制器
             'speed_step': 5.0          # 速度调整步长
@@ -160,7 +160,7 @@ class acc:
         # 初始化 Carla 客户端
         self.client = carla.Client('localhost', 2000)
         self.client.set_timeout(60.0)
-        map_name = 'Town04'
+        map_name = 'Town05'
         try:
             self.world = self.client.get_world()
             self.world = self.client.load_world(map_name, carla.MapLayer.Buildings | carla.MapLayer.ParkedVehicles)

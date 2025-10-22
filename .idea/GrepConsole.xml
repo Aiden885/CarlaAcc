@@ -335,21 +335,6 @@
                           </GrepCompositeModel>
                         </option>
                       </Pin>
-                      <Pin>
-                        <option name="consoleUUID" value="fddc3d8d-c87b-4e05-98fb-6824e64ba69b" />
-                        <option name="contentType" value="ConsoleContent" />
-                        <option name="grepCompositeModel">
-                          <GrepCompositeModel>
-                            <option name="models">
-                              <list>
-                                <GrepModel>
-                                  <option name="expression" value="" />
-                                </GrepModel>
-                              </list>
-                            </option>
-                          </GrepCompositeModel>
-                        </option>
-                      </Pin>
                     </list>
                   </option>
                 </Pins>

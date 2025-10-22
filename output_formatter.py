@@ -129,6 +129,22 @@ class OutputFormatter:
               f"stage:{unified_output.get('sppvt_stage_output', 0)} "
               f"仲裁:{unified_output.get('torque_arbitration_active', False)}")
 
+        # # SPPVT内部状态显示（无条件输出）
+        # adapter_states = unified_output.get('new_adapter_states', None)
+        # if adapter_states is not None:
+        #     if len(adapter_states) >= 3:
+        #         print(f"            SPPVT状态: prev_error={adapter_states[0]:.3f} "
+        #               f"prev_velocity={adapter_states[1]:.3f} "
+        #               f"prev_accel={adapter_states[2]:.3f}")
+        #     elif len(adapter_states) == 2:
+        #         print(f"            SPPVT状态: prev_error={adapter_states[0]:.3f} "
+        #               f"prev_velocity={adapter_states[1]:.3f} "
+        #               f"prev_accel=❌缺失(Simulink只输出了2个元素)")
+        #     else:
+        #         print(f"            SPPVT状态: [数组长度错误] 期望3个元素，实际{len(adapter_states)}个: {adapter_states}")
+        # else:
+        #     print(f"            SPPVT状态: [数据不可用] adapter_states=None")
+
         # 参数变化检查
         if abs(new_V - old_V) > 0.1 or abs(new_G2 - old_G2) > 0.1:
             print(f"            参数变化: V_target:{old_V:.1f}→{new_V:.1f} G2:{old_G2:.1f}→{new_G2:.1f}")
