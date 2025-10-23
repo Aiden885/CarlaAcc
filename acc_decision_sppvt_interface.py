@@ -548,87 +548,73 @@ class ACCDecisionSPPVTInterface:
 
         # 函数不再需要返回值，数据已经在MATLAB工作空间中
         pass
-    
+
     def _extract_simulink_output(self):
         """从Simulink输出中提取结果"""
         try:
-            # 从工作空间获取输出（假设模型会将结果写入工作空间）
             self.matlab_engine.eval("output_data = simOut.yout;", nargout=0)
 
-            # Extract output signals using Dataset format (18-field version)
+            # Scalar fields (不变)
             control_enabled = bool(self.matlab_engine.eval("output_data{1}.Values.control_enabled.Data(end)"))
             current_state = int(self.matlab_engine.eval("output_data{1}.Values.current_state.Data(end)"))
             current_decision = int(self.matlab_engine.eval("output_data{1}.Values.current_decision.Data(end)"))
-            torque_arbitration_active = bool(self.matlab_engine.eval("output_data{1}.Values.torque_arbitration_active.Data(end)"))
-            updated_V_target_kmh = float(self.matlab_engine.eval("output_data{1}.Values.updated_V_target_kmh.Data(end)"))
+            torque_arbitration_active = bool(
+                self.matlab_engine.eval("output_data{1}.Values.torque_arbitration_active.Data(end)"))
+            updated_V_target_kmh = float(
+                self.matlab_engine.eval("output_data{1}.Values.updated_V_target_kmh.Data(end)"))
             updated_G2_s = float(self.matlab_engine.eval("output_data{1}.Values.updated_G2_s.Data(end)"))
-            sppvt_control_output = float(self.matlab_engine.eval("output_data{1}.Values.sppvt_control_output.Data(end)"))
-            sppvt_velocity_output = float(self.matlab_engine.eval("output_data{1}.Values.sppvt_velocity_output.Data(end)"))
-            sppvt_acceleration_output = float(self.matlab_engine.eval("output_data{1}.Values.sppvt_acceleration_output.Data(end)"))
+            sppvt_control_output = float(
+                self.matlab_engine.eval("output_data{1}.Values.sppvt_control_output.Data(end)"))
+            sppvt_velocity_output = float(
+                self.matlab_engine.eval("output_data{1}.Values.sppvt_velocity_output.Data(end)"))
+            sppvt_acceleration_output = float(
+                self.matlab_engine.eval("output_data{1}.Values.sppvt_acceleration_output.Data(end)"))
             sppvt_stage_output = float(self.matlab_engine.eval("output_data{1}.Values.sppvt_stage_output.Data(end)"))
             sppvt_status_output = float(self.matlab_engine.eval("output_data{1}.Values.sppvt_status_output.Data(end)"))
             debug_message = int(self.matlab_engine.eval("output_data{1}.Values.debug_message.Data(end)"))
 
-            # Extract decision state update fields (fields 13-15)
             next_state = int(self.matlab_engine.eval("output_data{1}.Values.next_state.Data(end)"))
             next_has_history = bool(self.matlab_engine.eval("output_data{1}.Values.next_has_history.Data(end)"))
-            next_last_active_decision = int(self.matlab_engine.eval("output_data{1}.Values.next_last_active_decision.Data(end)"))
-
-            # Extract SPPVT state update fields (fields 16-18)
+            next_last_active_decision = int(
+                self.matlab_engine.eval("output_data{1}.Values.next_last_active_decision.Data(end)"))
             new_stage_offset = float(self.matlab_engine.eval("output_data{1}.Values.new_stage_offset.Data(end)"))
-            # Extract array fields (need special handling for MATLAB arrays)
-            try:
-                raw_manager = self.matlab_engine.eval(
-                    "squeeze(output_data{1}.Values.new_stage_manager_states.Data(end,:,:))"
-                )
-                new_stage_manager_states = self._flatten_matlab_vector(raw_manager)
-                new_stage_manager_states = self._sanitize_array(new_stage_manager_states, 0.0)
-            except Exception as exc:
-                if self.debug:
-                    _ = exc
-                new_stage_manager_states = [0.0, 0.0, 0.0]  # Fallback to default values
 
-            try:
-                # 先提取并 squeeze，然后逐个元素访问
-                # timeseries 的 Data 格式可能是 [时间点, 1, 3] 或 [时间点, 3, 1]
-                raw_adapter = self.matlab_engine.eval(
-                    "squeeze(output_data{1}.Values.new_adapter_states.Data(end,:,:))"
-                )
+            # ========== 终极正确方案：squeeze(end,:,:) ==========
+            def extract_array_correct(signal_name):
+                """正确提取Simulink数组：squeeze(Data(end,:,:))"""
+                try:
+                    # 关键：使用 squeeze(end,:,:) 而不是 end,:
+                    self.matlab_engine.eval(
+                        f"temp_data = squeeze(output_data{{1}}.Values.{signal_name}.Data(end,:,:));", nargout=0)
 
-                if self.debug:
-                    _ = raw_adapter
+                    # 直接从工作空间获取完整数组
+                    matlab_array = self.matlab_engine.workspace['temp_data']
+                    values = [float(v) for v in matlab_array]
 
-                # 使用 MATLAB 命令分步提取
-                # 先赋值到临时变量
-                self.matlab_engine.eval("temp_adapter = squeeze(output_data{1}.Values.new_adapter_states.Data(end,:,:));", nargout=0)
+                    # 填充到3个元素
+                    while len(values) < 3:
+                        values.append(0.0)
+                    return values[:3]
 
-                # 检查维度
-                temp_size = self.matlab_engine.eval("length(temp_adapter)")
+                except Exception as exc:
+                    if self.debug:
+                        print(f"WARNING: {signal_name} extraction failed: {exc}")
+                    return [0.0, 0.0, 0.0]
 
-                # 提取各个元素
-                adapter_val1 = float(self.matlab_engine.eval("temp_adapter(1)"))
-                adapter_val2 = float(self.matlab_engine.eval("temp_adapter(2)"))
-                adapter_val3 = float(self.matlab_engine.eval("temp_adapter(3)"))
+            # 正确提取
+            new_adapter_states = extract_array_correct("new_adapter_states")
+            new_stage_manager_states = extract_array_correct("new_stage_manager_states")
 
-                new_adapter_states = [
-                    self._sanitize_value(adapter_val1, 0.0),
-                    self._sanitize_value(adapter_val2, 0.0),
-                    self._sanitize_value(adapter_val3, 0.0)
-                ]
-                if self.debug:
-                    _ = temp_size
-            except Exception as exc:
-                if self.debug:
-                    _ = exc
-                new_adapter_states = [0.0, 0.0, 0.0]  # Fallback to default values
+            # 验证输出
+            if self.debug:
+                print(f"✅ CORRECT EXTRACTION:")
+                print(f"   adapter: {new_adapter_states} (sum={sum(new_adapter_states):.3f})")
+                print(f"   manager: {new_stage_manager_states} (sum={sum(new_stage_manager_states):.3f})")
 
-            # 更新决策状态字典
             self._update_decision_state(next_state, next_has_history, next_last_active_decision)
 
             return {
-                # 兼容性字段
                 'target_accel': sppvt_control_output,
-                # 标准18字段输出
                 'control_enabled': control_enabled,
                 'current_state': current_state,
                 'current_decision': current_decision,
@@ -641,7 +627,6 @@ class ACCDecisionSPPVTInterface:
                 'sppvt_stage_output': sppvt_stage_output,
                 'sppvt_status_output': sppvt_status_output,
                 'debug_message': f"Simulink计算成功,调试码:{debug_message}",
-                # 状态更新字段
                 'next_state': next_state,
                 'next_has_history': next_has_history,
                 'next_last_active_decision': next_last_active_decision,

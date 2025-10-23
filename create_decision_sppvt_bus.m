@@ -16,7 +16,7 @@ function create_decision_sppvt_bus()
         % 忽略清理错误
     end
 
-    %% 创建扩展输入总线：DecisionSPPVTInputExtended (14个字段)
+    %% 创建扩展输入总线：DecisionSPPVTInputExtended (17个字段)
     fprintf('创建扩展输入总线 DecisionSPPVTInputExtended (状态外化精简版本)...\n');
 
     % 使用MATLAB 2024b的新语法创建总线对象
@@ -54,7 +54,7 @@ function create_decision_sppvt_bus()
     
     DecisionSPPVTInputExtended.Elements = inputElements;
 
-    %% 创建扩展输出总线：DecisionSPPVTOutputExtended (15个字段)
+    %% 创建扩展输出总线：DecisionSPPVTOutputExtended (18个字段)
     fprintf('创建扩展输出总线 DecisionSPPVTOutputExtended (状态外化精简版本)...\n');
 
     DecisionSPPVTOutputExtended = Simulink.Bus;

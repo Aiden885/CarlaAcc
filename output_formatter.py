@@ -129,6 +129,50 @@ class OutputFormatter:
               f"stage:{unified_output.get('sppvt_stage_output', 0)} "
               f"仲裁:{unified_output.get('torque_arbitration_active', False)}")
 
+        # 输出18个关键字段，便于逐帧检查成功/异常
+        output_fields = [
+            'control_enabled',
+            'current_state',
+            'current_decision',
+            'torque_arbitration_active',
+            'updated_V_target_kmh',
+            'updated_G2_s',
+            'sppvt_control_output',
+            'sppvt_velocity_output',
+            'sppvt_acceleration_output',
+            'sppvt_stage_output',
+            'sppvt_status_output',
+            'debug_message',
+            'next_state',
+            'next_has_history',
+            'next_last_active_decision',
+            'new_stage_offset',
+            'new_stage_manager_states',
+            'new_adapter_states',
+        ]
+        print("[Simulink输出字段]")
+        for name in output_fields:
+            present = name in unified_output
+            value = unified_output.get(name, None)
+            if not present:
+                print(f"  {name:24s}: <缺失> [MISSING]")
+                continue
+            if value is None:
+                print(f"  {name:24s}: None [None]")
+                continue
+            if isinstance(value, (list, tuple)):
+                formatted = ', '.join(
+                    f"{v:.3f}" if isinstance(v, (int, float)) else str(v) for v in value
+                )
+                status = f"(len={len(value)})"
+                if len(value) < 3:
+                    status += " [长度异常]"
+                print(f"  {name:24s}: [{formatted}] {status}")
+            elif isinstance(value, float):
+                print(f"  {name:24s}: {value:.6f} [OK]")
+            else:
+                print(f"  {name:24s}: {value} [OK]")
+
         # # SPPVT内部状态显示（无条件输出）
         # adapter_states = unified_output.get('new_adapter_states', None)
         # if adapter_states is not None:
