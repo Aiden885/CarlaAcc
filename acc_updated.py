@@ -408,29 +408,29 @@ class acc:
                 elif event_data == K_SPACE:
                     self.acc_system_enabled = not self.acc_system_enabled
                     status = 'ON' if self.acc_system_enabled else 'OFF'
-                    print(f"?? ACC master switch: {status}")
+                    print(f"主开关 ACC master switch: {status}")
                     if not self.acc_system_enabled:
                         self.acc_decision.reset()
                 elif event_data in (K_q, K_e, K_r, K_t, K_c):
                     if not self.acc_system_enabled:
-                        print('?? ACC disabled, press SPACE to enable')
+                        print('提示 ACC disabled, press SPACE to enable')
                     else:
                         mapping = {
-                            K_q: (2, 'Q???(I1)'),
-                            K_e: (1, 'E???(I0)'),
-                            K_r: (4, 'R???(I3)'),
-                            K_t: (3, 'T???(I2)'),
-                            K_c: (7, 'C???(I6)')
+                            K_q: (2, 'Q增速(I1)'),
+                            K_e: (1, 'E降速(I0)'),
+                            K_r: (4, 'R增距(I3)'),
+                            K_t: (3, 'T降距(I2)'),
+                            K_c: (7, 'C取消(I6)')
                         }
                         self._send_keyboard_command_to_simulink(*mapping[event_data])
                 elif event_data == K_w:
                     self.w_key_pressed = True
                     if self.acc_system_enabled:
-                        self._send_keyboard_command_to_simulink(5, 'W???(I4)')
+                        self._send_keyboard_command_to_simulink(5, 'W油门(I4)')
                 elif event_data == K_s:
                     self.s_key_pressed = True
                     if self.acc_system_enabled:
-                        self._send_keyboard_command_to_simulink(6, 'S???(I5)')
+                        self._send_keyboard_command_to_simulink(6, 'S刹车(I5)')
                 elif event_data == K_a:
                     self.a_key_pressed = True
                 elif event_data == K_d:
@@ -441,12 +441,12 @@ class acc:
                     self.w_key_pressed = False
                     self.manual_throttle_input = 0.0
                     self.throttle = 0.0
-                    print('?? ?????????')
+                    print('释放 油门松开')
                 elif event_data == K_s:
                     self.s_key_pressed = False
                     self.manual_brake_input = 0.0
                     self.brake = 0.0
-                    print('?? ?????????')
+                    print('释放 刹车松开')
                 elif event_data == K_a:
                     self.a_key_pressed = False
                     if not self.d_key_pressed:
@@ -825,10 +825,14 @@ class acc:
                     'V_min_kmh': sanitize_value(acc_params['V_min_kmh'], 30.0),
                     'G2_s': sanitize_value(acc_params['G2_s'], 2.0),
                     'timestamp': time.time(),
-                    # 外部状态字段（必需）
+                    # 外部状态字段（必需） - 全部标量化（21字段输入总线）
                     'external_stage_offset': 0.0,
-                    'external_stage_manager_states': [1.0, 0.0, 0.0],
-                    'external_adapter_states': [0.0, sanitize_value(ego_speed_ms, 0.0), 0.0]
+                    'external_stage': 1.0,
+                    'external_error_sign': 0.0,
+                    'external_upgrade_count': 0.0,
+                    'external_control_error': 0.0,
+                    'external_error_derivative': 0.0,
+                    'external_error_second_derivative': 0.0
                 }
 
                 # 调用一体化接口获取决策+SPPVT输出

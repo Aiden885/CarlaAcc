@@ -1,12 +1,12 @@
-  function [new_stage_offset, new_stage, sign_changed, stage_manager_states_out] = fcn(should_upgrade, error_value, sppvt_rho, prev_stage_offset, stage_manager_states_in, com1, com2, com3)
+  function [new_stage_offset, new_stage, sign_changed, new_error_sign_out, new_upgrade_count_out] = fcn(should_upgrade, error_value, sppvt_rho, prev_stage_offset, external_stage, external_error_sign, external_upgrade_count, com1, com2, com3)
   %#codegen
-  % Stateless SPPVT Stage Manager with array-based state management
-  % Compatible with 17/18-field bus design (3-element state array version)
+  % Stateless SPPVT Stage Manager with scalar-based state management
+  % Compatible with 21/22-field bus design (all scalar version)
 
-  % Extract states from input array (replaces persistent variables)
-  current_stage = int32(stage_manager_states_in(1));
-  prev_error_sign = int32(stage_manager_states_in(2));
-  upgrade_count = int32(stage_manager_states_in(3));
+  % Extract states from input scalars (replaces persistent variables and array extraction)
+  current_stage = int32(external_stage);
+  prev_error_sign = int32(external_error_sign);
+  upgrade_count = int32(external_upgrade_count);
 
   current_stage_offset = prev_stage_offset;
 
@@ -61,13 +61,14 @@
       new_error_sign = current_sign;
   end
 
-  % Output state array for next cycle (to be captured by Python)
-  % 3-element state array: [new_stage, new_error_sign, upgrade_count]
-  stage_manager_states_out = [double(new_stage); double(new_error_sign); double(upgrade_count)];
+  % Output individual scalars for next cycle (to be captured by Python)
+  % Scalar outputs: new_error_sign_out, new_upgrade_count_out (new_stage already in output list)
+  new_error_sign_out = double(new_error_sign);
+  new_upgrade_count_out = double(upgrade_count);
 
   % Print the three conditional variables using fprintf
   % Print the three conditional variables as 'true' or 'false' with detailed labels
   fprintf('Condition 1 (com1): %s\n', string(com1));
-  fprintf('Condition 2 (com2): %s\n', string(com2));
+  fprintf('Condition 2 (com2): %f\n', double(com2));
   fprintf('Condition 3 (com3): %s\n', string(com3));
   end

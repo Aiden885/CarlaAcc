@@ -129,7 +129,7 @@ class OutputFormatter:
               f"stage:{unified_output.get('sppvt_stage_output', 0)} "
               f"仲裁:{unified_output.get('torque_arbitration_active', False)}")
 
-        # 输出18个关键字段，便于逐帧检查成功/异常
+        # 输出22个关键字段（全部标量化），便于逐帧检查成功/异常
         output_fields = [
             'control_enabled',
             'current_state',
@@ -147,8 +147,12 @@ class OutputFormatter:
             'next_has_history',
             'next_last_active_decision',
             'new_stage_offset',
-            'new_stage_manager_states',
-            'new_adapter_states',
+            'new_stage',
+            'new_error_sign',
+            'new_upgrade_count',
+            'new_control_error',
+            'new_error_derivative',
+            'new_error_second_derivative',
         ]
         print("[Simulink输出字段]")
         for name in output_fields:

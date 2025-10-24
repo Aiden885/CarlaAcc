@@ -90,6 +90,17 @@ class ACCDecisionSPPVTInterface:
             'last_active_decision': 8  # 初始R8(系统待命)
         }
 
+        # SPPVT状态外化管理 - 保存上一帧输出，用于下一帧输入
+        self.sppvt_state = {
+            'external_stage_offset': 0.0,
+            'external_stage': 1.0,
+            'external_error_sign': 0.0,
+            'external_upgrade_count': 0.0,
+            'external_control_error': 0.0,
+            'external_error_derivative': 0.0,
+            'external_error_second_derivative': 0.0
+        }
+
         # 根据配置选择初始化方案
         if self.use_realtime_sppvt and REALTIME_SPPVT_AVAILABLE:
             self._init_realtime_sppvt()
@@ -505,21 +516,17 @@ class ACCDecisionSPPVTInterface:
         self.matlab_engine.workspace['has_history'] = bool(self.decision_state['has_history'])
         self.matlab_engine.workspace['last_active_decision'] = int(self.decision_state['last_active_decision'])
 
-        # SPPVT状态字段（加入二次清洗）
-        self.matlab_engine.workspace['external_stage_offset'] = float(self._sanitize_value(input_data.get('external_stage_offset', 0.0), 0.0))
-        external_stage_manager = input_data.get('external_stage_manager_states', [1.0, 0.0, 0.0])
-        external_adapter = input_data.get('external_adapter_states', [0.0, 0.0, 0.0])
+        # SPPVT状态字段（全部标量化 - 7个独立字段）
+        # 使用上一帧保存的状态，实现帧间状态传递
+        self.matlab_engine.workspace['external_stage_offset'] = float(self._sanitize_value(self.sppvt_state['external_stage_offset'], 0.0))
+        self.matlab_engine.workspace['external_stage'] = float(self._sanitize_value(self.sppvt_state['external_stage'], 1.0))
+        self.matlab_engine.workspace['external_error_sign'] = float(self._sanitize_value(self.sppvt_state['external_error_sign'], 0.0))
+        self.matlab_engine.workspace['external_upgrade_count'] = float(self._sanitize_value(self.sppvt_state['external_upgrade_count'], 0.0))
+        self.matlab_engine.workspace['external_control_error'] = float(self._sanitize_value(self.sppvt_state['external_control_error'], 0.0))
+        self.matlab_engine.workspace['external_error_derivative'] = float(self._sanitize_value(self.sppvt_state['external_error_derivative'], 0.0))
+        self.matlab_engine.workspace['external_error_second_derivative'] = float(self._sanitize_value(self.sppvt_state['external_error_second_derivative'], 0.0))
 
-        # 清洗数组中的Inf/NaN
-        external_stage_manager = self._sanitize_array(external_stage_manager, 0.0)
-        external_adapter = self._sanitize_array(external_adapter, 0.0)
-
-        # 确保数组是列向量
-        import matlab
-        self.matlab_engine.workspace['external_stage_manager_states'] = matlab.double([[external_stage_manager[0]], [external_stage_manager[1]], [external_stage_manager[2]]])
-        self.matlab_engine.workspace['external_adapter_states'] = matlab.double([[external_adapter[0]], [external_adapter[1]], [external_adapter[2]]])
-
-        # 创建timeseries结构
+        # 创建timeseries结构（21字段输入总线 - 全部标量化）
         self.matlab_engine.eval("""
         simulink_input.ego_speed_kmh = timeseries(ego_speed_kmh, 0, 'Name', 'ego_speed_kmh');
         simulink_input.ego_speed_ms = timeseries(ego_speed_ms, 0, 'Name', 'ego_speed_ms');
@@ -536,8 +543,12 @@ class ACCDecisionSPPVTInterface:
         simulink_input.has_history = timeseries(logical(has_history), 0, 'Name', 'has_history');
         simulink_input.last_active_decision = timeseries(int32(last_active_decision), 0, 'Name', 'last_active_decision');
         simulink_input.external_stage_offset = timeseries(external_stage_offset, 0, 'Name', 'external_stage_offset');
-        simulink_input.external_stage_manager_states = timeseries(external_stage_manager_states, 0, 'Name', 'external_stage_manager_states');
-        simulink_input.external_adapter_states = timeseries(external_adapter_states, 0, 'Name', 'external_adapter_states');
+        simulink_input.external_stage = timeseries(external_stage, 0, 'Name', 'external_stage');
+        simulink_input.external_error_sign = timeseries(external_error_sign, 0, 'Name', 'external_error_sign');
+        simulink_input.external_upgrade_count = timeseries(external_upgrade_count, 0, 'Name', 'external_upgrade_count');
+        simulink_input.external_control_error = timeseries(external_control_error, 0, 'Name', 'external_control_error');
+        simulink_input.external_error_derivative = timeseries(external_error_derivative, 0, 'Name', 'external_error_derivative');
+        simulink_input.external_error_second_derivative = timeseries(external_error_second_derivative, 0, 'Name', 'external_error_second_derivative');
 
         % 设置时间单位
         field_names = fieldnames(simulink_input);
@@ -577,41 +588,21 @@ class ACCDecisionSPPVTInterface:
             next_has_history = bool(self.matlab_engine.eval("output_data{1}.Values.next_has_history.Data(end)"))
             next_last_active_decision = int(
                 self.matlab_engine.eval("output_data{1}.Values.next_last_active_decision.Data(end)"))
+
+            # SPPVT状态输出字段（22字段输出总线 - 全部标量化）
             new_stage_offset = float(self.matlab_engine.eval("output_data{1}.Values.new_stage_offset.Data(end)"))
-
-            # ========== 终极正确方案：squeeze(end,:,:) ==========
-            def extract_array_correct(signal_name):
-                """正确提取Simulink数组：squeeze(Data(end,:,:))"""
-                try:
-                    # 关键：使用 squeeze(end,:,:) 而不是 end,:
-                    self.matlab_engine.eval(
-                        f"temp_data = squeeze(output_data{{1}}.Values.{signal_name}.Data(end,:,:));", nargout=0)
-
-                    # 直接从工作空间获取完整数组
-                    matlab_array = self.matlab_engine.workspace['temp_data']
-                    values = [float(v) for v in matlab_array]
-
-                    # 填充到3个元素
-                    while len(values) < 3:
-                        values.append(0.0)
-                    return values[:3]
-
-                except Exception as exc:
-                    if self.debug:
-                        print(f"WARNING: {signal_name} extraction failed: {exc}")
-                    return [0.0, 0.0, 0.0]
-
-            # 正确提取
-            new_adapter_states = extract_array_correct("new_adapter_states")
-            new_stage_manager_states = extract_array_correct("new_stage_manager_states")
-
-            # 验证输出
-            if self.debug:
-                print(f"✅ CORRECT EXTRACTION:")
-                print(f"   adapter: {new_adapter_states} (sum={sum(new_adapter_states):.3f})")
-                print(f"   manager: {new_stage_manager_states} (sum={sum(new_stage_manager_states):.3f})")
+            new_stage = float(self.matlab_engine.eval("output_data{1}.Values.new_stage.Data(end)"))
+            new_error_sign = float(self.matlab_engine.eval("output_data{1}.Values.new_error_sign.Data(end)"))
+            new_upgrade_count = float(self.matlab_engine.eval("output_data{1}.Values.new_upgrade_count.Data(end)"))
+            new_control_error = float(self.matlab_engine.eval("output_data{1}.Values.new_control_error.Data(end)"))
+            new_error_derivative = float(self.matlab_engine.eval("output_data{1}.Values.new_error_derivative.Data(end)"))
+            new_error_second_derivative = float(self.matlab_engine.eval("output_data{1}.Values.new_error_second_derivative.Data(end)"))
 
             self._update_decision_state(next_state, next_has_history, next_last_active_decision)
+
+            # 保存SPPVT状态，用于下一帧输入（关键！状态持久化）
+            self._update_sppvt_state(new_stage_offset, new_stage, new_error_sign, new_upgrade_count,
+                                    new_control_error, new_error_derivative, new_error_second_derivative)
 
             return {
                 'target_accel': sppvt_control_output,
@@ -630,9 +621,14 @@ class ACCDecisionSPPVTInterface:
                 'next_state': next_state,
                 'next_has_history': next_has_history,
                 'next_last_active_decision': next_last_active_decision,
+                # SPPVT状态输出（22字段输出总线 - 全部标量化）
                 'new_stage_offset': new_stage_offset,
-                'new_stage_manager_states': new_stage_manager_states,
-                'new_adapter_states': new_adapter_states
+                'new_stage': new_stage,
+                'new_error_sign': new_error_sign,
+                'new_upgrade_count': new_upgrade_count,
+                'new_control_error': new_control_error,
+                'new_error_derivative': new_error_derivative,
+                'new_error_second_derivative': new_error_second_derivative
             }
 
         except Exception as e:
@@ -654,7 +650,18 @@ class ACCDecisionSPPVTInterface:
 
         if self.debug and old_state != next_state:
             print(f"[STATE] State transition: S{old_state} -> S{next_state}, history:{next_has_history}, decision:R{next_last_active_decision}")
-    
+
+    def _update_sppvt_state(self, new_stage_offset, new_stage, new_error_sign, new_upgrade_count,
+                            new_control_error, new_error_derivative, new_error_second_derivative):
+        """更新SPPVT状态字典 - 保存当前帧输出用于下一帧输入"""
+        self.sppvt_state['external_stage_offset'] = new_stage_offset
+        self.sppvt_state['external_stage'] = new_stage
+        self.sppvt_state['external_error_sign'] = new_error_sign
+        self.sppvt_state['external_upgrade_count'] = new_upgrade_count
+        self.sppvt_state['external_control_error'] = new_control_error
+        self.sppvt_state['external_error_derivative'] = new_error_derivative
+        self.sppvt_state['external_error_second_derivative'] = new_error_second_derivative
+
     # 备用方案已删除 - 强制使用Simulink
     
     def _get_error_output(self, error_msg):
@@ -741,7 +748,18 @@ class ACCDecisionSPPVTInterface:
             'last_active_decision': 8  # R8-系统待命
         }
 
-        # 重置SPPVT状态
+        # 重置SPPVT状态（重要！）
+        self.sppvt_state = {
+            'external_stage_offset': 0.0,
+            'external_stage': 1.0,
+            'external_error_sign': 0.0,
+            'external_upgrade_count': 0.0,
+            'external_control_error': 0.0,
+            'external_error_derivative': 0.0,
+            'external_error_second_derivative': 0.0
+        }
+
+        # 重置实时SPPVT管理器（如果使用）
         if self.realtime_sppvt_manager:
             self.realtime_sppvt_manager.reset_state()
 

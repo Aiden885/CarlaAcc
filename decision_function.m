@@ -106,16 +106,40 @@ else
     external_stage_offset = 0.0; % 默认级差
 end
 
-if isfield(input, 'external_stage_manager_states')
-    external_stage_manager_states = input.external_stage_manager_states;
+if isfield(input, 'external_stage')
+    external_stage = input.external_stage;
 else
-    external_stage_manager_states = [1.0; 0.0; 0.0]; % [stage, error_sign, upgrade_count]
+    external_stage = 1.0; % 默认阶段
 end
 
-if isfield(input, 'external_adapter_states')
-    external_adapter_states = input.external_adapter_states;
+if isfield(input, 'external_error_sign')
+    external_error_sign = input.external_error_sign;
 else
-    external_adapter_states = [0.0; 0.0; 0.0]; % [prev_error, prev_velocity, prev_accel]
+    external_error_sign = 0.0; % 默认误差符号
+end
+
+if isfield(input, 'external_upgrade_count')
+    external_upgrade_count = input.external_upgrade_count;
+else
+    external_upgrade_count = 0.0; % 默认升级计数
+end
+
+if isfield(input, 'external_control_error')
+    external_control_error = input.external_control_error;
+else
+    external_control_error = 0.0; % 默认控制误差
+end
+
+if isfield(input, 'external_error_derivative')
+    external_error_derivative = input.external_error_derivative;
+else
+    external_error_derivative = 0.0; % 默认控制误差导数
+end
+
+if isfield(input, 'external_error_second_derivative')
+    external_error_second_derivative = input.external_error_second_derivative;
+else
+    external_error_second_derivative = 0.0; % 默认控制误差二阶导数
 end
 
 %% 状态机主逻辑 - 使用next_state管理状态转移
@@ -206,7 +230,7 @@ else
     debug_message_value = debug_counter;
 end
 
-%% 构造输出 - 严格按照DecisionSPPVTOutputExtended总线定义顺序赋值所有18个字段
+%% 构造输出 - 严格按照DecisionSPPVTOutputExtended总线定义顺序赋值所有22个字段
 output = struct();
 
 % 1-6: 来自决策系统的基本信息
@@ -232,10 +256,14 @@ output.next_state = int32(next_state);
 output.next_has_history = logical(next_has_history);
 output.next_last_active_decision = int32(next_last_active_decision);
 
-% 16-18: SPPVT状态输出字段（传递外部输入，由后续SPPVT模块更新）
+% 16-22: SPPVT状态输出字段（传递外部输入，由后续SPPVT模块更新）- 全部标量化
 output.new_stage_offset = double(external_stage_offset);
-output.new_stage_manager_states = double(external_stage_manager_states);
-output.new_adapter_states = double(external_adapter_states);
+output.new_stage = double(external_stage);
+output.new_error_sign = double(external_error_sign);
+output.new_upgrade_count = double(external_upgrade_count);
+output.new_control_error = double(external_control_error);
+output.new_error_derivative = double(external_error_derivative);
+output.new_error_second_derivative = double(external_error_second_derivative);
 
 end
 
