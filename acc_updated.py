@@ -15,7 +15,7 @@ import pygame
 from pygame.locals import *
 
 # $env:HTTP_PROXY = "http://127.0.0.1:7890"
-# $env:HTTPS_PROXY = "http://127.0.0.1:7890"
+# $env:HTTP_PROXY = "http://127.0.0.1:7890"
 # $env:ALL_PROXY = "socks5://127.0.0.1:7891"
 #升级条件: (acceleration < 0) && (|velocity| <= delta) && (|error| > eta)
 
@@ -158,9 +158,9 @@ class acc:
 
     def init_carla(self):
         # 初始化 Carla 客户端
-        self.client = carla.Client('localhost', 2000)
+        self.client = carla.Client('192.168.0.146', 2000)
         self.client.set_timeout(60.0)
-        map_name = 'Town05'
+        map_name = 'acc_30km'
         try:
             self.world = self.client.get_world()
             self.world = self.client.load_world(map_name, carla.MapLayer.Buildings | carla.MapLayer.ParkedVehicles)
@@ -182,7 +182,7 @@ class acc:
         ego_vehicle_bp = self.blueprint_library.filter('vehicle.audi.etron')[0]
 
         # 定义固定生成点x=0.663731, y=-203.651886, z=0.5
-        fixed_point = carla.Location(x=0.663731, y=-203.651886, z=0.5)
+        fixed_point = carla.Location(x = -352.701508, y = 4627.016113, z=0.5)
         #fixed_point = carla.Location(x=-1239.380249, y=3104.088135, z=351.407501)
         waypoint = map.get_waypoint(fixed_point, project_to_road=True, lane_type=carla.LaneType.Driving)
         if waypoint is None:
@@ -209,13 +209,12 @@ class acc:
         )
 
         # 生成自车：沿车道前进方向偏移一定距离以避免碰撞
-        ego_waypoints = waypoint.previous(20.0)
+        ego_waypoints = waypoint.previous(10.0)
         if not ego_waypoints:
             raise RuntimeError("Failed to find a waypoint 20 meters ahead for ego vehicle spawn")
         ego_spawn_point = ego_waypoints[0].transform
         ego_spawn_point.location.z += 0.1
         self.ego_vehicle = self.world.try_spawn_actor(ego_vehicle_bp, ego_spawn_point)
-
         if self.ego_vehicle is None:
             raise RuntimeError("Failed to spawn ego vehicle")
         self.vehicles = vehicles
