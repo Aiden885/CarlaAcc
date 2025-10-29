@@ -158,9 +158,10 @@ class acc:
 
     def init_carla(self):
         # 初始化 Carla 客户端
-        self.client = carla.Client('192.168.0.146', 2000)
+        #self.client = carla.Client('192.168.0.146', 2000)
+        self.client = carla.Client('localhost', 2000)
         self.client.set_timeout(60.0)
-        map_name = 'acc_30km'
+        map_name = 'Town05'
         try:
             self.world = self.client.get_world()
             self.world = self.client.load_world(map_name, carla.MapLayer.Buildings | carla.MapLayer.ParkedVehicles)
@@ -182,8 +183,8 @@ class acc:
         ego_vehicle_bp = self.blueprint_library.filter('vehicle.audi.etron')[0]
 
         # 定义固定生成点x=0.663731, y=-203.651886, z=0.5
-        fixed_point = carla.Location(x = -352.701508, y = 4627.016113, z=0.5)
-        #fixed_point = carla.Location(x=-1239.380249, y=3104.088135, z=351.407501)
+        #fixed_point = carla.Location(x = -352.701508, y = 4627.016113, z=0.5)
+        fixed_point = carla.Location(x=0.663731, y=-203.651886, z=0.5)
         waypoint = map.get_waypoint(fixed_point, project_to_road=True, lane_type=carla.LaneType.Driving)
         if waypoint is None:
             raise RuntimeError("Failed to find a valid waypoint near the specified location")
@@ -200,13 +201,22 @@ class acc:
         self.target_vehicle = target_vehicle
         self.target_vehicle.set_autopilot(True)
 
-        # 初始化正弦速度控制器
+        # 前车速度配置
+        self.target_fixed_speed_kmh = 80.0  # 🔧 可调整：前车目标速度 (km/h)
+
+        # 使用正弦波控制器实现固定速度（amplitude=0表示无波动）
         self.target_speed_controller = SinusoidalSpeedController(
             vehicle=target_vehicle,
-            base_speed=70,
-            amplitude=5.0,
-            period=10.0
+            base_speed=self.target_fixed_speed_kmh,  # 基础速度即为目标速度
+            amplitude=0.0,  # 🔧 振幅=0表示固定速度；可设置为5.0等值实现速度波动
+            period=10.0,
+            mode='constant'  # 使用固定速度模式
         )
+
+        # 监控限速变化（用于调试）
+        self.last_logged_speed_limit = None
+        self.speed_limit_log_interval = 3.0  # 每3秒记录一次
+        self.last_speed_limit_log_time = 0
 
         # 生成自车：沿车道前进方向偏移一定距离以避免碰撞
         ego_waypoints = waypoint.previous(10.0)
@@ -230,14 +240,18 @@ class acc:
         self.tm_port = tm.get_port()
         tm.auto_lane_change(self.ego_vehicle, False)
 
-        # 目标车辆设置
+        # 目标车辆设置 - 使用正弦波控制器（自动处理限速变化）
         for vehicle in vehicles:
             vehicle.set_autopilot(True, self.tm_port)
             tm.auto_lane_change(vehicle, False)
-            tm.vehicle_percentage_speed_difference(vehicle, 30.0)
 
+        # 设置正弦波控制器的Traffic Manager引用
         if self.target_speed_controller:
             self.target_speed_controller.set_traffic_manager(tm)
+            print(f"✅ 前车速度控制器初始化:")
+            print(f"   模式: {'固定速度' if self.target_speed_controller.mode == 'constant' else '正弦波变速'}")
+            print(f"   目标速度: {self.target_fixed_speed_kmh:.1f} km/h")
+            print(f"   控制器会自动适应不同路段的限速变化")
 
         # 设置交通灯
         traffic_lights = self.world.get_actors().filter('traffic.traffic_light')
@@ -665,6 +679,16 @@ class acc:
                 t0 = time.time()
                 if self.target_speed_controller:
                     self.target_speed_controller.update()
+                else:
+                    # 监控前车所在路段的限速变化
+                    if self.target_vehicle and time.time() - self.last_speed_limit_log_time > self.speed_limit_log_interval:
+                        current_speed_limit = self.target_vehicle.get_speed_limit()
+                        if current_speed_limit != self.last_logged_speed_limit:
+                            print(f"\n🚦 前车路段限速变化: {self.last_logged_speed_limit} → {current_speed_limit:.1f} km/h")
+                            print(f"   前车当前速度: {VehicleUtils.get_vehicle_speed(self.target_vehicle):.1f} km/h")
+                            self.last_logged_speed_limit = current_speed_limit
+                        self.last_speed_limit_log_time = time.time()
+                # 使用百分比模式时，速度由Traffic Manager自动控制，无需每帧更新
                 perf_times['2_target_speed'].append(time.time() - t0)
 
                 # 世界更新
@@ -699,7 +723,7 @@ class acc:
                     vehicle_distance = VehicleUtils.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
                     lane_offset = VehicleUtils.get_lane_offset(self.ego_vehicle, self.world)
 
-                has_target = vehicle_distance < 50.0
+                has_target = vehicle_distance < 100.0  # 检测范围：100米
 
                 # === 使用Simulink一体化接口进行决策和控制 ===
                 # 获取当前ACC参数（可能被Simulink或用户修改）
@@ -1066,7 +1090,13 @@ class acc:
                                 'mode': 'MANUAL'
                             })
                         else:
-                            # 无任何输入时保持仪表显示为零
+                            # 无任何输入时，应用全零控制指令以停止车辆
+                            control = carla.VehicleControl()
+                            control.throttle = 0.0
+                            control.brake = 0.0
+                            control.steer = 0.0
+                            if self.ego_vehicle:
+                                self.ego_vehicle.apply_control(control)
                             self.throttle = 0.0
                             self.brake = 0.0
                             self.steer = 0.0

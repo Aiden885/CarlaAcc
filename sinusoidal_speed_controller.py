@@ -9,7 +9,7 @@ class SinusoidalSpeedController:
     用于控制目标车辆以正弦波模式变化的速度行驶
     """
 
-    def __init__(self, vehicle, base_speed=20.0, amplitude=10.0, period=30.0):
+    def __init__(self, vehicle, base_speed=20.0, amplitude=10.0, period=30.0, mode='sinusoidal'):
         """
         初始化正弦速度控制器
 
@@ -18,13 +18,16 @@ class SinusoidalSpeedController:
         base_speed - 基础速度 (km/h)
         amplitude - 正弦波幅度 (km/h)
         period - 正弦波周期 (秒)
+        mode - 'sinusoidal': 正弦波速度  'constant': 固定速度
         """
         self.vehicle = vehicle
         self.base_speed = base_speed
         self.amplitude = amplitude
         self.period = period
+        self.mode = mode
         self.start_time = time.time()
         self.tm = None  # 交通管理器引用
+        self.last_speed_limit = None  # 记录上次的限速
 
     def set_traffic_manager(self, tm):
         """设置交通管理器引用"""
@@ -35,15 +38,20 @@ class SinusoidalSpeedController:
         获取当前的期望速度（不实际应用控制）
         返回当前正弦波计算出的期望速度值
         """
-        current_time = time.time() - self.start_time
-        phase = (2 * math.pi * current_time) / self.period
-        desired_speed = self.base_speed + self.amplitude * math.sin(phase)
+        if self.mode == 'constant':
+            # 固定速度模式：直接返回基础速度
+            return self.base_speed
+        else:
+            # 正弦波模式
+            current_time = time.time() - self.start_time
+            phase = (2 * math.pi * current_time) / self.period
+            desired_speed = self.base_speed + self.amplitude * math.sin(phase)
 
-        # 确保速度为正值
-        if desired_speed < 5.0:
-            desired_speed = 5.0
+            # 确保速度为正值
+            if desired_speed < 5.0:
+                desired_speed = 5.0
 
-        return desired_speed
+            return desired_speed
 
     def update(self):
         """更新目标车辆的速度"""
@@ -55,12 +63,39 @@ class SinusoidalSpeedController:
 
         # 方式1：通过交通管理器控制速度（推荐）
         if self.tm:
-            # 假设限速是30km/h，计算相对于限速的百分比差
-            speed_limit = 50
-            percentage_diff = ((speed_limit - desired_speed) / speed_limit) * 100
-            self.tm.vehicle_percentage_speed_difference(self.vehicle, percentage_diff)
+            # 动态获取当前路段的实际限速
+            try:
+                speed_limit = self.vehicle.get_speed_limit()
 
-            print(f"Target vehicle speed set to {desired_speed:.2f} km/h (percentage diff: {percentage_diff:.2f}%)")
+                # 防御性检查
+                if speed_limit is None or speed_limit <= 0.0 or not math.isfinite(speed_limit):
+                    speed_limit = 30.0  # 使用默认限速
+
+                # 记录限速变化
+                if self.last_speed_limit != speed_limit:
+                    if self.last_speed_limit is not None:
+                        print(f"🚦 限速变化: {self.last_speed_limit:.1f} → {speed_limit:.1f} km/h，重新调整前车速度")
+                    self.last_speed_limit = speed_limit
+
+                # 根据实际限速动态计算百分比
+                percentage_diff = ((speed_limit - desired_speed) / speed_limit) * 100
+
+                # 限制百分比范围
+                percentage_diff = max(-500.0, min(100.0, percentage_diff))
+
+                self.tm.vehicle_percentage_speed_difference(self.vehicle, percentage_diff)
+
+                # 只在固定速度模式或限速变化时输出日志
+                if self.mode == 'constant' and self.last_speed_limit == speed_limit:
+                    pass  # 固定速度模式下减少日志输出
+                else:
+                    print(f"前车速度: 目标{desired_speed:.2f} km/h | 路段限速{speed_limit:.1f} km/h | 百分比{percentage_diff:.1f}%")
+
+            except Exception as e:
+                print(f"⚠️ 获取限速失败: {e}，使用默认设置")
+                speed_limit = 30.0
+                percentage_diff = ((speed_limit - desired_speed) / speed_limit) * 100
+                self.tm.vehicle_percentage_speed_difference(self.vehicle, percentage_diff)
 
         # 方式2：直接控制车辆（备用方案）
         else:
