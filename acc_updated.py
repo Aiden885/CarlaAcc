@@ -37,6 +37,9 @@ from output_formatter import OutputFormatter
 from lateral_pid_controller import LateralPIDController
 from manual_input_controller import ManualSteeringController
 
+# 导入实时绘图器
+from realtime_time_gap_plotter import RealtimeTimeGapPlotter
+
 
 class acc:
     def __init__(self, perception_mode='carla'):
@@ -151,17 +154,23 @@ class acc:
         self.init_csv()
 
         # 初始化两模式参数 - 已集成到Simulink，无需外部同步
-        
+
         # 初始化一体化接口的两模式控制器
         if hasattr(self.acc_decision_sppvt, 'init_two_mode_controller'):
             self.acc_decision_sppvt.init_two_mode_controller()
 
+        # === 初始化实时时距绘图器 ===
+        self.realtime_plotter = RealtimeTimeGapPlotter(max_points=500, update_interval=100)
+        self.realtime_plotter.start()
+        print("🎨 实时时距绘图器已启动（Simulink风格）")
+
     def init_carla(self):
         # 初始化 Carla 客户端
-        #self.client = carla.Client('192.168.0.146', 2000)
-        self.client = carla.Client('localhost', 2000)
+        self.client = carla.Client('192.168.0.146', 2000)
+        #self.client = carla.Client('localhost', 2000)
         self.client.set_timeout(60.0)
         map_name = 'Town05'
+        map_name = 'acc_30km'
         try:
             self.world = self.client.get_world()
             self.world = self.client.load_world(map_name, carla.MapLayer.Buildings | carla.MapLayer.ParkedVehicles)
@@ -183,8 +192,8 @@ class acc:
         ego_vehicle_bp = self.blueprint_library.filter('vehicle.audi.etron')[0]
 
         # 定义固定生成点x=0.663731, y=-203.651886, z=0.5
-        #fixed_point = carla.Location(x = -352.701508, y = 4627.016113, z=0.5)
-        fixed_point = carla.Location(x=0.663731, y=-203.651886, z=0.5)
+        fixed_point = carla.Location(x = -352.701508, y = 4627.016113, z=0.5)
+        #fixed_point = carla.Location(x=0.663731, y=-203.651886, z=0.5)
         waypoint = map.get_waypoint(fixed_point, project_to_road=True, lane_type=carla.LaneType.Driving)
         if waypoint is None:
             raise RuntimeError("Failed to find a valid waypoint near the specified location")
@@ -747,6 +756,16 @@ class acc:
                     control_error = enhanced_two_mode_output['control_error']
                     control_mode_flag = enhanced_two_mode_output['control_mode_flag']
 
+                # === 实时绘图：添加TIME模式数据 ===
+                if control_mode_flag == 1 and has_target:  # TIME模式且有前车
+                    # 提取时距数据
+                    desired_time_gap = enhanced_two_mode_output.get('reference_value', 0.0)  # 期望时距
+                    actual_time_gap = enhanced_two_mode_output.get('current_value', 0.0)    # 实际时距
+                    current_time = time.time() - self.start_time
+
+                    # 添加到实时绘图器
+                    self.realtime_plotter.add_data(desired_time_gap, actual_time_gap, current_time)
+
                 # === OpenCV图像处理（仅vision模式） ===
                 t0 = time.time()
                 if self.perception_mode == 'vision' and self.latest_camera_image is not None:
@@ -1196,6 +1215,10 @@ class acc:
             self.destroy()
 
     def destroy(self):
+        # 停止实时绘图器
+        if hasattr(self, 'realtime_plotter'):
+            self.realtime_plotter.stop()
+
         # 停止传感器（仅vision模式）
         if self.radar is not None:
             self.radar.stop()
