@@ -34,6 +34,8 @@ class RealtimeTimeGapPlotter:
         self.desired_gaps = deque()
         self.actual_gaps = deque()
         self.errors = deque()
+        self.ego_speeds = deque()  # 自车速度
+        self.target_speeds = deque()  # 前车速度
 
         self.fig = None
         self.axes = None
@@ -53,14 +55,23 @@ class RealtimeTimeGapPlotter:
         self.manual_start_time = 0.0  # 手动设置的起始时间
         self._updating_slider = False  # 防止递归回调的标志
 
-    def add_data(self, desired_gap: float, actual_gap: float, timestamp: float) -> None:
-        """Push a new sample into the queue from the producer thread."""
+    def add_data(self, desired_gap: float, actual_gap: float, timestamp: float,
+                 ego_speed: float = 0.0, target_speed: float = 0.0) -> None:
+        """Push a new sample into the queue from the producer thread.
+
+        Args:
+            desired_gap: 期望时距 (秒)
+            actual_gap: 实际时距 (秒)
+            timestamp: 时间戳 (秒)
+            ego_speed: 自车速度 (km/h)
+            target_speed: 前车速度 (km/h)
+        """
         try:
-            self.data_queue.put_nowait((desired_gap, actual_gap, timestamp))
+            self.data_queue.put_nowait((desired_gap, actual_gap, timestamp, ego_speed, target_speed))
         except queue.Full:
             try:
                 self.data_queue.get_nowait()
-                self.data_queue.put_nowait((desired_gap, actual_gap, timestamp))
+                self.data_queue.put_nowait((desired_gap, actual_gap, timestamp, ego_speed, target_speed))
             except queue.Empty:
                 pass
 
@@ -97,18 +108,21 @@ class RealtimeTimeGapPlotter:
         self.color_desired = "#0072BD"  # MATLAB蓝色
         self.color_actual = "#D95319"   # MATLAB橙色
         self.color_error = "#EDB120"    # MATLAB黄色
+        self.color_ego = "#7E2F8E"      # MATLAB紫色 - 自车
+        self.color_target = "#77AC30"   # MATLAB绿色 - 前车
 
-        self.fig = plt.figure(figsize=(14, 8.5), facecolor=bg_color)
+        self.fig = plt.figure(figsize=(14, 10.5), facecolor=bg_color)
         self.fig.canvas.manager.set_window_title(
             "Real-Time Time Gap Tracking - TIME Mode"
         )
 
         # 调整布局以腾出底部空间放置滑动条
-        # 子图占用上方，底部留给控制器（只有一个滑动条，图表可以更大）
-        self.ax1 = plt.axes([0.1, 0.56, 0.85, 0.36], facecolor=bg_color)
-        self.ax2 = plt.axes([0.1, 0.18, 0.85, 0.28], facecolor=bg_color)
+        # 现在有3个子图，分别显示：时距跟踪、误差、速度
+        self.ax1 = plt.axes([0.1, 0.68, 0.85, 0.24], facecolor=bg_color)  # 时距跟踪
+        self.ax2 = plt.axes([0.1, 0.42, 0.85, 0.20], facecolor=bg_color)  # 误差
+        self.ax3 = plt.axes([0.1, 0.16, 0.85, 0.20], facecolor=bg_color)  # 速度
 
-        self.axes = [self.ax1, self.ax2]
+        self.axes = [self.ax1, self.ax2, self.ax3]
 
         for ax in self.axes:
             ax.set_facecolor(bg_color)
@@ -145,6 +159,22 @@ class RealtimeTimeGapPlotter:
             "Time Gap Error (Actual - Desired)", color=text_color, fontsize=13, fontweight="bold"
         )
         self.ax2.legend(
+            loc="upper right", facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
+        )
+
+        # 子图3：速度
+        self.line_ego_speed, = self.ax3.plot(
+            [], [], color=self.color_ego, linewidth=2.0, label="Ego Speed", marker='v', markersize=2, markevery=10
+        )
+        self.line_target_speed, = self.ax3.plot(
+            [], [], color=self.color_target, linewidth=2.0, label="Target Speed", marker='^', markersize=2, markevery=10
+        )
+        self.ax3.set_xlabel("Time (s)", color=text_color, fontsize=11, fontweight='bold')
+        self.ax3.set_ylabel("Speed (km/h)", color=text_color, fontsize=11, fontweight='bold')
+        self.ax3.set_title(
+            "Vehicle Speeds", color=text_color, fontsize=13, fontweight="bold"
+        )
+        self.ax3.legend(
             loc="upper right", facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
         )
 
@@ -226,7 +256,14 @@ class RealtimeTimeGapPlotter:
         data_count = 0
         while not self.data_queue.empty() and data_count < 50:
             try:
-                desired, actual, timestamp = self.data_queue.get_nowait()
+                data_item = self.data_queue.get_nowait()
+                # 兼容新旧数据格式
+                if len(data_item) == 5:
+                    desired, actual, timestamp, ego_speed, target_speed = data_item
+                else:
+                    # 旧格式，只有3个值
+                    desired, actual, timestamp = data_item
+                    ego_speed, target_speed = 0.0, 0.0
             except queue.Empty:
                 break
 
@@ -234,6 +271,8 @@ class RealtimeTimeGapPlotter:
             self.desired_gaps.append(desired)
             self.actual_gaps.append(actual)
             self.errors.append(actual - desired)
+            self.ego_speeds.append(ego_speed)
+            self.target_speeds.append(target_speed)
 
             self.total_points += 1
             data_count += 1
@@ -245,10 +284,14 @@ class RealtimeTimeGapPlotter:
         desired = np.asarray(self.desired_gaps, dtype=float)
         actual = np.asarray(self.actual_gaps, dtype=float)
         errors = np.asarray(self.errors, dtype=float)
+        ego_speeds = np.asarray(self.ego_speeds, dtype=float)
+        target_speeds = np.asarray(self.target_speeds, dtype=float)
 
         self.line_desired.set_data(ts, desired)
         self.line_actual.set_data(ts, actual)
         self.line_error.set_data(ts, errors)
+        self.line_ego_speed.set_data(ts, ego_speeds)
+        self.line_target_speed.set_data(ts, target_speeds)
 
         # 动态更新滑动条范围（但不频繁触发重绘）
         if ts.size and self.slider_start and not self._updating_slider:
@@ -286,7 +329,7 @@ class RealtimeTimeGapPlotter:
                 padding = (x_right - x_left) * 0.02
                 x_right += padding
 
-            for axis in (self.ax1, self.ax2):
+            for axis in (self.ax1, self.ax2, self.ax3):
                 axis.set_xlim(x_left, x_right)
 
         # Set Y-axis limits using ONLY visible data in current X-axis window
@@ -327,7 +370,30 @@ class RealtimeTimeGapPlotter:
                 self.ax2.set_ylim(-err_abs_max, err_abs_max)
                 self.ax2.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
 
-        return self.line_desired, self.line_actual, self.line_error
+        # Set speed Y-axis limits using ONLY visible data
+        if ego_speeds.size and target_speeds.size and ts.size:
+            visible_mask = (ts >= x_left) & (ts <= x_right)
+
+            if np.any(visible_mask):
+                visible_ego = ego_speeds[visible_mask]
+                visible_target = target_speeds[visible_mask]
+
+                speed_min = float(np.nanmin([visible_ego.min(), visible_target.min()]))
+                speed_max = float(np.nanmax([visible_ego.max(), visible_target.max()]))
+
+                if np.isfinite(speed_min) and np.isfinite(speed_max):
+                    if np.isclose(speed_min, speed_max):
+                        span = max(abs(speed_min) * 0.1, 5.0)
+                    else:
+                        span = max((speed_max - speed_min) * 0.1, 5.0)
+                    lower = max(0, speed_min - span)  # 速度不能为负
+                    upper = speed_max + span
+                    if np.isclose(lower, upper):
+                        upper = lower + 10.0
+                    self.ax3.set_ylim(lower, upper)
+                    self.ax3.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
+
+        return self.line_desired, self.line_actual, self.line_error, self.line_ego_speed, self.line_target_speed
 
 
 if __name__ == "__main__":  # pragma: no cover - manual smoke test

@@ -169,7 +169,7 @@ class acc:
         self.client = carla.Client('192.168.0.146', 2000)
         #self.client = carla.Client('localhost', 2000)
         self.client.set_timeout(60.0)
-        map_name = 'Town05'
+        #map_name = 'Town05'
         map_name = 'acc_30km'
         try:
             self.world = self.client.get_world()
@@ -192,8 +192,11 @@ class acc:
         ego_vehicle_bp = self.blueprint_library.filter('vehicle.audi.etron')[0]
 
         # 定义固定生成点x=0.663731, y=-203.651886, z=0.5
-        fixed_point = carla.Location(x = -352.701508, y = 4627.016113, z=0.5)
-        #fixed_point = carla.Location(x=0.663731, y=-203.651886, z=0.5)
+        #right x = -352.701508, y = 4627.016113, z=0.5
+        #left x=-951.054749, y=4027.188232, z=-0.009344
+        #up  x=1951.489014, y=-4947.605469, z=-0.009341
+        #down x=2121.978760, y=-3415.833252, z=54.469646
+        fixed_point = carla.Location(x=2121.978760, y=-3415.833252, z=54.469646)
         waypoint = map.get_waypoint(fixed_point, project_to_road=True, lane_type=carla.LaneType.Driving)
         if waypoint is None:
             raise RuntimeError("Failed to find a valid waypoint near the specified location")
@@ -763,8 +766,14 @@ class acc:
                     actual_time_gap = enhanced_two_mode_output.get('current_value', 0.0)    # 实际时距
                     current_time = time.time() - self.start_time
 
-                    # 添加到实时绘图器
-                    self.realtime_plotter.add_data(desired_time_gap, actual_time_gap, current_time)
+                    # 添加到实时绘图器（包含速度数据）
+                    self.realtime_plotter.add_data(
+                        desired_time_gap,
+                        actual_time_gap,
+                        current_time,
+                        ego_speed,      # 自车速度 (km/h)
+                        target_speed    # 前车速度 (km/h)
+                    )
 
                 # === OpenCV图像处理（仅vision模式） ===
                 t0 = time.time()
