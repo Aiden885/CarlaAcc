@@ -40,6 +40,9 @@ from manual_input_controller import ManualSteeringController
 # 导入实时绘图器
 from realtime_time_gap_plotter import RealtimeTimeGapPlotter
 
+# 导入扭矩到油门转换器
+from torque_to_throttle_converter import TorqueToThrottleConverter
+
 
 class acc:
     def __init__(self, perception_mode='carla'):
@@ -196,7 +199,7 @@ class acc:
         #left x=-951.054749, y=4027.188232, z=-0.009344
         #up  x=1951.489014, y=-4947.605469, z=-0.009341
         #down x=2121.978760, y=-3415.833252, z=54.469646
-        fixed_point = carla.Location(x=2121.978760, y=-3415.833252, z=54.469646)
+        fixed_point = carla.Location(x = -352.701508, y = 4627.016113, z=0.5)
         waypoint = map.get_waypoint(fixed_point, project_to_road=True, lane_type=carla.LaneType.Driving)
         if waypoint is None:
             raise RuntimeError("Failed to find a valid waypoint near the specified location")
@@ -759,22 +762,6 @@ class acc:
                     control_error = enhanced_two_mode_output['control_error']
                     control_mode_flag = enhanced_two_mode_output['control_mode_flag']
 
-                # === 实时绘图：添加TIME模式数据 ===
-                if control_mode_flag == 1 and has_target:  # TIME模式且有前车
-                    # 提取时距数据
-                    desired_time_gap = enhanced_two_mode_output.get('reference_value', 0.0)  # 期望时距
-                    actual_time_gap = enhanced_two_mode_output.get('current_value', 0.0)    # 实际时距
-                    current_time = time.time() - self.start_time
-
-                    # 添加到实时绘图器（包含速度数据）
-                    self.realtime_plotter.add_data(
-                        desired_time_gap,
-                        actual_time_gap,
-                        current_time,
-                        ego_speed,      # 自车速度 (km/h)
-                        target_speed    # 前车速度 (km/h)
-                    )
-
                 # === OpenCV图像处理（仅vision模式） ===
                 t0 = time.time()
                 if self.perception_mode == 'vision' and self.latest_camera_image is not None:
@@ -930,6 +917,23 @@ class acc:
 
                     # === 同步扭矩仲裁状态到acc_decision对象（用于pygame显示）===
                     self.acc_decision_sppvt.torque_arbitration_active = unified_output.get('torque_arbitration_active', False)
+
+                    # === 实时绘图：添加TIME模式数据 ===
+                    if control_mode_flag == 1 and has_target:  # TIME模式且有前车
+                        # 提取时距数据
+                        desired_time_gap = enhanced_two_mode_output.get('reference_value', 0.0)  # 期望时距
+                        actual_time_gap = enhanced_two_mode_output.get('current_value', 0.0)    # 实际时距
+                        current_time = time.time() - self.start_time
+
+                        # 添加到实时绘图器（包含速度数据和控制状态）
+                        self.realtime_plotter.add_data(
+                            desired_time_gap,
+                            actual_time_gap,
+                            current_time,
+                            ego_speed,      # 自车速度 (km/h)
+                            target_speed,   # 前车速度 (km/h)
+                            decision_output['control_enabled']  # ACC控制状态
+                        )
 
                     # 获取Simulink的原始控制输出（与control_error同符号）
                     control_output = unified_output.get('target_accel', 0.0)

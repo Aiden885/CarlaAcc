@@ -36,6 +36,10 @@ class RealtimeTimeGapPlotter:
         self.errors = deque()
         self.ego_speeds = deque()  # 自车速度
         self.target_speeds = deque()  # 前车速度
+        self.control_enabled_states = deque()  # ACC控制状态
+
+        # 垂直线标记（用于标记control_enabled开启时刻）
+        self.control_start_lines = []  # 存储已绘制的垂直线
 
         self.fig = None
         self.axes = None
@@ -56,7 +60,8 @@ class RealtimeTimeGapPlotter:
         self._updating_slider = False  # 防止递归回调的标志
 
     def add_data(self, desired_gap: float, actual_gap: float, timestamp: float,
-                 ego_speed: float = 0.0, target_speed: float = 0.0) -> None:
+                 ego_speed: float = 0.0, target_speed: float = 0.0,
+                 control_enabled: bool = False) -> None:
         """Push a new sample into the queue from the producer thread.
 
         Args:
@@ -65,13 +70,14 @@ class RealtimeTimeGapPlotter:
             timestamp: 时间戳 (秒)
             ego_speed: 自车速度 (km/h)
             target_speed: 前车速度 (km/h)
+            control_enabled: ACC控制是否开启
         """
         try:
-            self.data_queue.put_nowait((desired_gap, actual_gap, timestamp, ego_speed, target_speed))
+            self.data_queue.put_nowait((desired_gap, actual_gap, timestamp, ego_speed, target_speed, control_enabled))
         except queue.Full:
             try:
                 self.data_queue.get_nowait()
-                self.data_queue.put_nowait((desired_gap, actual_gap, timestamp, ego_speed, target_speed))
+                self.data_queue.put_nowait((desired_gap, actual_gap, timestamp, ego_speed, target_speed, control_enabled))
             except queue.Empty:
                 pass
 
@@ -118,9 +124,10 @@ class RealtimeTimeGapPlotter:
 
         # 调整布局以腾出底部空间放置滑动条
         # 现在有3个子图，分别显示：时距跟踪、误差、速度
+        # 增加子图间距以避免重叠
         self.ax1 = plt.axes([0.1, 0.68, 0.85, 0.24], facecolor=bg_color)  # 时距跟踪
-        self.ax2 = plt.axes([0.1, 0.42, 0.85, 0.20], facecolor=bg_color)  # 误差
-        self.ax3 = plt.axes([0.1, 0.16, 0.85, 0.20], facecolor=bg_color)  # 速度
+        self.ax2 = plt.axes([0.1, 0.40, 0.85, 0.19], facecolor=bg_color)  # 误差（往下移）
+        self.ax3 = plt.axes([0.1, 0.12, 0.85, 0.19], facecolor=bg_color)  # 速度（往下移）
 
         self.axes = [self.ax1, self.ax2, self.ax3]
 
@@ -180,7 +187,7 @@ class RealtimeTimeGapPlotter:
 
         # 创建滑动条控件
         # 起始时间滑动条（从此时间开始显示到最新数据）
-        ax_slider_start = plt.axes([0.1, 0.07, 0.65, 0.03], facecolor='#e0e0e0')
+        ax_slider_start = plt.axes([0.1, 0.04, 0.65, 0.03], facecolor='#e0e0e0')
         self.slider_start = Slider(
             ax=ax_slider_start,
             label='Start Time (s)',
@@ -193,7 +200,7 @@ class RealtimeTimeGapPlotter:
         self.slider_start.on_changed(self._on_slider_start_change)
 
         # 自动跟随checkbox
-        ax_checkbox = plt.axes([0.80, 0.05, 0.15, 0.08], facecolor=bg_color)
+        ax_checkbox = plt.axes([0.80, 0.02, 0.15, 0.08], facecolor=bg_color)
         self.checkbox_auto = CheckButtons(
             ax_checkbox,
             ['Auto Follow'],
@@ -258,12 +265,16 @@ class RealtimeTimeGapPlotter:
             try:
                 data_item = self.data_queue.get_nowait()
                 # 兼容新旧数据格式
-                if len(data_item) == 5:
+                if len(data_item) == 6:
+                    desired, actual, timestamp, ego_speed, target_speed, control_enabled = data_item
+                elif len(data_item) == 5:
                     desired, actual, timestamp, ego_speed, target_speed = data_item
+                    control_enabled = False
                 else:
                     # 旧格式，只有3个值
                     desired, actual, timestamp = data_item
                     ego_speed, target_speed = 0.0, 0.0
+                    control_enabled = False
             except queue.Empty:
                 break
 
@@ -273,6 +284,7 @@ class RealtimeTimeGapPlotter:
             self.errors.append(actual - desired)
             self.ego_speeds.append(ego_speed)
             self.target_speeds.append(target_speed)
+            self.control_enabled_states.append(control_enabled)
 
             self.total_points += 1
             data_count += 1
@@ -286,12 +298,32 @@ class RealtimeTimeGapPlotter:
         errors = np.asarray(self.errors, dtype=float)
         ego_speeds = np.asarray(self.ego_speeds, dtype=float)
         target_speeds = np.asarray(self.target_speeds, dtype=float)
+        control_states = np.asarray(self.control_enabled_states, dtype=bool)
 
         self.line_desired.set_data(ts, desired)
         self.line_actual.set_data(ts, actual)
         self.line_error.set_data(ts, errors)
         self.line_ego_speed.set_data(ts, ego_speeds)
         self.line_target_speed.set_data(ts, target_speeds)
+
+        # 检测control_enabled从False变True的时刻，画垂直虚线
+        if len(control_states) > 1:
+            # 找到上升沿 (False -> True)
+            transitions = np.diff(control_states.astype(int))  # 0->1 会得到1
+            rising_edges = np.where(transitions == 1)[0] + 1  # +1因为diff减少了一个元素
+
+            # 检查是否有新的开启时刻需要标记
+            for idx in rising_edges:
+                if idx < len(ts):
+                    t_start = ts[idx]
+                    # 检查是否已经画过这条线（避免重复）
+                    already_drawn = any(abs(t_start - t) < 0.01 for t in self.control_start_lines)
+                    if not already_drawn:
+                        # 在所有3个子图上画垂直虚线 (MATLAB风格：黑色虚线)
+                        for ax in (self.ax1, self.ax2, self.ax3):
+                            ax.axvline(x=t_start, color='k', linestyle='--', linewidth=1.0, alpha=0.7)
+                        self.control_start_lines.append(t_start)
+                        print(f"📊 标记ACC控制开启时刻: t={t_start:.2f}s")
 
         # 动态更新滑动条范围（但不频繁触发重绘）
         if ts.size and self.slider_start and not self._updating_slider:
