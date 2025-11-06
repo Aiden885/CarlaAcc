@@ -1,14 +1,7 @@
 import carla
-import math
 import numpy as np
-import cv2
 import csv
 import time
-import lane_detection
-import kalman_filter
-import radar_cluster
-
-import threading
 
 # Pygame相关
 import pygame
@@ -30,7 +23,6 @@ from display_manager import DisplayManager
 
 # 导入拆分后的工具模块
 from vehicle_utils import VehicleUtils
-from sensor_transforms import SensorTransforms
 from output_formatter import OutputFormatter
 
 # 导入横向PID控制器
@@ -45,51 +37,16 @@ from torque_to_throttle_converter import TorqueToThrottleConverter
 
 
 class acc:
-    def __init__(self, perception_mode='carla'):
+    def __init__(self):
         """
         初始化ACC系统
-        Args:
-            perception_mode (str): 感知模式
-                - 'carla': 使用CARLA API直接获取距离和车道信息（默认）
-                - 'vision': 使用雷达+相机+视觉算法
+        使用CARLA API直接获取前车距离和车道信息
         """
         # === 显示管理器初始化 ===
         self.display_manager = DisplayManager(1280, 720)
-        self.show_opencv = True  # 是否显示OpenCV窗口
 
-        # === 感知模式配置 ===
-        self.perception_mode = perception_mode
-        print(f"\n🔍 感知模式: {perception_mode.upper()}")
-        if perception_mode == 'carla':
-            print("   使用CARLA API获取前车距离和车道偏移")
-        else:
-            print("   使用雷达+相机视觉方案")
-
-        # === CARLA API感知模块（仅carla模式使用）===
+        # === CARLA API感知模块 ===
         self.carla_perception = None  # 将在init_carla()后初始化
-
-        # === 视觉感知模块（条件初始化）===
-        if perception_mode == 'vision':
-            self.tracker = kalman_filter.RadarTracker()
-            self.lane_detector = lane_detection.LaneDetector()
-            self.radar_point_cluster = radar_cluster.RadarClusterNode()
-            self.radar_detections = []
-            self.latest_camera_image = None
-            self.radar_2_world = []
-            self.world_2_camera = []
-            self.cluster = []
-            self.track_id = []
-        else:
-            # carla模式下设为None
-            self.tracker = None
-            self.lane_detector = None
-            self.radar_point_cluster = None
-            self.radar_detections = None
-            self.latest_camera_image = None
-            self.radar_2_world = None
-            self.world_2_camera = None
-            self.cluster = None
-            self.track_id = None
 
         # === 通用变量 ===
         self.max_follow_distance = 50
@@ -141,13 +98,8 @@ class acc:
         self.pending_keyboard_command = None  # 格式: {'code': int, 'description': str}
 
         # === 横向PID控制器 ===
-        # 根据感知模式使用不同的PID参数
-        if perception_mode == 'carla':
-            # CARLA API模式：误差单位为米，需要更大的增益
-            self.lateral_pid = LateralPIDController(kp=0.02, ki=0.02, kd=0.4)
-        else:
-            # Vision模式：误差是归一化值，使用较小的增益
-            self.lateral_pid = LateralPIDController(kp=0.04, ki=0.001, kd=0.01)
+        # CARLA API模式：误差单位为米
+        self.lateral_pid = LateralPIDController(kp=0.02, ki=0.02, kd=0.4)
 
         # === 运行控制 ===
         self.running = True
@@ -284,58 +236,14 @@ class acc:
             tl.set_state(carla.TrafficLightState.Green)
             tl.freeze(True)
 
-        # === 条件化传感器初始化 ===
-        if self.perception_mode == 'vision':
-            print("   初始化视觉传感器（雷达+相机+激光雷达）...")
-
-            # 雷达
-            radar_bp = self.blueprint_library.find('sensor.other.radar')
-            RADAR_CONFIG = {
-                'range': '100.0',
-                'horizontal_fov': '120.0',
-                'vertical_fov': '30.0',
-                'points_per_second': '20000'
-            }
-            for attr, value in RADAR_CONFIG.items():
-                radar_bp.set_attribute(attr, value)
-            radar_transform = carla.Transform(carla.Location(x=2.0, z=1.0))
-            self.radar = self.world.spawn_actor(radar_bp, radar_transform, attach_to=self.ego_vehicle)
-
-            # 相机（用于OpenCV处理）
-            camera_bp = self.blueprint_library.find('sensor.camera.rgb')
-            camera_bp.set_attribute('image_size_x', '1280')
-            camera_bp.set_attribute('image_size_y', '720')
-            camera_bp.set_attribute('fov', '90')
-            camera_transform = carla.Transform(carla.Location(x=1.5, z=1.5))
-            self.camera = self.world.spawn_actor(camera_bp, camera_transform, attach_to=self.ego_vehicle)
-
-            # 激光雷达
-            lidar_bp = self.blueprint_library.find('sensor.lidar.ray_cast')
-            lidar_bp.set_attribute('range', '100.0')
-            lidar_bp.set_attribute('points_per_second', '1000')
-            lidar_bp.set_attribute('rotation_frequency', '10')
-            lidar_bp.set_attribute('upper_fov', '10')
-            lidar_bp.set_attribute('lower_fov', '-10')
-            lidar_transform = carla.Transform(carla.Location(x=0.0, z=2.0))
-            self.lidar = self.world.spawn_actor(lidar_bp, lidar_transform, attach_to=self.ego_vehicle)
-
-            print("   ✅ 视觉传感器初始化完成")
-        else:
-            # CARLA API模式：不创建传感器
-            self.radar = None
-            self.camera = None
-            self.lidar = None
-            print("   ⏭️  跳过传感器初始化（使用CARLA API）")
-
         # === 初始化CARLA API感知模块 ===
-        if self.perception_mode == 'carla':
-            from carla_perception import CarlaPerception
-            self.carla_perception = CarlaPerception(
-                self.world,
-                self.ego_vehicle,
-                self.target_vehicle
-            )
-            print("   ✅ CARLA API感知模块初始化完成")
+        from carla_perception import CarlaPerception
+        self.carla_perception = CarlaPerception(
+            self.world,
+            self.ego_vehicle,
+            self.target_vehicle
+        )
+        print("✅ CARLA API感知模块初始化完成")
 
     def init_csv(self):
         """初始化CSV文件"""
@@ -437,9 +345,6 @@ class acc:
             if event_type == 'keydown':
                 if event_data == K_ESCAPE:
                     self.running = False
-                elif event_data == K_o:
-                    self.show_opencv = not self.show_opencv
-                    print(f"OpenCV window: {'ON' if self.show_opencv else 'OFF'}")
                 elif event_data == K_p:
                     self.acc_decision.debug = not self.acc_decision.debug
                     print(f"ACC debug: {'ON' if self.acc_decision.debug else 'OFF'}")
@@ -535,70 +440,10 @@ class acc:
         desired_distance, control_mode = calculate_two_mode_desired_distance(ego_speed_ms)
         return desired_distance, control_mode
 
-    def radar_callback(self, radar_data):
-        self.radar_points = []
-        self.filted_points = []
-        ego_velocity = VehicleUtils.get_vehicle_speed(self.ego_vehicle) / 3.6
-        velocity_tolerance = 1.0
-        for detection in radar_data:
-            try:
-                distance = detection.depth
-                azimuth = math.degrees(detection.azimuth)
-                altitude = math.degrees(detection.altitude)
-                velocity = detection.velocity
-                x = distance * math.cos(math.radians(altitude)) * math.cos(math.radians(azimuth))
-                y = -distance * math.cos(math.radians(altitude)) * math.sin(math.radians(azimuth))
-                z = distance * math.sin(math.radians(altitude))
-                vx = velocity * math.cos(math.radians(altitude)) * math.cos(math.radians(azimuth))
-                vy = velocity * math.cos(math.radians(altitude)) * math.sin(math.radians(azimuth))
-                vz = velocity * math.sin(math.radians(altitude))
-                expected_static_velocity = -ego_velocity * math.cos(math.radians(azimuth)) * math.cos(
-                    math.radians(altitude))
-                if z > -0.5:
-                    self.radar_points.append([x, y, z, vx, vy, vz, velocity])
-                    if abs(velocity - expected_static_velocity) > velocity_tolerance:
-                        self.filted_points.append([x, y, z, vx, vy, vz, velocity])
-            except AttributeError as e:
-                print(f"AttributeError: {e}. Raw detection: {detection}")
-        if self.filted_points:
-            self.cluster = self.radar_point_cluster.radar_cluster(self.filted_points)
-            if self.cluster:
-                self.track_id = self.tracker.update(self.cluster)
-                for track in self.track_id:
-                    if not all(np.isfinite(track)):
-                        print(f"Invalid track data: {track}")
-                        self.track_id = []
-                        break
-            else:
-                self.track_id = []
-        else:
-            self.track_id = []
-
-    def camera_callback(self, image):
-        array = np.frombuffer(image.raw_data, dtype=np.uint8)
-        array = array.reshape((image.height, image.width, 4))
-        array = array[:, :, :3]
-        self.latest_camera_image = array
-
-    def lidar_callback(self, lidar_data):
-        points = []
-        for point in lidar_data:
-            x = point.point.x
-            y = point.point.y
-            z = point.point.z
-            intensity = point.intensity
-            points.append([x, y, z, intensity])
-        self.latest_lidar_points = points
 
     def generate_target(self):
         """主循环 - 完整集成ACC决策、控制和显示"""
         try:
-            # === 初始化外参矩阵（仅vision模式需要）===
-            if self.perception_mode == 'vision':
-                self.radar_2_world, self.world_2_camera = SensorTransforms.get_extrinsic_params(self.radar, self.camera)
-            else:
-                self.radar_2_world, self.world_2_camera = None, None
-
             self.start_time = time.time()
             frame_count = 0
 
@@ -613,7 +458,7 @@ class acc:
             print("  E: 降速/当速启控  Q: 增速/继承启控(需有历史)")
             print("  R/T: 增距/降距  C: 取消ACC")
             print("  W/S: 油门/刹车  A/D: 转向")
-            print("  I: 信息显示  O: OpenCV窗口  P: 调试模式  ESC: 退出")
+            print("  P: 调试模式  ESC: 退出")
             print(f"\n当前状态: ACC系统关闭, 请先按空格键开启")
             print("")
 
@@ -734,19 +579,13 @@ class acc:
                     last_perf_report_time = current_time
 
                 t0 = time.time()
-                # === 获取车辆状态（根据感知模式选择数据源）===
+                # === 获取车辆状态 ===
                 ego_speed = VehicleUtils.get_vehicle_speed(self.ego_vehicle)
                 target_speed = VehicleUtils.get_vehicle_speed(self.target_vehicle) if self.target_vehicle else 0.0
 
-                # 条件化距离和车道偏移获取
-                if self.perception_mode == 'carla':
-                    # CARLA API模式：使用carla_perception模块
-                    vehicle_distance = self.carla_perception.get_vehicle_distance()
-                    lane_offset = self.carla_perception.get_lane_offset()
-                else:
-                    # Vision模式：使用VehicleUtils
-                    vehicle_distance = VehicleUtils.get_vehicle_distance(self.ego_vehicle, self.target_vehicle)
-                    lane_offset = VehicleUtils.get_lane_offset(self.ego_vehicle, self.world)
+                # 使用CARLA API获取距离和车道偏移
+                vehicle_distance = self.carla_perception.get_vehicle_distance()
+                lane_offset = self.carla_perception.get_lane_offset()
 
                 has_target = vehicle_distance < 100.0  # 检测范围：100米
 
@@ -772,65 +611,6 @@ class acc:
                     control_error = enhanced_two_mode_output['control_error']
                     control_mode_flag = enhanced_two_mode_output['control_mode_flag']
 
-                # === OpenCV图像处理（仅vision模式） ===
-                t0 = time.time()
-                if self.perception_mode == 'vision' and self.latest_camera_image is not None:
-                    image_with_radar = self.latest_camera_image.copy()
-
-                    # 目标检测和轨迹处理
-                    track_id = self.track_id.copy() if self.track_id is not None else []
-                    target_info = None
-
-                    if track_id:
-                        try:
-                            projected_points = SensorTransforms.project_radar_to_camera(self.radar_2_world, self.world_2_camera, self.lane_detector.M, track_id)
-                            current_target_idx = VehicleUtils.find_best_target(track_id, projected_points)
-
-                            # 绘制检测目标
-                            for idx in range(min(len(track_id), len(projected_points))):
-                                if len(projected_points[idx]) >= 2:
-                                    u, v = projected_points[idx][0], projected_points[idx][1]
-                                    cv2.circle(image_with_radar, (u, v), 5, (255, 0, 0), -1)
-
-                            if current_target_idx >= 0 and current_target_idx < len(projected_points):
-                                u, v = projected_points[current_target_idx][0], projected_points[current_target_idx][1]
-                                cv2.circle(image_with_radar, (u, v), 10, (255, 255, 255), -1)
-                                cv2.putText(image_with_radar, f"id={track_id[current_target_idx][-1]:.0f}",
-                                            (u + 5, v), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (150, 225, 100), 2)
-                                target_info = track_id[current_target_idx]
-
-                        except Exception as e:
-                            print(f"Target detection error: {e}")
-
-                    # 车道检测
-                    lane_center = 510
-                    try:
-                        lane_windows, lane_image, detected_windows = self.lane_detector.lane_detect(image_with_radar)
-                        valid_row = None
-                        for row in lane_windows:
-                            if len(row) == 6 and row[2] == 1 and row[5] == 1:
-                                valid_row = row
-                                break
-                        if valid_row is not None:
-                            lane_center = (valid_row[0] + valid_row[3]) / 2
-                    except Exception as e:
-                        print(f"Lane detection error: {e}")
-
-                    # 在OpenCV图像上添加ACC状态信息
-                    y_offset = 10
-                    cv2.putText(image_with_radar, f"ACC: Simulink Integrated", (10, y_offset),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                    y_offset += 25
-
-                    cv2.putText(image_with_radar, f"Active: {'YES' if self.acc_system_enabled else 'NO'}",
-                                (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                                (0, 255, 0) if self.acc_system_enabled else (255, 255, 255), 2)
-                    y_offset += 25
-
-                    # 显示OpenCV窗口（如果启用）
-                    if self.show_opencv:
-                        cv2.imshow("Radar and Lane Detection", image_with_radar)
-                        cv2.waitKey(1)
 
                 # === 车辆控制 ===
                 # === 使用一体化接口进行决策和控制计算 ===
@@ -991,16 +771,10 @@ class acc:
                     # ACC控制模式 - 只有在主动控制模式下才执行
                     try:
                         # === 横向控制：使用PID控制器计算转向 ===
-                        # 在vision模式下，使用OpenCV检测的lane_center重新计算lane_offset
-                        # 在carla模式下，使用已获取的lane_offset (从carla_perception)
-                        if self.perception_mode == 'vision' and 'lane_center' in locals():
-                            # Vision模式：归一化像素偏移
-                            lateral_error = (lane_center - 510) / 150
-                        else:
-                            # CARLA API模式：米为单位
-                            # 符号约定：carla_perception返回"左负右正"
-                            # PID控制器期望：车偏左为负，需要向右转=负转向
-                            lateral_error = -lane_offset  # 反转符号
+                        # CARLA API模式：米为单位
+                        # 符号约定：carla_perception返回"左负右正"
+                        # PID控制器期望：车偏左为负，需要向右转=负转向
+                        lateral_error = -lane_offset  # 反转符号
 
                         # 使用PID控制器计算转向输出
                         steer_output = self.lateral_pid.update(lateral_error, dt=0.05)
@@ -1094,8 +868,7 @@ class acc:
                         print(f"❌ ACC control error详细信息:")
                         print(f"   错误类型: {type(e).__name__}")
                         print(f"   错误消息: {str(e)}")
-                        print(f"   target_info: {target_info}")
-                        print(f"   lane_offset: {(lane_center - 510) / 150}")
+                        print(f"   lane_offset: {lane_offset}")
                         print(f"   sppvt_target_accel: {sppvt_target_accel if 'sppvt_target_accel' in locals() else 'Not available'}")
                         print(f"   unified_input: {unified_input if 'unified_input' in locals() else 'Not available'}")
                         import traceback
@@ -1248,7 +1021,6 @@ class acc:
                 print_performance_report(perf_times, final_elapsed)
 
             print("Cleaning up...")
-            cv2.destroyAllWindows()
             if self.csv_file:
                 self.csv_file.close()
             self.display_manager.destroy()
@@ -1258,22 +1030,6 @@ class acc:
         # 停止实时绘图器
         if hasattr(self, 'realtime_plotter'):
             self.realtime_plotter.stop()
-
-        # 停止传感器（仅vision模式）
-        if self.radar is not None:
-            self.radar.stop()
-        if self.camera is not None:
-            self.camera.stop()
-        if self.lidar is not None:
-            self.lidar.stop()
-
-        # 销毁传感器（仅vision模式）
-        if self.radar is not None:
-            self.radar.destroy()
-        if self.camera is not None:
-            self.camera.destroy()
-        if self.lidar is not None:
-            self.lidar.destroy()
 
         # 销毁车辆
         for vehicle in self.vehicles:
@@ -1286,66 +1042,23 @@ class acc:
             settings.synchronous_mode = False
             self.world.apply_settings(settings)
 
-        sensor_count = sum([1 for s in [self.radar, self.camera, self.lidar] if s is not None])
-        print(f"Destroyed {len(self.vehicles)} vehicles, ego vehicle, {sensor_count} sensors, and restored settings.")
+        print(f"Destroyed {len(self.vehicles)} vehicles, ego vehicle, and restored settings.")
 
 
 def main():
     """
-    主函数 - 支持命令行参数配置感知模式
+    主函数 - 使用CARLA API模式
 
     Usage:
-        python acc_updated.py              # 默认使用CARLA API模式
-        python acc_updated.py --mode carla  # 显式指定CARLA API模式
-        python acc_updated.py --mode vision # 使用视觉传感器模式
+        python acc_updated.py
     """
-    import argparse
-
-    parser = argparse.ArgumentParser(description='ACC System with configurable perception mode')
-    parser.add_argument('--mode', type=str, default='carla',
-                       choices=['carla', 'vision'],
-                       help='Perception mode: carla (API-based) or vision (sensor-based)')
-
-    args = parser.parse_args()
-
-    # 创建ACC实例，传入感知模式
-    acc_actor = acc(perception_mode=args.mode)
-
-    # 创建传感器监听线程（仅vision模式）
-    threads = []
-    if acc_actor.perception_mode == 'vision':
-        print("启动传感器监听线程...")
-        thread_1 = threading.Thread(target=acc_actor.radar.listen, args=(acc_actor.radar_callback,), name='T1')
-        thread_2 = threading.Thread(target=acc_actor.camera.listen, args=(acc_actor.camera_callback,), name='T2')
-        thread_3 = threading.Thread(target=acc_actor.lidar.listen, args=(acc_actor.lidar_callback,), name='T3')
-
-        thread_1.start()
-        thread_2.start()
-        thread_3.start()
-
-        threads = [thread_1, thread_2, thread_3]
-        print("✅ 传感器监听线程已启动")
-    else:
-        print("⏭️  跳过传感器监听线程（CARLA API模式）")
+    # 创建ACC实例
+    acc_actor = acc()
 
     try:
         acc_actor.generate_target()
     except KeyboardInterrupt:
         print("Program interrupted.")
-    finally:
-        # 停止传感器监听（仅vision模式）
-        if acc_actor.perception_mode == 'vision':
-            if acc_actor.radar is not None:
-                acc_actor.radar.stop()
-            if acc_actor.camera is not None:
-                acc_actor.camera.stop()
-            if acc_actor.lidar is not None:
-                acc_actor.lidar.stop()
-
-            # 等待线程结束
-            for thread in threads:
-                thread.join()
-            print("All sensor threads terminated.")
 
 
 if __name__ == '__main__':
