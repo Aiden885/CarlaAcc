@@ -9,7 +9,7 @@ def main():
     Edit `MAP_NAME` below to switch towns before running the script.
     """
     # === User-configurable section ===
-    MAP_NAME = "Town12"  # e.g. "Town01", "Town03_Opt", "Town10HD"
+    MAP_NAME = "Town04"  # e.g. "Town01", "Town03_Opt", "Town10HD"
     HOST = "localhost"
     PORT = 2000
     TIMEOUT = 10.0  # seconds

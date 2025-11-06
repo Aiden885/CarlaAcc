@@ -1,0 +1,228 @@
+{
+  "vehicle": "vehicle.audi.etron",
+  "calibration_throttle": 0.8,
+  "vehicle_parameters": {
+    "mass_kg": 2370.0,
+    "gear_ratio": 9.204000473022461,
+    "wheel_radius_m": 0.37
+  },
+  "raw_measurements": [
+    {
+      "target_speed_kmh": 10,
+      "actual_speed_kmh": 13.973136705644183,
+      "rpm": 922.0143863657477,
+      "acceleration_ms2": 3.7285454613171543,
+      "measured_torque_nm": 369.60830290703404,
+      "estimated_max_torque_nm": 462.0103786337925,
+      "known_torque_nm": 749.0,
+      "error_percent": -38.31637134395293
+    },
+    {
+      "target_speed_kmh": 20,
+      "actual_speed_kmh": 33.65245336692747,
+      "rpm": 2220.549816010629,
+      "acceleration_ms2": 3.4599975194068042,
+      "measured_torque_nm": 345.7321391313616,
+      "estimated_max_torque_nm": 432.16517391420194,
+      "known_torque_nm": 749.0,
+      "error_percent": -42.301044871268104
+    },
+    {
+      "target_speed_kmh": 30,
+      "actual_speed_kmh": 41.6098078701776,
+      "rpm": 2745.6141221835824,
+      "acceleration_ms2": 3.1838898796980883,
+      "measured_torque_nm": 320.51862178943446,
+      "estimated_max_torque_nm": 400.64827723679304,
+      "known_torque_nm": 749.0,
+      "error_percent": -46.50890824608905
+    },
+    {
+      "target_speed_kmh": 40,
+      "actual_speed_kmh": 49.651242269512274,
+      "rpm": 3276.2264220123034,
+      "acceleration_ms2": 2.8634165395571136,
+      "measured_torque_nm": 291.3244063361537,
+      "estimated_max_torque_nm": 364.15550792019206,
+      "known_torque_nm": 749.0,
+      "error_percent": -51.38110708675674
+    },
+    {
+      "target_speed_kmh": 50,
+      "actual_speed_kmh": 57.47305675213502,
+      "rpm": 3792.3471494041023,
+      "acceleration_ms2": 2.4054014806066966,
+      "measured_torque_nm": 249.215821041211,
+      "estimated_max_torque_nm": 311.51977630151373,
+      "known_torque_nm": 749.0,
+      "error_percent": -58.408574592588295
+    },
+    {
+      "target_speed_kmh": 60,
+      "actual_speed_kmh": 64.06141745747732,
+      "rpm": 4227.078697578157,
+      "acceleration_ms2": 0.5323385023616538,
+      "measured_torque_nm": 72.22242215502466,
+      "estimated_max_torque_nm": 90.27802769378081,
+      "known_torque_nm": 717.4360610366363,
+      "error_percent": -87.41657513516445
+    },
+    {
+      "target_speed_kmh": 70,
+      "actual_speed_kmh": 0.1749933991850441,
+      "rpm": 11.546901384173957,
+      "acceleration_ms2": -0.021372300672096143,
+      "measured_torque_nm": 11.98337385229047,
+      "estimated_max_torque_nm": 14.979217315363087,
+      "known_torque_nm": 749.0,
+      "error_percent": -98.0001044972813
+    },
+    {
+      "target_speed_kmh": 80,
+      "actual_speed_kmh": 0.3412625015561825,
+      "rpm": 22.518131940616247,
+      "acceleration_ms2": -0.02741166067036689,
+      "measured_torque_nm": 11.408137699028158,
+      "estimated_max_torque_nm": 14.260172123785196,
+      "known_torque_nm": 749.0,
+      "error_percent": -98.09610519041586
+    },
+    {
+      "target_speed_kmh": 90,
+      "actual_speed_kmh": 0.22859419027926056,
+      "rpm": 15.083737926357795,
+      "acceleration_ms2": -0.01115371947282116,
+      "measured_torque_nm": 12.956976257833327,
+      "estimated_max_torque_nm": 16.19622032229166,
+      "known_torque_nm": 749.0,
+      "error_percent": -97.83762078474076
+    },
+    {
+      "target_speed_kmh": 100,
+      "actual_speed_kmh": 0.29422426552264486,
+      "rpm": 19.414324166756067,
+      "acceleration_ms2": -0.011910614571879106,
+      "measured_torque_nm": 12.884926576050637,
+      "estimated_max_torque_nm": 16.106158220063296,
+      "known_torque_nm": 749.0,
+      "error_percent": -97.84964509745483
+    },
+    {
+      "target_speed_kmh": 110,
+      "actual_speed_kmh": 0.4889095623493192,
+      "rpm": 32.26059113382674,
+      "acceleration_ms2": -0.16201296558532643,
+      "measured_torque_nm": -1.4156150807860899,
+      "estimated_max_torque_nm": -1.7695188509826123,
+      "known_torque_nm": 749.0,
+      "error_percent": -100.23625084792826
+    },
+    {
+      "target_speed_kmh": 120,
+      "actual_speed_kmh": 0.18610279133335408,
+      "rpm": 12.279952208788234,
+      "acceleration_ms2": -0.06507319427229347,
+      "measured_torque_nm": 7.819831448295608,
+      "estimated_max_torque_nm": 9.77478931036951,
+      "known_torque_nm": 749.0,
+      "error_percent": -98.69495469821501
+    }
+  ],
+  "merged_torque_curve": [
+    {
+      "rpm": 0,
+      "torque_nm": 749.0,
+      "source": "CARLA_API"
+    },
+    {
+      "rpm": 11,
+      "torque_nm": 14.979217315363087,
+      "source": "Calibrated"
+    },
+    {
+      "rpm": 12,
+      "torque_nm": 9.77478931036951,
+      "source": "Calibrated"
+    },
+    {
+      "rpm": 15,
+      "torque_nm": 16.19622032229166,
+      "source": "Calibrated"
+    },
+    {
+      "rpm": 19,
+      "torque_nm": 16.106158220063296,
+      "source": "Calibrated"
+    },
+    {
+      "rpm": 22,
+      "torque_nm": 14.260172123785196,
+      "source": "Calibrated"
+    },
+    {
+      "rpm": 32,
+      "torque_nm": -1.7695188509826123,
+      "source": "Calibrated"
+    },
+    {
+      "rpm": 922,
+      "torque_nm": 462.0103786337925,
+      "source": "Calibrated"
+    },
+    {
+      "rpm": 2220,
+      "torque_nm": 432.16517391420194,
+      "source": "Calibrated"
+    },
+    {
+      "rpm": 2745,
+      "torque_nm": 400.64827723679304,
+      "source": "Calibrated"
+    },
+    {
+      "rpm": 3276,
+      "torque_nm": 364.15550792019206,
+      "source": "Calibrated"
+    },
+    {
+      "rpm": 3792,
+      "torque_nm": 311.51977630151373,
+      "source": "Calibrated"
+    },
+    {
+      "rpm": 4000,
+      "torque_nm": 749.0,
+      "source": "CARLA_API"
+    },
+    {
+      "rpm": 4227,
+      "torque_nm": 90.27802769378081,
+      "source": "Calibrated"
+    },
+    {
+      "rpm": 5000,
+      "torque_nm": 610.0,
+      "source": "CARLA_API"
+    },
+    {
+      "rpm": 6000,
+      "torque_nm": 507.0,
+      "source": "CARLA_API"
+    },
+    {
+      "rpm": 7000,
+      "torque_nm": 435.0,
+      "source": "CARLA_API"
+    },
+    {
+      "rpm": 8000,
+      "torque_nm": 381.0,
+      "source": "CARLA_API"
+    },
+    {
+      "rpm": 9000,
+      "torque_nm": 338.0,
+      "source": "CARLA_API"
+    }
+  ]
+}

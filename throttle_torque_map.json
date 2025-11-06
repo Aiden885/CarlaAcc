@@ -1,0 +1,36 @@
+{
+  "vehicle": "vehicle.audi.etron",
+  "calibration_date": "2025-11-05 09:20:22",
+  "vehicle_parameters": {
+    "mass_kg": 2370.0,
+    "gear_ratio": 9.204000473022461,
+    "wheel_radius_m": 0.37
+  },
+  "test_configuration": {
+    "speed_range_kmh": [
+      5,
+      60
+    ],
+    "speed_step_kmh": 5,
+    "throttle_values": [
+      0.1,
+      0.2,
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.7,
+      0.8,
+      0.9,
+      1.0
+    ],
+    "total_points": 120
+  },
+  "calibration_data": [],
+  "statistics": {
+    "total_points": 120,
+    "successful_points": 0,
+    "failed_points": 120,
+    "collision_count": 461
+  }
+}

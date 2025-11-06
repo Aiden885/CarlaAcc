@@ -13,7 +13,7 @@ import threading
 # Pygame相关
 import pygame
 from pygame.locals import *
-
+#
 # $env:HTTP_PROXY = "http://127.0.0.1:7890"
 # $env:HTTP_PROXY = "http://127.0.0.1:7890"
 # $env:ALL_PROXY = "socks5://127.0.0.1:7891"
@@ -169,11 +169,12 @@ class acc:
 
     def init_carla(self):
         # 初始化 Carla 客户端
-        self.client = carla.Client('192.168.0.146', 2000)
-        #self.client = carla.Client('localhost', 2000)
+        #self.client = carla.Client('192.168.0.146', 2000)
+        #map_name = 'acc_30km'
+
+        self.client = carla.Client('localhost', 2000)
+        map_name = 'Town04'
         self.client.set_timeout(60.0)
-        #map_name = 'Town05'
-        map_name = 'acc_30km'
         try:
             self.world = self.client.get_world()
             self.world = self.client.load_world(map_name, carla.MapLayer.Buildings | carla.MapLayer.ParkedVehicles)
@@ -199,7 +200,7 @@ class acc:
         #left x=-951.054749, y=4027.188232, z=-0.009344
         #up  x=1951.489014, y=-4947.605469, z=-0.009341
         #down x=2121.978760, y=-3415.833252, z=54.469646
-        fixed_point = carla.Location(x = -352.701508, y = 4627.016113, z=0.5)
+        fixed_point = carla.Location(x=0.663731, y=-203.651886, z=0.5)
         waypoint = map.get_waypoint(fixed_point, project_to_road=True, lane_type=carla.LaneType.Driving)
         if waypoint is None:
             raise RuntimeError("Failed to find a valid waypoint near the specified location")
@@ -245,6 +246,11 @@ class acc:
         self.vehicles = vehicles
         self.ego_vehicle.set_autopilot(False)
 
+        # 初始化扭矩到油门转换器
+        print("初始化扭矩到油门转换器...")
+        self.torque_converter = TorqueToThrottleConverter(self.ego_vehicle)
+        self.use_torque_converter = True  # 是否使用物理模型转换器（True）或简单映射（False）
+
         # 初始化显示管理器的相机
         self.display_manager.init_camera_manager(self.ego_vehicle)
 
@@ -259,6 +265,10 @@ class acc:
         for vehicle in vehicles:
             vehicle.set_autopilot(True, self.tm_port)
             tm.auto_lane_change(vehicle, False)
+
+            # ⭐ 让前车忽略红绿灯（100%概率忽略）
+            tm.ignore_lights_percentage(vehicle, 100.0)
+            print(f"✅ 前车已设置为忽略红绿灯")
 
         # 设置正弦波控制器的Traffic Manager引用
         if self.target_speed_controller:
@@ -1003,12 +1013,29 @@ class acc:
                             control.gear = 1
 
                             if sppvt_target_accel is not None:
-                                if sppvt_target_accel > 0:
-                                    control.throttle = min(sppvt_target_accel / 2.0, 1.0)  # normalize to [0,1]
-                                    control.brake = 0.0
+                                # 使用扭矩到油门转换器（完整RPM模型）
+                                # 注意：变量名sppvt_target_accel是历史遗留，实际上SPPVT输出的是发动机扭矩(N·m)
+                                sppvt_engine_torque = sppvt_target_accel * 400   # 重命名以明确含义
+
+                                if self.use_torque_converter:
+                                    # 使用完整RPM模型：发动机扭矩 → 油门/刹车
+                                    control.throttle, control.brake = self.torque_converter.engine_torque_to_throttle(
+                                        sppvt_engine_torque, ego_speed
+                                    )
+                                    #打印油门和刹车
+                                    print(f"油门: {control.throttle}, 刹车: {control.brake}")
+
                                 else:
-                                    control.throttle = 0.0
-                                    control.brake = min(-sppvt_target_accel / 4.0, 1.0)  # normalize to [0,1]
+                                    # 简化映射（备用方案，不推荐）
+                                    # 假设最大扭矩749 N·m
+                                    print("使用了简化方案")
+                                    if sppvt_engine_torque > 0:
+                                        control.throttle = min(sppvt_engine_torque / 749.0, 1.0)
+                                        control.brake = 0.0
+                                    else:
+                                        control.throttle = 0.0
+                                        # 假设总制动扭矩 = 1000 × 4 × 传动比 ≈ 36816 N·m
+                                        control.brake = min(abs(sppvt_engine_torque) / 100.0, 1.0)
                             else:
                                 # No valid SPPVT output; keep longitudinal command zero
                                 control.throttle = 0.0

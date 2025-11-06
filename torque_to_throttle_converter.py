@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-车轮扭矩到油门转换器
-将SPPVT输出的车轮扭矩转换为CARLA的油门/刹车控制值
+发动机扭矩到油门转换器
+将SPPVT输出的发动机扭矩(N·m)转换为CARLA的油门/刹车控制值(0-1)
+
+核心原理：
+1. 根据车速计算发动机转速(RPM)
+2. 从扭矩曲线插值得到该RPM下的最大可用扭矩
+3. 油门值 = 需求扭矩 / 最大可用扭矩
+4. 负扭矩通过刹车系统实现
 """
 
 import math
+import numpy as np
 
 
 class TorqueToThrottleConverter:
     """
-    车轮扭矩到油门转换器
+    发动机扭矩到油门转换器
 
-    假设SPPVT输出的是期望的车轮扭矩（N·m），需要转换为油门值（0-1）
+    假设：SPPVT输出的是发动机扭矩(N·m)
+    目标：转换为CARLA的油门值(0-1)
     """
 
     def __init__(self, vehicle):
@@ -24,252 +32,228 @@ class TorqueToThrottleConverter:
         """
         self.vehicle = vehicle
 
-        # 从车辆获取物理参数
+        # 从CARLA加载车辆物理参数
         self._load_vehicle_parameters()
 
-        # 初始化PID控制器（用于精确控制）
-        self.pid_enabled = True
-        self.pid_kp = 0.1
-        self.pid_ki = 0.01
-        self.pid_kd = 0.05
-        self.integral_error = 0.0
-        self.prev_error = 0.0
-
-        print(f"TorqueToThrottleConverter 初始化完成")
-        print(f"  车辆质量: {self.mass} kg")
-        print(f"  车轮半径: {self.wheel_radius} m")
-        print(f"  最大发动机扭矩: {self.max_engine_torque} N·m")
-        print(f"  传动比: {self.total_gear_ratio}")
+        print(f"\n{'='*60}")
+        print(f"TorqueToThrottleConverter 初始化完成 (完整RPM模型)")
+        print(f"{'='*60}")
+        print(f"车辆物理参数:")
+        print(f"  车轮半径: {self.wheel_radius:.3f} m")
+        print(f"  档位传动比: {self.gear_ratio:.3f}")
+        print(f"  最终传动比: {self.final_ratio:.3f}")
+        print(f"  总传动比: {self.total_gear_ratio:.3f}")
+        print(f"  最大RPM: {self.max_rpm:.0f}")
+        print(f"\n发动机扭矩曲线:")
+        for rpm, torque in zip(self.torque_curve_rpm, self.torque_curve_torque):
+            print(f"  {rpm:6.0f} RPM → {torque:6.1f} N·m")
+        print(f"  最大扭矩: {self.max_engine_torque:.1f} N·m")
+        print(f"\n制动系统:")
+        print(f"  单轮最大制动扭矩: {self.max_brake_torque_per_wheel:.1f} N·m")
+        print(f"  驱动轮数量: {self.num_drive_wheels}")
+        print(f"{'='*60}\n")
 
     def _load_vehicle_parameters(self):
         """从CARLA车辆加载物理参数"""
         physics = self.vehicle.get_physics_control()
 
-        # 基本参数
-        self.mass = physics.mass  # kg
-        self.drag_coefficient = physics.drag_coefficient
+        # === 车轮参数 ===
+        # 假设4个车轮相同，取第一个
+        self.wheel_radius = physics.wheels[0].radius / 100.0  # cm转m
+        self.num_drive_wheels = 4  # Audi e-tron是四轮驱动
 
-        # 车轮参数（假设4个车轮相同，取第一个）
-        self.wheel_radius = physics.wheels[0].radius / 100.0  # 转换cm到m
-        self.num_drive_wheels = 4  # 四轮驱动（Audi e-tron）
+        # === 传动系统参数 ===
+        # 档位传动比（电动车通常是单速，取第一档）
+        self.gear_ratio = physics.forward_gears[0].ratio if physics.forward_gears else 1.0
 
-        # 发动机参数
-        self.max_engine_torque = max([p.y for p in physics.torque_curve])
-
-        # 传动系统参数
-        self.gear_ratio = 1.0  # 电动车单速
+        # 最终传动比（差速器）
         self.final_ratio = physics.final_ratio
-        self.drivetrain_efficiency = 0.90  # 假设90%效率
 
-        # 计算总传动比
-        self.total_gear_ratio = self.gear_ratio * self.final_ratio * self.drivetrain_efficiency
+        # 总传动比 = 档位比 × 最终比
+        self.total_gear_ratio = self.gear_ratio * self.final_ratio
 
-        # 空气阻力相关（需要估算迎风面积）
-        # 对于Audi e-tron: 长4.9m × 宽2.0m × 高1.6m
-        # 估算迎风面积 A ≈ 2.0 × 1.6 = 3.2 m²
-        self.frontal_area = 3.2  # m²
-        self.air_density = 1.225  # kg/m³ (标准大气压)
+        # === 发动机参数 ===
+        self.max_rpm = physics.max_rpm
 
-        # 滚动阻力系数
-        self.rolling_resistance = 0.015  # 典型值
-        self.gravity = 9.81  # m/s²
+        # 提取扭矩曲线数据
+        # physics.torque_curve 是 Vector2D 列表，x=RPM, y=扭矩(N·m)
+        self.torque_curve_rpm = np.array([point.x for point in physics.torque_curve])
+        self.torque_curve_torque = np.array([point.y for point in physics.torque_curve])
 
-    def wheel_torque_to_acceleration(self, total_wheel_torque, current_speed_ms):
+        # 计算最大扭矩
+        self.max_engine_torque = np.max(self.torque_curve_torque)
+
+        # === 制动系统参数 ===
+        self.max_brake_torque_per_wheel = physics.wheels[0].max_brake_torque  # N·m
+
+    def _calculate_engine_rpm(self, speed_kmh):
         """
-        从总车轮扭矩计算期望加速度
+        根据车速计算发动机转速
 
         参数:
-        total_wheel_torque - 总车轮扭矩 (N·m)，所有驱动轮的总和
-        current_speed_ms - 当前车速 (m/s)
+        speed_kmh - 车速 (km/h)
 
         返回:
-        期望加速度 (m/s²)
+        发动机转速 (RPM)
         """
-        # 1. 从车轮扭矩计算驱动力
-        drive_force = total_wheel_torque / self.wheel_radius
+        # 1. 车速单位转换: km/h → m/s
+        speed_ms = speed_kmh / 3.6
 
-        # 2. 计算阻力
-        # 空气阻力: F_drag = 0.5 × ρ × C_d × A × v²
-        air_drag = 0.5 * self.air_density * self.drag_coefficient * \
-                   self.frontal_area * (current_speed_ms ** 2)
+        # 2. 车轮角速度 (rad/s)
+        # ω = v / r
+        wheel_angular_velocity = speed_ms / self.wheel_radius
 
-        # 滚动阻力: F_roll = μ_roll × m × g
-        rolling_drag = self.rolling_resistance * self.mass * self.gravity
+        # 3. 车轮转速 (RPM)
+        # RPM = ω × 60 / (2π)
+        wheel_rpm = wheel_angular_velocity * 60.0 / (2.0 * math.pi)
 
-        # 3. 计算净力和加速度
-        net_force = drive_force - air_drag - rolling_drag
-        acceleration = net_force / self.mass
+        # 4. 发动机转速 (RPM)
+        # 发动机RPM = 车轮RPM × 传动比
+        engine_rpm = wheel_rpm * self.total_gear_ratio
 
-        return acceleration
+        # 5. 限制在合理范围内
+        # 电动车可能从0 RPM开始，但扭矩曲线通常从负值或0开始
+        engine_rpm = max(0.0, min(engine_rpm, self.max_rpm))
 
-    def acceleration_to_engine_torque(self, desired_accel, current_speed_ms):
+        return engine_rpm
+
+    def _get_max_torque_at_rpm(self, rpm):
         """
-        从期望加速度反算发动机扭矩
+        从扭矩曲线插值得到该RPM下的最大可用扭矩
 
         参数:
-        desired_accel - 期望加速度 (m/s²)
-        current_speed_ms - 当前车速 (m/s)
+        rpm - 发动机转速 (RPM)
 
         返回:
-        需要的发动机扭矩 (N·m)
+        该RPM下的最大扭矩 (N·m)
         """
-        # 1. 计算需要的净力
-        required_net_force = desired_accel * self.mass
+        # 使用线性插值
+        # 如果RPM超出范围，np.interp会使用边界值
+        max_torque = np.interp(rpm, self.torque_curve_rpm, self.torque_curve_torque)
 
-        # 2. 计算阻力
-        air_drag = 0.5 * self.air_density * self.drag_coefficient * \
-                   self.frontal_area * (current_speed_ms ** 2)
-        rolling_drag = self.rolling_resistance * self.mass * self.gravity
+        return max_torque
 
-        # 3. 计算需要的驱动力
-        required_drive_force = required_net_force + air_drag + rolling_drag
-
-        # 4. 从驱动力计算需要的车轮扭矩
-        required_wheel_torque = required_drive_force * self.wheel_radius
-
-        # 5. 从车轮扭矩反算发动机扭矩
-        # T_wheel = T_engine × gear_ratio × final_ratio × efficiency
-        # T_engine = T_wheel / (gear_ratio × final_ratio × efficiency)
-        required_engine_torque = required_wheel_torque / self.total_gear_ratio
-
-        return required_engine_torque
-
-    def engine_torque_to_throttle(self, engine_torque):
+    def _brake_torque_to_brake_value(self, engine_brake_torque):
         """
-        从发动机扭矩计算油门值
+        将发动机制动扭矩转换为刹车值
 
         参数:
-        engine_torque - 发动机扭矩 (N·m)
+        engine_brake_torque - 发动机制动扭矩 (N·m, 正值)
 
         返回:
-        油门值 (0-1)
+        刹车值 (0-1)
         """
-        # 假设油门与发动机扭矩线性相关（简化）
-        throttle = engine_torque / self.max_engine_torque
+        # 1. 通过传动系统放大到车轮
+        # 车轮制动扭矩 = 发动机扭矩 × 传动比
+        wheel_brake_torque_total = engine_brake_torque * self.total_gear_ratio
 
-        # 限制范围
-        throttle = max(0.0, min(1.0, throttle))
+        # 2. 分配到各个驱动轮
+        # 假设平均分配
+        per_wheel_brake_torque = wheel_brake_torque_total / self.num_drive_wheels
 
-        return throttle
+        # 3. 归一化为刹车值 (0-1)
+        # brake_value = 需求扭矩 / 最大制动扭矩
+        brake_value = per_wheel_brake_torque / self.max_brake_torque_per_wheel
 
-    def wheel_torque_to_throttle(self, total_wheel_torque, current_speed_kmh):
+        # 4. 限制在合理范围
+        brake_value = min(1.0, max(0.0, brake_value))
+
+        return brake_value
+
+    def engine_torque_to_throttle(self, desired_engine_torque, current_speed_kmh):
         """
-        从车轮扭矩直接转换为油门/刹车值（前馈控制）
+        主接口：发动机扭矩 → 油门/刹车
+
+        这是核心转换函数，实现完整的RPM模型：
+        1. 根据车速计算发动机RPM
+        2. 从扭矩曲线插值得到该RPM的最大扭矩
+        3. 计算油门 = 需求扭矩 / 最大扭矩
 
         参数:
-        total_wheel_torque - 总车轮扭矩 (N·m)，正值为驱动，负值为制动
+        desired_engine_torque - SPPVT输出的发动机扭矩 (N·m)
+                               正值=驱动, 负值=制动
         current_speed_kmh - 当前车速 (km/h)
 
         返回:
-        (throttle, brake) - 油门值和刹车值，范围都是 0-1
+        (throttle, brake) - 油门值和刹车值 (0-1)
         """
-        # 转换速度单位
-        current_speed_ms = current_speed_kmh / 3.6
+        # === 1. 判断是驱动还是制动 ===
+        if desired_engine_torque >= 0:
+            # --- 驱动模式：通过油门控制 ---
 
-        # 1. 从车轮扭矩计算期望加速度
-        desired_accel = self.wheel_torque_to_acceleration(
-            total_wheel_torque, current_speed_ms
-        )
+            # 2. 计算当前发动机RPM
+            current_rpm = self._calculate_engine_rpm(current_speed_kmh)
 
-        # 2. 从加速度反算发动机扭矩
-        required_engine_torque = self.acceleration_to_engine_torque(
-            desired_accel, current_speed_ms
-        )
+            # 3. 获取该RPM下的最大可用扭矩
+            max_available_torque = self._get_max_torque_at_rpm(current_rpm)
 
-        # 3. 判断是加速还是制动
-        if required_engine_torque >= 0:
-            # 加速
-            throttle = self.engine_torque_to_throttle(required_engine_torque)
+            # 4. 计算油门值
+            # throttle = 需求扭矩 / 最大可用扭矩
+            if max_available_torque > 0:
+                throttle = desired_engine_torque / max_available_torque
+            else:
+                # 防御性代码：如果最大扭矩为0，油门为0
+                throttle = 0.0
+
+            # 5. 限制在[0, 1]范围
+            throttle = min(1.0, max(0.0, throttle))
+
             brake = 0.0
+
         else:
-            # 制动（需要刹车）
+            # --- 制动模式：通过刹车控制 ---
+
             throttle = 0.0
-            # 将负扭矩转换为刹车力
-            # 简化映射：brake = |required_torque| / max_brake_torque
-            # 假设最大制动扭矩为1000 N·m（来自wheel参数）
-            max_brake_torque = 1000.0
-            brake_torque_needed = abs(required_engine_torque * self.total_gear_ratio)
-            brake = min(1.0, brake_torque_needed / (max_brake_torque * self.num_drive_wheels))
+
+            # 将负扭矩转换为刹车值
+            brake = self._brake_torque_to_brake_value(abs(desired_engine_torque))
 
         return throttle, brake
 
-    def wheel_torque_to_throttle_with_pid(self, total_wheel_torque, current_speed_kmh, dt=0.05):
+    def get_conversion_info(self, desired_engine_torque, current_speed_kmh):
         """
-        从车轮扭矩转换为油门/刹车值（前馈 + PID反馈控制）
+        获取转换过程的详细信息（用于调试）
 
         参数:
-        total_wheel_torque - 总车轮扭矩 (N·m)
-        current_speed_kmh - 当前车速 (km/h)
-        dt - 时间步长 (s)
-
-        返回:
-        (throttle, brake) - 油门值和刹车值，范围都是 0-1
-        """
-        # 前馈控制：基于模型计算初始油门
-        throttle_ff, brake_ff = self.wheel_torque_to_throttle(
-            total_wheel_torque, current_speed_kmh
-        )
-
-        if not self.pid_enabled:
-            return throttle_ff, brake_ff
-
-        # PID反馈控制（需要测量实际加速度）
-        # 注意：这里需要在实际应用时测量真实加速度
-        # 当前仅返回前馈值
-
-        # TODO: 添加PID反馈
-        # 1. 测量实际加速度
-        # 2. 计算误差: error = desired_accel - actual_accel
-        # 3. PID计算修正量
-        # 4. throttle = throttle_ff + correction
-
-        return throttle_ff, brake_ff
-
-    def sppvt_torque_to_control(self, sppvt_output, current_speed_kmh):
-        """
-        SPPVT输出转换为CARLA控制命令
-
-        参数:
-        sppvt_output - SPPVT控制器输出（假设为车轮扭矩 N·m）
+        desired_engine_torque - 需求发动机扭矩 (N·m)
         current_speed_kmh - 当前车速 (km/h)
 
         返回:
-        (throttle, brake) - 油门和刹车值
+        包含转换详情的字典
         """
-        # 假设SPPVT输出的是总车轮扭矩
-        total_wheel_torque = sppvt_output
+        current_rpm = self._calculate_engine_rpm(current_speed_kmh)
+        max_available_torque = self._get_max_torque_at_rpm(current_rpm)
+        throttle, brake = self.engine_torque_to_throttle(desired_engine_torque, current_speed_kmh)
 
-        # 转换为油门/刹车
-        throttle, brake = self.wheel_torque_to_throttle(
-            total_wheel_torque, current_speed_kmh
-        )
+        return {
+            'desired_torque': desired_engine_torque,
+            'current_speed_kmh': current_speed_kmh,
+            'current_rpm': current_rpm,
+            'max_available_torque': max_available_torque,
+            'throttle': throttle,
+            'brake': brake,
+            'torque_utilization': (desired_engine_torque / max_available_torque * 100) if max_available_torque > 0 else 0
+        }
 
-        return throttle, brake
 
-    def reset_pid(self):
-        """重置PID控制器状态"""
-        self.integral_error = 0.0
-        self.prev_error = 0.0
-
-    def set_pid_parameters(self, kp=None, ki=None, kd=None):
-        """设置PID参数"""
-        if kp is not None:
-            self.pid_kp = kp
-        if ki is not None:
-            self.pid_ki = ki
-        if kd is not None:
-            self.pid_kd = kd
-
-        print(f"PID参数更新: Kp={self.pid_kp}, Ki={self.pid_ki}, Kd={self.pid_kd}")
-
+# ============================================================================
+# 测试代码
+# ============================================================================
 
 def test_converter():
-    """测试转换器"""
+    """测试转换器的完整功能"""
     print("\n" + "="*60)
-    print("测试车轮扭矩到油门转换器")
+    print("测试发动机扭矩到油门转换器 (完整RPM模型)")
     print("="*60)
 
     import carla
+    import sys
+    import io
+
+    # 设置控制台输出为UTF-8（Windows）
+    if sys.platform == 'win32':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
     # 连接CARLA
     client = carla.Client('localhost', 2000)
@@ -291,23 +275,52 @@ def test_converter():
         # 创建转换器
         converter = TorqueToThrottleConverter(vehicle)
 
-        # 测试不同的车轮扭矩
+        # === 测试1: 不同速度和扭矩组合 ===
+        print("\n【测试1: 不同速度和扭矩的转换结果】")
+        print(f"\n{'速度':<10} {'需求扭矩':<12} {'RPM':<10} {'最大扭矩':<12} {'油门':<8} {'刹车':<8} {'扭矩利用率':<10}")
+        print("-" * 90)
+
         test_cases = [
-            (500.0, 0.0),     # 500 N·m，静止
-            (1000.0, 0.0),    # 1000 N·m，静止
-            (2000.0, 30.0),   # 2000 N·m，30 km/h
-            (3000.0, 60.0),   # 3000 N·m，60 km/h
-            (-500.0, 30.0),   # -500 N·m（制动），30 km/h
-            (-1000.0, 60.0),  # -1000 N·m（制动），60 km/h
+            # (速度 km/h, 需求扭矩 N·m)
+            (0,    200),   # 静止，中等扭矩
+            (0,    500),   # 静止，大扭矩
+            (20,   300),   # 低速，中等扭矩
+            (40,   400),   # 中速，大扭矩
+            (60,   600),   # 高速，很大扭矩
+            (80,   400),   # 更高速
+            (100,  300),   # 很高速
+            (120,  200),   # 极高速，中等扭矩
+            (60,   -200),  # 制动测试
+            (80,   -400),  # 大制动
         ]
 
-        print("\n【测试结果】")
-        print("车轮扭矩(N·m)\t速度(km/h)\t油门\t刹车")
-        print("-" * 60)
+        for speed, torque in test_cases:
+            info = converter.get_conversion_info(torque, speed)
 
-        for wheel_torque, speed in test_cases:
-            throttle, brake = converter.wheel_torque_to_throttle(wheel_torque, speed)
-            print(f"{wheel_torque:8.1f}\t{speed:8.1f}\t{throttle:.3f}\t{brake:.3f}")
+            print(f"{speed:<10.0f} {torque:<12.0f} {info['current_rpm']:<10.0f} "
+                  f"{info['max_available_torque']:<12.1f} {info['throttle']:<8.3f} "
+                  f"{info['brake']:<8.3f} {info['torque_utilization']:<10.1f}%")
+
+        # === 测试2: 固定扭矩，不同速度（观察RPM影响）===
+        print("\n【测试2: 固定扭矩400 N·m，不同速度的油门变化】")
+        print(f"\n{'速度(km/h)':<12} {'RPM':<10} {'最大扭矩':<12} {'油门':<8}")
+        print("-" * 50)
+
+        fixed_torque = 400.0
+        for speed in range(0, 121, 10):
+            info = converter.get_conversion_info(fixed_torque, speed)
+            print(f"{speed:<12.0f} {info['current_rpm']:<10.0f} "
+                  f"{info['max_available_torque']:<12.1f} {info['throttle']:<8.3f}")
+
+        # === 测试3: 固定速度，不同扭矩（验证线性关系）===
+        print("\n【测试3: 固定速度60 km/h，不同扭矩的油门变化】")
+        print(f"\n{'需求扭矩(N·m)':<15} {'油门':<8}")
+        print("-" * 30)
+
+        fixed_speed = 60.0
+        for torque in range(0, 801, 100):
+            info = converter.get_conversion_info(torque, fixed_speed)
+            print(f"{torque:<15.0f} {info['throttle']:<8.3f}")
 
         print("\n✓ 转换器测试完成")
 
