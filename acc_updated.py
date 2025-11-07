@@ -13,7 +13,6 @@ from pygame.locals import *
 #升级条件: (acceleration < 0) && (|velocity| <= delta) && (|error| > eta)
 
 # ACC相关模块
-from sinusoidal_speed_controller import SinusoidalSpeedController
 from two_mode_controller import calculate_two_mode_desired_distance, set_two_mode_parameters, get_two_mode_status, two_mode_control, enhanced_two_mode_control
 from acc_decision_sppvt_interface import ACCDecisionSPPVTInterface
 from acc_decision import ACCCommand, ACCState  # 保留命令和状态定义
@@ -56,7 +55,6 @@ class acc:
         self.start_time = None
         self.csv_file = None
         self.csv_writer = None
-        self.target_speed_controller = None
 
         # === ACC决策+SPPVT一体化模块 ===
         # 使用完整Simulink模型（包含决策+SPPVT控制），不使用简化的realtime_sppvt_manager
@@ -169,22 +167,8 @@ class acc:
         self.target_vehicle = target_vehicle
         self.target_vehicle.set_autopilot(True)
 
-        # 前车速度配置
-        self.target_fixed_speed_kmh = 80.0  # 🔧 可调整：前车目标速度 (km/h)
-
-        # 使用正弦波控制器实现固定速度（amplitude=0表示无波动）
-        self.target_speed_controller = SinusoidalSpeedController(
-            vehicle=target_vehicle,
-            base_speed=self.target_fixed_speed_kmh,  # 基础速度即为目标速度
-            amplitude=0.0,  # 🔧 振幅=0表示固定速度；可设置为5.0等值实现速度波动
-            period=10.0,
-            mode='constant'  # 使用固定速度模式
-        )
-
-        # 监控限速变化（用于调试）
-        self.last_logged_speed_limit = None
-        self.speed_limit_log_interval = 3.0  # 每3秒记录一次
-        self.last_speed_limit_log_time = 0
+        # 前车速度配置（使用Traffic Manager限速百分比）
+        self.target_speed_kmh = 50.0  # 🔧 可调整：前车目标速度 (km/h)
 
         # 生成自车：沿车道前进方向偏移一定距离以避免碰撞
         ego_waypoints = waypoint.previous(10.0)
@@ -213,22 +197,24 @@ class acc:
         self.tm_port = tm.get_port()
         tm.auto_lane_change(self.ego_vehicle, False)
 
-        # 目标车辆设置 - 使用正弦波控制器（自动处理限速变化）
+        # 保存Traffic Manager引用供后续使用
+        self.tm = tm
+
+        # 目标车辆设置 - 使用Traffic Manager限速百分比
         for vehicle in vehicles:
             vehicle.set_autopilot(True, self.tm_port)
             tm.auto_lane_change(vehicle, False)
 
             # ⭐ 让前车忽略红绿灯（100%概率忽略）
             tm.ignore_lights_percentage(vehicle, 100.0)
-            print(f"✅ 前车已设置为忽略红绿灯")
 
-        # 设置正弦波控制器的Traffic Manager引用
-        if self.target_speed_controller:
-            self.target_speed_controller.set_traffic_manager(tm)
-            print(f"✅ 前车速度控制器初始化:")
-            print(f"   模式: {'固定速度' if self.target_speed_controller.mode == 'constant' else '正弦波变速'}")
-            print(f"   目标速度: {self.target_fixed_speed_kmh:.1f} km/h")
-            print(f"   控制器会自动适应不同路段的限速变化")
+        # 初始化限速记录（用于主循环中检测限速变化）
+        self.last_speed_limit = None
+
+        print(f"✅ 前车速度配置完成:")
+        print(f"   目标速度: {self.target_speed_kmh:.1f} km/h")
+        print(f"   忽略红绿灯: 是")
+        print(f"   速度控制: 将在主循环中根据实时路段限速动态调整")
 
         # 设置交通灯
         traffic_lights = self.world.get_actors().filter('traffic.traffic_light')
@@ -545,21 +531,51 @@ class acc:
                 )
                 self._last_manual_steer_update = current_time
 
-                # 更新前车速度控制
-                t0 = time.time()
-                if self.target_speed_controller:
-                    self.target_speed_controller.update()
-                else:
-                    # 监控前车所在路段的限速变化
-                    if self.target_vehicle and time.time() - self.last_speed_limit_log_time > self.speed_limit_log_interval:
-                        current_speed_limit = self.target_vehicle.get_speed_limit()
-                        if current_speed_limit != self.last_logged_speed_limit:
-                            print(f"\n🚦 前车路段限速变化: {self.last_logged_speed_limit} → {current_speed_limit:.1f} km/h")
-                            print(f"   前车当前速度: {VehicleUtils.get_vehicle_speed(self.target_vehicle):.1f} km/h")
-                            self.last_logged_speed_limit = current_speed_limit
-                        self.last_speed_limit_log_time = time.time()
-                # 使用百分比模式时，速度由Traffic Manager自动控制，无需每帧更新
-                perf_times['2_target_speed'].append(time.time() - t0)
+                # === 每周期更新前车速度控制（根据实时路段限速）===
+                if self.target_vehicle:
+                    # 获取前车当前路段的限速
+                    current_speed_limit = self.target_vehicle.get_speed_limit()
+
+                    # 诊断信息：前车状态监控
+                    target_speed_actual = VehicleUtils.get_vehicle_speed(self.target_vehicle)
+                    target_location = self.target_vehicle.get_location()
+                    target_waypoint = self.world.get_map().get_waypoint(target_location)
+                    is_junction = target_waypoint.is_junction if target_waypoint else False
+
+                    # 简洁输出：限速、实际速度、是否在路口
+                    print(f"前车状态 | 限速:{current_speed_limit:.1f} km/h | 实际:{target_speed_actual:.1f} km/h | 路口:{is_junction}")
+
+                    # 防御性处理：处理无效的限速值
+                    if current_speed_limit is None:
+                        print(f"⚠️ 防御性处理: get_speed_limit()返回None（可能原因：车辆刚生成，尚未通过限速标志）")
+                        current_speed_limit = 30.0  # 使用默认限速
+                    elif current_speed_limit <= 0.0:
+                        print(f"⚠️ 防御性处理: get_speed_limit()返回无效值{current_speed_limit:.1f}（可能原因：地图数据异常）")
+                        current_speed_limit = 30.0  # 使用默认限速
+                    elif not np.isfinite(current_speed_limit):
+                        print(f"⚠️ 防御性处理: get_speed_limit()返回非有限值（Inf或NaN）")
+                        current_speed_limit = 30.0  # 使用默认限速
+
+                    # 检查限速是否变化
+                    if self.last_speed_limit != current_speed_limit:
+                        # 计算速度百分比偏差
+                        # percentage = (speed_limit - target_speed) / speed_limit * 100
+                        percentage_diff = ((current_speed_limit - self.target_speed_kmh) / current_speed_limit) * 100.0
+
+                        # 更新Traffic Manager设置
+                        self.tm.vehicle_percentage_speed_difference(self.target_vehicle, percentage_diff)
+
+                        # 输出限速变化信息
+                        if self.last_speed_limit is not None:
+                            print(f"\n🚦 路段限速变化: {self.last_speed_limit:.1f} → {current_speed_limit:.1f} km/h")
+                        else:
+                            print(f"\n🚦 初始路段限速: {current_speed_limit:.1f} km/h")
+
+                        print(f"   前车目标速度: {self.target_speed_kmh:.1f} km/h")
+                        print(f"   速度百分比偏差: {percentage_diff:.1f}%")
+
+                        # 更新记录
+                        self.last_speed_limit = current_speed_limit
 
                 # 世界更新
                 t0 = time.time()
