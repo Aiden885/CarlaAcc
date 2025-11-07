@@ -167,8 +167,9 @@ class acc:
         self.target_vehicle = target_vehicle
         self.target_vehicle.set_autopilot(True)
 
-        # 前车速度配置（使用Traffic Manager限速百分比）
-        self.target_speed_kmh = 50.0  # 🔧 可调整：前车目标速度 (km/h)
+        # 前车速度配置（使用constant velocity定速巡航）
+        self.target_speed_kmh = 90.0  # 🔧 可调整：前车目标速度 (km/h)
+        self.use_constant_velocity = True  # 使用constant velocity模式（不受路口影响）
 
         # 生成自车：沿车道前进方向偏移一定距离以避免碰撞
         ego_waypoints = waypoint.previous(10.0)
@@ -200,21 +201,36 @@ class acc:
         # 保存Traffic Manager引用供后续使用
         self.tm = tm
 
-        # 目标车辆设置 - 使用Traffic Manager限速百分比
-        for vehicle in vehicles:
-            vehicle.set_autopilot(True, self.tm_port)
-            tm.auto_lane_change(vehicle, False)
+        if self.use_constant_velocity:
+            # === 使用constant velocity模式（定速巡航，不受路口影响）===
+            # 注意：需要保持autopilot开启以获得转向控制
+            for vehicle in vehicles:
+                vehicle.set_autopilot(True, self.tm_port)
+                tm.auto_lane_change(vehicle, False)
+                tm.ignore_lights_percentage(vehicle, 100.0)  # 忽略红绿灯
 
-            # ⭐ 让前车忽略红绿灯（100%概率忽略）
-            tm.ignore_lights_percentage(vehicle, 100.0)
+                # 启用恒定速度模式（m/s）
+                target_speed_ms = self.target_speed_kmh / 3.6
+                vehicle.enable_constant_velocity(carla.Vector3D(target_speed_ms, 0, 0))
 
-        # 初始化限速记录（用于主循环中检测限速变化）
-        self.last_speed_limit = None
+            print(f"✅ 前车速度配置完成 (Constant Velocity模式):")
+            print(f"   目标速度: {self.target_speed_kmh:.1f} km/h ({target_speed_ms:.2f} m/s)")
+            print(f"   模式: 恒定速度（不受路口/限速影响）")
+            print(f"   转向控制: Autopilot")
 
-        print(f"✅ 前车速度配置完成:")
-        print(f"   目标速度: {self.target_speed_kmh:.1f} km/h")
-        print(f"   忽略红绿灯: 是")
-        print(f"   速度控制: 将在主循环中根据实时路段限速动态调整")
+        else:
+            # === 使用Traffic Manager限速百分比模式 ===
+            for vehicle in vehicles:
+                vehicle.set_autopilot(True, self.tm_port)
+                tm.auto_lane_change(vehicle, False)
+                tm.ignore_lights_percentage(vehicle, 100.0)
+
+            # 初始化限速记录（用于主循环中检测限速变化）
+            self.last_speed_limit = None
+
+            print(f"✅ 前车速度配置完成 (Traffic Manager模式):")
+            print(f"   目标速度: {self.target_speed_kmh:.1f} km/h")
+            print(f"   速度控制: 将在主循环中根据实时路段限速动态调整")
 
         # 设置交通灯
         traffic_lights = self.world.get_actors().filter('traffic.traffic_light')
@@ -531,51 +547,54 @@ class acc:
                 )
                 self._last_manual_steer_update = current_time
 
-                # === 每周期更新前车速度控制（根据实时路段限速）===
-                if self.target_vehicle:
-                    # 获取前车当前路段的限速
-                    current_speed_limit = self.target_vehicle.get_speed_limit()
+                # === 前车速度控制（根据模式选择）===
+                if not self.use_constant_velocity:
+                    # Traffic Manager模式：每周期更新速度控制（根据实时路段限速）
+                    if self.target_vehicle:
+                        # 获取前车当前路段的限速
+                        current_speed_limit = self.target_vehicle.get_speed_limit()
 
-                    # 诊断信息：前车状态监控
-                    target_speed_actual = VehicleUtils.get_vehicle_speed(self.target_vehicle)
-                    target_location = self.target_vehicle.get_location()
-                    target_waypoint = self.world.get_map().get_waypoint(target_location)
-                    is_junction = target_waypoint.is_junction if target_waypoint else False
+                        # 诊断信息：前车状态监控
+                        target_speed_actual = VehicleUtils.get_vehicle_speed(self.target_vehicle)
+                        target_location = self.target_vehicle.get_location()
+                        target_waypoint = self.world.get_map().get_waypoint(target_location)
+                        is_junction = target_waypoint.is_junction if target_waypoint else False
 
-                    # 简洁输出：限速、实际速度、是否在路口
-                    print(f"前车状态 | 限速:{current_speed_limit:.1f} km/h | 实际:{target_speed_actual:.1f} km/h | 路口:{is_junction}")
+                        # 简洁输出：限速、实际速度、是否在路口
+                        print(f"前车状态 | 限速:{current_speed_limit:.1f} km/h | 实际:{target_speed_actual:.1f} km/h | 路口:{is_junction}")
 
-                    # 防御性处理：处理无效的限速值
-                    if current_speed_limit is None:
-                        print(f"⚠️ 防御性处理: get_speed_limit()返回None（可能原因：车辆刚生成，尚未通过限速标志）")
-                        current_speed_limit = 30.0  # 使用默认限速
-                    elif current_speed_limit <= 0.0:
-                        print(f"⚠️ 防御性处理: get_speed_limit()返回无效值{current_speed_limit:.1f}（可能原因：地图数据异常）")
-                        current_speed_limit = 30.0  # 使用默认限速
-                    elif not np.isfinite(current_speed_limit):
-                        print(f"⚠️ 防御性处理: get_speed_limit()返回非有限值（Inf或NaN）")
-                        current_speed_limit = 30.0  # 使用默认限速
+                        # 防御性处理：处理无效的限速值
+                        if current_speed_limit is None:
+                            print(f"⚠️ 防御性处理: get_speed_limit()返回None（可能原因：车辆刚生成，尚未通过限速标志）")
+                            current_speed_limit = 30.0  # 使用默认限速
+                        elif current_speed_limit <= 0.0:
+                            print(f"⚠️ 防御性处理: get_speed_limit()返回无效值{current_speed_limit:.1f}（可能原因：地图数据异常）")
+                            current_speed_limit = 30.0  # 使用默认限速
+                        elif not np.isfinite(current_speed_limit):
+                            print(f"⚠️ 防御性处理: get_speed_limit()返回非有限值（Inf或NaN）")
+                            current_speed_limit = 30.0  # 使用默认限速
 
-                    # 检查限速是否变化
-                    if self.last_speed_limit != current_speed_limit:
-                        # 计算速度百分比偏差
-                        # percentage = (speed_limit - target_speed) / speed_limit * 100
-                        percentage_diff = ((current_speed_limit - self.target_speed_kmh) / current_speed_limit) * 100.0
+                        # 检查限速是否变化
+                        if self.last_speed_limit != current_speed_limit:
+                            # 计算速度百分比偏差
+                            # percentage = (speed_limit - target_speed) / speed_limit * 100
+                            percentage_diff = ((current_speed_limit - self.target_speed_kmh) / current_speed_limit) * 100.0
 
-                        # 更新Traffic Manager设置
-                        self.tm.vehicle_percentage_speed_difference(self.target_vehicle, percentage_diff)
+                            # 更新Traffic Manager设置
+                            self.tm.vehicle_percentage_speed_difference(self.target_vehicle, percentage_diff)
 
-                        # 输出限速变化信息
-                        if self.last_speed_limit is not None:
-                            print(f"\n🚦 路段限速变化: {self.last_speed_limit:.1f} → {current_speed_limit:.1f} km/h")
-                        else:
-                            print(f"\n🚦 初始路段限速: {current_speed_limit:.1f} km/h")
+                            # 输出限速变化信息
+                            if self.last_speed_limit is not None:
+                                print(f"\n🚦 路段限速变化: {self.last_speed_limit:.1f} → {current_speed_limit:.1f} km/h")
+                            else:
+                                print(f"\n🚦 初始路段限速: {current_speed_limit:.1f} km/h")
 
-                        print(f"   前车目标速度: {self.target_speed_kmh:.1f} km/h")
-                        print(f"   速度百分比偏差: {percentage_diff:.1f}%")
+                            print(f"   前车目标速度: {self.target_speed_kmh:.1f} km/h")
+                            print(f"   速度百分比偏差: {percentage_diff:.1f}%")
 
-                        # 更新记录
-                        self.last_speed_limit = current_speed_limit
+                            # 更新记录
+                            self.last_speed_limit = current_speed_limit
+                # Constant Velocity模式：无需更新，速度已经固定
 
                 # 世界更新
                 t0 = time.time()
@@ -1046,6 +1065,12 @@ class acc:
         # 停止实时绘图器
         if hasattr(self, 'realtime_plotter'):
             self.realtime_plotter.stop()
+
+        # 禁用前车的constant velocity（如果启用）
+        if hasattr(self, 'use_constant_velocity') and self.use_constant_velocity:
+            if self.target_vehicle:
+                self.target_vehicle.disable_constant_velocity()
+                print("✅ 已禁用前车的constant velocity模式")
 
         # 销毁车辆
         for vehicle in self.vehicles:
