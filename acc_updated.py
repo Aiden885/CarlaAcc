@@ -1,38 +1,33 @@
-import carla
-import numpy as np
 import csv
 import time
 
+import carla
+import numpy as np
 # Pygame相关
 import pygame
 from pygame.locals import *
-#
-# $env:HTTP_PROXY = "http://127.0.0.1:7890"
-# $env:HTTP_PROXY = "http://127.0.0.1:7890"
-# $env:ALL_PROXY = "socks5://127.0.0.1:7891"
-#升级条件: (acceleration < 0) && (|velocity| <= delta) && (|error| > eta)
 
-# ACC相关模块
-from two_mode_controller import calculate_two_mode_desired_distance, set_two_mode_parameters, get_two_mode_status, two_mode_control, enhanced_two_mode_control
 from acc_decision_sppvt_interface import ACCDecisionSPPVTInterface
-from acc_decision import ACCCommand, ACCState  # 保留命令和状态定义
-
 # 导入显示管理器
 from display_manager import DisplayManager
-
-# 导入拆分后的工具模块
-from vehicle_utils import VehicleUtils
-from output_formatter import OutputFormatter
-
 # 导入横向PID控制器
 from lateral_pid_controller import LateralPIDController
 from manual_input_controller import ManualSteeringController
-
+from output_formatter import OutputFormatter
 # 导入实时绘图器
 from realtime_time_gap_plotter import RealtimeTimeGapPlotter
-
 # 导入扭矩到油门转换器
 from torque_to_throttle_converter import TorqueToThrottleConverter
+# ACC相关模块
+from two_mode_controller import calculate_two_mode_desired_distance, set_two_mode_parameters, enhanced_two_mode_control
+# 导入拆分后的工具模块
+from vehicle_utils import VehicleUtils
+
+
+# $env:HTTP_PROXY = "http://127.0.0.1:7890"
+# $env:HTTP_PROXY = "http://127.0.0.1:7890"
+# $env:ALL_PROXY = "socks5://127.0.0.1:7891"
+# 升级条件: (acceleration < 0) && (|velocity| <= delta) && (|error| > eta)
 
 
 class acc:
@@ -59,14 +54,14 @@ class acc:
         # === ACC决策+SPPVT一体化模块 ===
         # 使用完整Simulink模型（包含决策+SPPVT控制），不使用简化的realtime_sppvt_manager
         self.acc_decision_sppvt = ACCDecisionSPPVTInterface(debug=True, use_realtime_sppvt=False)
-        
+
         # === ACC系统可配置参数 (环境相关，需要传递给Simulink) ===
         self.acc_params = {
-            'V_target_kmh': 50.0,      # 默认巡航速度 - 传递给Simulink
-            'V_min_kmh': 20.0,         # 最小速度阈值 - 传递给Simulink
-            'G2_s': 2.0,               # 时距参数 - 传递给Simulink
-            'V_threshold_kmh': 50.0,   # 模式切换阈值 - 用于Two Mode控制器
-            'speed_step': 5.0          # 速度调整步长
+            'V_target_kmh': 50.0,  # 默认巡航速度 - 传递给Simulink
+            'V_min_kmh': 20.0,  # 最小速度阈值 - 传递给Simulink
+            'G2_s': 2.0,  # 时距参数 - 传递给Simulink
+            'V_threshold_kmh': 50.0,  # 模式切换阈值 - 用于Two Mode控制器
+            'speed_step': 5.0  # 速度调整步长
         }
 
         # === 保持原有决策接口兼容性 ===
@@ -78,7 +73,7 @@ class acc:
         self.throttle = 0.0
         self.brake = 0.0
         self.steer = 0.0
-        
+
         # === 手动输入状态（用于扭矩仲裁）===
         self.manual_steering_controller = ManualSteeringController()
         self.manual_throttle_input = 0.0
@@ -119,11 +114,11 @@ class acc:
 
     def init_carla(self):
         # 初始化 Carla 客户端
-        #self.client = carla.Client('192.168.0.146', 2000)
-        #map_name = 'acc_30km'
+        self.client = carla.Client('192.168.0.146', 2000)
+        map_name = 'acc_30km'
 
-        self.client = carla.Client('localhost', 2000)
-        map_name = 'Town04'
+        # self.client = carla.Client('localhost', 2000)
+        # map_name = 'Town04'
         self.client.set_timeout(60.0)
         try:
             self.world = self.client.get_world()
@@ -146,10 +141,10 @@ class acc:
         ego_vehicle_bp = self.blueprint_library.filter('vehicle.audi.etron')[0]
 
         # 定义固定生成点x=0.663731, y=-203.651886, z=0.5
-        #right x = -352.701508, y = 4627.016113, z=0.5
-        #left x=-951.054749, y=4027.188232, z=-0.009344
-        #up  x=1951.489014, y=-4947.605469, z=-0.009341
-        #down x=2121.978760, y=-3415.833252, z=54.469646
+        # right x = -352.701508, y = 4627.016113, z=0.5
+        # left x=-951.054749, y=4027.188232, z=-0.009344
+        # up  x=1951.489014, y=-4947.605469, z=-0.009341
+        # down x=2121.978760, y=-3415.833252, z=54.469646
         fixed_point = carla.Location(x=0.663731, y=-203.651886, z=0.5)
         waypoint = map.get_waypoint(fixed_point, project_to_road=True, lane_type=carla.LaneType.Driving)
         if waypoint is None:
@@ -277,7 +272,7 @@ class acc:
             G2_s=acc_params['G2_s'],
             target_speed_kmh=acc_params['V_target_kmh']
         )
-        
+
         # 同时同步到一体化接口
         if hasattr(self.acc_decision_sppvt, 'update_two_mode_parameters'):
             self.acc_decision_sppvt.update_two_mode_parameters(
@@ -442,7 +437,6 @@ class acc:
         desired_distance, control_mode = calculate_two_mode_desired_distance(ego_speed_ms)
         return desired_distance, control_mode
 
-
     def generate_target(self):
         """主循环 - 完整集成ACC决策、控制和显示"""
         try:
@@ -473,9 +467,9 @@ class acc:
             # 性能报告辅助函数
             def print_performance_report(perf_times, elapsed_time):
                 """打印性能统计报告 - 包含首次周期分析"""
-                print("\n" + "="*60)
+                print("\n" + "=" * 60)
                 print(f"📊 性能分析报告 (运行时间: {elapsed_time:.1f}秒)")
-                print("="*60)
+                print("=" * 60)
 
                 if not perf_times:
                     print("⚠️ 暂无性能数据")
@@ -493,23 +487,26 @@ class acc:
                         # 如果有多次调用,计算排除首次的平均值
                         if len(times) > 1:
                             avg_excluding_first_ms = (sum(times[1:]) / (len(times) - 1)) * 1000
-                            print(f"{key:20s}: 平均 {avg_ms:6.2f}ms | 最大 {max_ms:6.2f}ms | 最小 {min_ms:6.2f}ms | 次数 {len(times)}")
+                            print(
+                                f"{key:20s}: 平均 {avg_ms:6.2f}ms | 最大 {max_ms:6.2f}ms | 最小 {min_ms:6.2f}ms | 次数 {len(times)}")
 
                             # 如果首次明显慢于平均值,标记出来
                             if first_ms > avg_excluding_first_ms * 1.5:
-                                print(f"{'':20s}  ⚠️  首次: {first_ms:6.2f}ms (慢于后续平均 {avg_excluding_first_ms:6.2f}ms)")
+                                print(
+                                    f"{'':20s}  ⚠️  首次: {first_ms:6.2f}ms (慢于后续平均 {avg_excluding_first_ms:6.2f}ms)")
                         else:
-                            print(f"{key:20s}: 平均 {avg_ms:6.2f}ms | 最大 {max_ms:6.2f}ms | 最小 {min_ms:6.2f}ms | 次数 {len(times)}")
+                            print(
+                                f"{key:20s}: 平均 {avg_ms:6.2f}ms | 最大 {max_ms:6.2f}ms | 最小 {min_ms:6.2f}ms | 次数 {len(times)}")
 
                         total_avg += avg_ms
 
                 if total_avg > 0:
-                    print("-"*60)
+                    print("-" * 60)
                     print(f"{'总计':20s}: 平均 {total_avg:6.2f}ms/周期")
                     if total_avg > 0:
                         fps = 1000.0 / total_avg
                         print(f"{'理论帧率':20s}: {fps:6.2f} FPS")
-                print("="*60 + "")
+                print("=" * 60 + "")
 
             while self.running:
                 # === 性能分析：记录每个周期开始时间 ===
@@ -561,14 +558,16 @@ class acc:
                         is_junction = target_waypoint.is_junction if target_waypoint else False
 
                         # 简洁输出：限速、实际速度、是否在路口
-                        print(f"前车状态 | 限速:{current_speed_limit:.1f} km/h | 实际:{target_speed_actual:.1f} km/h | 路口:{is_junction}")
+                        print(
+                            f"前车状态 | 限速:{current_speed_limit:.1f} km/h | 实际:{target_speed_actual:.1f} km/h | 路口:{is_junction}")
 
                         # 防御性处理：处理无效的限速值
                         if current_speed_limit is None:
                             print(f"⚠️ 防御性处理: get_speed_limit()返回None（可能原因：车辆刚生成，尚未通过限速标志）")
                             current_speed_limit = 30.0  # 使用默认限速
                         elif current_speed_limit <= 0.0:
-                            print(f"⚠️ 防御性处理: get_speed_limit()返回无效值{current_speed_limit:.1f}（可能原因：地图数据异常）")
+                            print(
+                                f"⚠️ 防御性处理: get_speed_limit()返回无效值{current_speed_limit:.1f}（可能原因：地图数据异常）")
                             current_speed_limit = 30.0  # 使用默认限速
                         elif not np.isfinite(current_speed_limit):
                             print(f"⚠️ 防御性处理: get_speed_limit()返回非有限值（Inf或NaN）")
@@ -578,7 +577,8 @@ class acc:
                         if self.last_speed_limit != current_speed_limit:
                             # 计算速度百分比偏差
                             # percentage = (speed_limit - target_speed) / speed_limit * 100
-                            percentage_diff = ((current_speed_limit - self.target_speed_kmh) / current_speed_limit) * 100.0
+                            percentage_diff = ((
+                                                           current_speed_limit - self.target_speed_kmh) / current_speed_limit) * 100.0
 
                             # 更新Traffic Manager设置
                             self.tm.vehicle_percentage_speed_difference(self.target_vehicle, percentage_diff)
@@ -622,7 +622,7 @@ class acc:
                 vehicle_distance = self.carla_perception.get_vehicle_distance()
                 lane_offset = self.carla_perception.get_lane_offset()
 
-                has_target = vehicle_distance < 100.0  # 检测范围：100米
+                has_target = vehicle_distance < 200.0  # 检测范围：200米
 
                 # === 使用Simulink一体化接口进行决策和控制 ===
                 # 获取当前ACC参数（可能被Simulink或用户修改）
@@ -638,14 +638,14 @@ class acc:
                 # 获取增强两模式控制信息用于Simulink接口
                 if has_target:
                     current_distance = vehicle_distance
-                    enhanced_two_mode_output = enhanced_two_mode_control(ego_speed_ms, current_distance, target_speed_ms)
+                    enhanced_two_mode_output = enhanced_two_mode_control(ego_speed_ms, current_distance,
+                                                                         target_speed_ms)
                     control_error = enhanced_two_mode_output['control_error']
                     control_mode_flag = enhanced_two_mode_output['control_mode_flag']
                 else:
                     enhanced_two_mode_output = enhanced_two_mode_control(ego_speed_ms, None, target_speed_ms)
                     control_error = enhanced_two_mode_output['control_error']
                     control_mode_flag = enhanced_two_mode_output['control_mode_flag']
-
 
                 # === 车辆控制 ===
                 # === 使用一体化接口进行决策和控制计算 ===
@@ -741,13 +741,14 @@ class acc:
                     }
 
                     # === 同步扭矩仲裁状态到acc_decision对象（用于pygame显示）===
-                    self.acc_decision_sppvt.torque_arbitration_active = unified_output.get('torque_arbitration_active', False)
+                    self.acc_decision_sppvt.torque_arbitration_active = unified_output.get('torque_arbitration_active',
+                                                                                           False)
 
                     # === 实时绘图：添加TIME模式数据 ===
                     if control_mode_flag == 1 and has_target:  # TIME模式且有前车
                         # 提取时距数据
                         desired_time_gap = enhanced_two_mode_output.get('reference_value', 0.0)  # 期望时距
-                        actual_time_gap = enhanced_two_mode_output.get('current_value', 0.0)    # 实际时距
+                        actual_time_gap = enhanced_two_mode_output.get('current_value', 0.0)  # 实际时距
                         current_time = time.time() - self.start_time
 
                         # 添加到实时绘图器（包含速度数据和控制状态）
@@ -755,8 +756,8 @@ class acc:
                             desired_time_gap,
                             actual_time_gap,
                             current_time,
-                            ego_speed,      # 自车速度 (km/h)
-                            target_speed,   # 前车速度 (km/h)
+                            ego_speed,  # 自车速度 (km/h)
+                            target_speed,  # 前车速度 (km/h)
                             decision_output['control_enabled']  # ACC控制状态
                         )
 
@@ -775,7 +776,7 @@ class acc:
                     else:
                         # 未知模式，保守使用原值
                         sppvt_target_accel = control_output
-                    
+
                 except Exception as e:
                     print(f"❌ Simulink一体化接口调用失败: {e}")
                     print("错误详情:")
@@ -786,10 +787,10 @@ class acc:
 
                 # === 扭矩仲裁处理（油门指令时） ===
                 torque_arbitration = decision_output.get('torque_arbitration_active', False)
-                
+
                 # === ACC控制执行条件判断 ===
                 acc_should_control = (self.acc_system_enabled and
-                                    decision_output['control_enabled'])
+                                      decision_output['control_enabled'])
 
                 # 初始化最终控制信息字典
                 final_control = {
@@ -824,14 +825,14 @@ class acc:
                             if sppvt_target_accel is not None:
                                 # 使用扭矩到油门转换器（完整RPM模型）
                                 # 注意：变量名sppvt_target_accel是历史遗留，实际上SPPVT输出的是发动机扭矩(N·m)
-                                sppvt_engine_torque = sppvt_target_accel * 400   # 重命名以明确含义
-
+                                sppvt_engine_torque = sppvt_target_accel * 400  # 重命名以明确含义
+                                print(f"SPPVT输出扭矩: {sppvt_engine_torque}")
                                 if self.use_torque_converter:
                                     # 使用完整RPM模型：发动机扭矩 → 油门/刹车
                                     control.throttle, control.brake = self.torque_converter.engine_torque_to_throttle(
                                         sppvt_engine_torque, ego_speed
                                     )
-                                    #打印油门和刹车
+                                    # 打印油门和刹车
                                     print(f"油门: {control.throttle}, 刹车: {control.brake}")
 
                                 else:
@@ -904,7 +905,8 @@ class acc:
                         print(f"   错误类型: {type(e).__name__}")
                         print(f"   错误消息: {str(e)}")
                         print(f"   lane_offset: {lane_offset}")
-                        print(f"   sppvt_target_accel: {sppvt_target_accel if 'sppvt_target_accel' in locals() else 'Not available'}")
+                        print(
+                            f"   sppvt_target_accel: {sppvt_target_accel if 'sppvt_target_accel' in locals() else 'Not available'}")
                         print(f"   unified_input: {unified_input if 'unified_input' in locals() else 'Not available'}")
                         import traceback
                         print(f"   完整错误堆栈:")
@@ -1050,9 +1052,9 @@ class acc:
             # === 输出最终性能报告 ===
             if 'perf_times' in locals() and 'perf_start_time' in locals():
                 final_elapsed = time.time() - perf_start_time
-                print("\n" + "="*60)
+                print("\n" + "=" * 60)
                 print("🏁 最终性能分析报告")
-                print("="*60)
+                print("=" * 60)
                 print_performance_report(perf_times, final_elapsed)
 
             print("Cleaning up...")

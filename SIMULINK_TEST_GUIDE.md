@@ -7,7 +7,6 @@
 2. **决策输出正确性** (R1-R8决策规则)
 3. **SPPVT控制输出** (升级条件和控制性能)
 
----
 
 ## 测试文件说明
 
@@ -20,10 +19,6 @@
 - 测试SPPVT升级机制
 - 命令行详细输出
 
-**运行方式:**
-```bash
-python test_simulink_decision_control.py
-```
 
 **输出示例:**
 ```
@@ -163,7 +158,7 @@ python test_simulink_decision_control.py
 
 ❌ 失败的测试:
    - S0_I3_to_S0_R4
-```
+
 
 ### 可视化报告解读
 
@@ -195,11 +190,7 @@ python test_simulink_decision_control.py
 2. 初始状态设置错误
 3. 输入参数(V_min, V_target)配置不合理
 
-**排查方法:**
-```python
-# 在测试中启用debug模式
-tester = SimulinkDecisionControlTester(debug=True)
-```
+
 
 ### Q2: 测试失败 - 决策输出不正确
 **可能原因:**
@@ -273,10 +264,7 @@ def test_custom_scenario(self):
 
 ## 测试最佳实践
 
-1. **首次测试**: 先运行基础版,快速验证核心逻辑
-   ```bash
-   python test_simulink_decision_control.py
-   ```
+
 
    ```
 

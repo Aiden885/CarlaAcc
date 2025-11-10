@@ -245,36 +245,6 @@
                           </GrepCompositeModel>
                         </option>
                       </Pin>
-                      <Pin>
-                        <option name="consoleUUID" value="7739f7df-a527-4329-811e-3b7bd06ff0b2" />
-                        <option name="contentType" value="ConsoleContent" />
-                        <option name="grepCompositeModel">
-                          <GrepCompositeModel>
-                            <option name="models">
-                              <list>
-                                <GrepModel>
-                                  <option name="expression" value="路段限速变化" />
-                                </GrepModel>
-                              </list>
-                            </option>
-                          </GrepCompositeModel>
-                        </option>
-                      </Pin>
-                      <Pin>
-                        <option name="consoleUUID" value="0ad0554b-cdc9-4718-85c3-6bf8d6ad1d5d" />
-                        <option name="contentType" value="ConsoleContent" />
-                        <option name="grepCompositeModel">
-                          <GrepCompositeModel>
-                            <option name="models">
-                              <list>
-                                <GrepModel>
-                                  <option name="expression" value="current_speed_limit" />
-                                </GrepModel>
-                              </list>
-                            </option>
-                          </GrepCompositeModel>
-                        </option>
-                      </Pin>
                     </list>
                   </option>
                 </Pins>
