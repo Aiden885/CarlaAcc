@@ -231,7 +231,7 @@ class ACCDecisionModule:
             
         elif decision == ACCDecision.SPEED_INCREASE:
             # R2: 速度增加 - 速度增，控制继续
-            self.V_target_kmh = min(120.0, self.V_target_kmh + self.speed_step)
+            self.V_target_kmh = min(150.0, self.V_target_kmh + self.speed_step)  # 修改最大速度限制为150 km/h
             self._update_two_mode_parameters()
             return f"R2-速度增加: 目标速度调至{self.V_target_kmh:.1f}km/h"
             

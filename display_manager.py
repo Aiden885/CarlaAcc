@@ -144,6 +144,7 @@ class DisplayManager:
             "  C     : Cancel ACC",
             "  W     : Manual Throttle (torque arbitration)",
             "  F     : Trigger Target Vehicle Ramp Speed",
+            "  Z / X : Target Vehicle Lane Change (Left/Right)",
             "",
             "View Control:",
             "  I  : Toggle Info Display",

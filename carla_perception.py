@@ -90,10 +90,10 @@ class CarlaPerception:
 
     def get_lane_angle_deviation(self):
         """
-        计算车辆朝向与道路切线的角度差（可选，用于高级控制）
+        计算车辆朝向与道路切线的角度差（用于横向控制）
 
         Returns:
-            float: 角度差（度），左负右正
+            float: 角度差（度），左偏为负，右偏为正
         """
         ego_location = self.ego_vehicle.get_location()
         ego_rotation = self.ego_vehicle.get_transform().rotation
@@ -114,6 +114,50 @@ class CarlaPerception:
             angle_deviation += 360
 
         return angle_deviation
+
+    def get_lookahead_offset(self, lookahead_distance=10.0):
+        """
+        获取前方预瞄点的车道偏移量（用于预瞄控制）
+
+        Args:
+            lookahead_distance: 预瞄距离（米）
+
+        Returns:
+            float: 前瞄点的横向偏移量（米），左负右正
+        """
+        ego_location = self.ego_vehicle.get_location()
+        ego_transform = self.ego_vehicle.get_transform()
+
+        # 获取当前车辆的waypoint
+        current_waypoint = self.map.get_waypoint(ego_location, project_to_road=True)
+
+        # 获取前方预瞄距离处的waypoint
+        lookahead_waypoints = current_waypoint.next(lookahead_distance)
+
+        if not lookahead_waypoints:
+            # 如果无法获取前瞄点（例如道路尽头），返回0
+            return 0.0
+
+        lookahead_waypoint = lookahead_waypoints[0]
+
+        # 计算车辆在预瞄点的预期位置（假设车辆沿当前方向直行）
+        # 使用车辆当前朝向预测前方位置
+        ego_yaw = math.radians(ego_transform.rotation.yaw)
+        predicted_x = ego_location.x + lookahead_distance * math.cos(ego_yaw)
+        predicted_y = ego_location.y + lookahead_distance * math.sin(ego_yaw)
+
+        # 预瞄点的车道中心位置
+        lookahead_center = lookahead_waypoint.transform.location
+
+        # 计算预期位置与车道中心的横向偏移
+        dx = predicted_x - lookahead_center.x
+        dy = predicted_y - lookahead_center.y
+
+        # 投影到道路垂直方向
+        lane_yaw = math.radians(lookahead_waypoint.transform.rotation.yaw)
+        lookahead_offset = -dx * math.sin(lane_yaw) + dy * math.cos(lane_yaw)
+
+        return lookahead_offset
 
     def validate_same_lane(self):
         """

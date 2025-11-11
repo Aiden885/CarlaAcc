@@ -10,10 +10,16 @@ from pygame.locals import *
 from acc_decision_sppvt_interface import ACCDecisionSPPVTInterface
 # 导入显示管理器
 from display_manager import DisplayManager
+# 导入换道控制器
+from lane_change_controller import LaneChangeController
 # 导入横向PID控制器
 from lateral_pid_controller import LateralPIDController
+# 导入增强横向控制器（PID + 预瞄）
+from enhanced_lateral_controller import EnhancedLateralController
 from manual_input_controller import ManualSteeringController
 from output_formatter import OutputFormatter
+# 导入斜坡速度控制器
+from ramp_speed_controller import RampSpeedController
 # 导入实时绘图器
 from realtime_time_gap_plotter import RealtimeTimeGapPlotter
 # 导入扭矩到油门转换器
@@ -22,8 +28,6 @@ from torque_to_throttle_converter import TorqueToThrottleConverter
 from two_mode_controller import calculate_two_mode_desired_distance, set_two_mode_parameters, enhanced_two_mode_control
 # 导入拆分后的工具模块
 from vehicle_utils import VehicleUtils
-# 导入斜坡速度控制器
-from ramp_speed_controller import RampSpeedController
 
 
 # $env:HTTP_PROXY = "http://127.0.0.1:7890"
@@ -92,9 +96,13 @@ class acc:
         # 键盘指令队列（单帧有效，只记录指令不立即调用Simulink）
         self.pending_keyboard_command = None  # 格式: {'code': int, 'description': str}
 
-        # === 横向PID控制器 ===
-        # CARLA API模式：误差单位为米
-        self.lateral_pid = LateralPIDController(kp=0.02, ki=0.02, kd=0.4)
+        # === 横向控制器 ===
+        # 使用增强横向控制器（PID + 预瞄）
+        self.lateral_controller = EnhancedLateralController(kp=0.1, ki=0.01, kd=0.02)
+
+        # 🔧 可调整预瞄参数
+        # self.lateral_controller.set_weights(weight_current=0.7, weight_lookahead=0.3)
+        # self.lateral_controller.set_lookahead_params(base=8.0, gain=0.3)
 
         # === 运行控制 ===
         self.running = True
@@ -167,7 +175,7 @@ class acc:
         # === 斜坡速度控制器配置 ===
         # 🔧 可调整参数：修改这些参数来改变斜坡响应特性
         self.ramp_start_speed_kmh = 50.0   # 斜坡起始速度 (km/h)
-        self.ramp_target_speed_kmh = 90.0  # 斜坡目标速度 (km/h)
+        self.ramp_target_speed_kmh = 120.0  # 斜坡目标速度 (km/h)
         self.ramp_duration_s = 10.0        # 斜坡持续时间 (秒)
 
         # 初始化斜坡速度控制器
@@ -205,19 +213,23 @@ class acc:
         # 设置交通管理器（必须与CARLA世界同步模式一致）
         tm = self.client.get_trafficmanager(8000)
         tm.set_global_distance_to_leading_vehicle(2.0)
-        tm.set_synchronous_mode(False)  # 修改为True，与CARLA世界同步
+        tm.set_synchronous_mode(True)
         self.tm_port = tm.get_port()
         tm.auto_lane_change(self.ego_vehicle, False)
 
         # 保存Traffic Manager引用供后续使用
         self.tm = tm
 
+        # === 初始化换道控制器 ===
+        self.lane_change_controller = LaneChangeController(tm, self.target_vehicle)
+        print("✅ 前车换道控制器已初始化 (Z键向左, X键向右)")
+
         if self.use_constant_velocity:
             # === 使用constant velocity模式（定速巡航，不受路口影响）===
             # 注意：需要保持autopilot开启以获得转向控制
             for vehicle in vehicles:
                 vehicle.set_autopilot(True, self.tm_port)
-                tm.auto_lane_change(vehicle, False)
+                tm.auto_lane_change(vehicle, True)  # 启用换道能力（由换道控制器管理）
                 tm.ignore_lights_percentage(vehicle, 100.0)  # 忽略红绿灯
 
                 # 启用恒定速度模式（m/s）
@@ -398,6 +410,22 @@ class acc:
                 elif event_data == K_f:
                     # F键：触发前车斜坡速度
                     self.ramp_controller.trigger()
+                elif event_data == K_z:
+                    # Z键：前车向左换道
+                    # 计算当前目标速度（考虑斜坡）
+                    if self.ramp_controller.is_ramp_active():
+                        current_speed = self.ramp_controller.get_target_speed()
+                    else:
+                        current_speed = self.target_speed_kmh
+                    self.lane_change_controller.change_lane_left(current_speed)
+                elif event_data == K_x:
+                    # X键：前车向右换道
+                    # 计算当前目标速度（考虑斜坡）
+                    if self.ramp_controller.is_ramp_active():
+                        current_speed = self.ramp_controller.get_target_speed()
+                    else:
+                        current_speed = self.target_speed_kmh
+                    self.lane_change_controller.change_lane_right(current_speed)
 
             elif event_type == 'keyup':
                 if event_data == K_w:
@@ -478,6 +506,7 @@ class acc:
             print("  R/T: 增距/降距  C: 取消ACC")
             print("  W/S: 油门/刹车  A/D: 转向")
             print("  F: 触发前车斜坡速度(测试ACC跟随响应)")
+            print("  Z/X: 前车向左/向右换道")
             print("  P: 调试模式  ESC: 退出")
             print(f"\n当前状态: ACC系统关闭, 请先按空格键开启")
             print("")
@@ -568,64 +597,81 @@ class acc:
                 )
                 self._last_manual_steer_update = current_time
 
-                # === 斜坡速度控制（优先级最高）===
-                if self.ramp_controller.is_ramp_active():
-                    # 斜坡模式激活时，使用斜坡控制器计算的目标速度
-                    ramp_target_speed = self.ramp_controller.get_target_speed()
-                    if ramp_target_speed is not None and self.target_vehicle:
-                        target_speed_ms = ramp_target_speed / 3.6
-                        self.target_vehicle.enable_constant_velocity(carla.Vector3D(target_speed_ms, 0, 0))
+                # === 换道控制器状态更新 ===
+                lane_change_completed = self.lane_change_controller.update()
+                if lane_change_completed:
+                    # 换道完成，恢复constant velocity
+                    if self.ramp_controller.is_ramp_active():
+                        # 如果斜坡激活，使用斜坡速度
+                        restore_speed = self.ramp_controller.get_target_speed()
+                    else:
+                        # 否则使用默认速度
+                        restore_speed = self.target_speed_kmh
+                    target_speed_ms = restore_speed / 3.6
+                    self.target_vehicle.enable_constant_velocity(carla.Vector3D(target_speed_ms, 0, 0))
+                    print(f"🔄 恢复constant velocity: {restore_speed:.1f} km/h")
 
-                # === 前车速度控制（根据模式选择）===
-                elif not self.use_constant_velocity:
-                    # Traffic Manager模式：每周期更新速度控制（根据实时路段限速）
-                    if self.target_vehicle:
-                        # 获取前车当前路段的限速
-                        current_speed_limit = self.target_vehicle.get_speed_limit()
+                # === 前车速度控制 ===
+                # 如果正在换道，跳过constant velocity控制（由TM接管）
+                if not self.lane_change_controller.is_lane_changing():
+                    # === 斜坡速度控制（优先级最高）===
+                    if self.ramp_controller.is_ramp_active():
+                        # 斜坡模式激活时，使用斜坡控制器计算的目标速度
+                        ramp_target_speed = self.ramp_controller.get_target_speed()
+                        if ramp_target_speed is not None and self.target_vehicle:
+                            target_speed_ms = ramp_target_speed / 3.6
+                            self.target_vehicle.enable_constant_velocity(carla.Vector3D(target_speed_ms, 0, 0))
 
-                        # 诊断信息：前车状态监控
-                        target_speed_actual = VehicleUtils.get_vehicle_speed(self.target_vehicle)
-                        target_location = self.target_vehicle.get_location()
-                        target_waypoint = self.world.get_map().get_waypoint(target_location)
-                        is_junction = target_waypoint.is_junction if target_waypoint else False
+                    # === 前车速度控制（根据模式选择）===
+                    elif not self.use_constant_velocity:
+                        # Traffic Manager模式：每周期更新速度控制（根据实时路段限速）
+                        if self.target_vehicle:
+                            # 获取前车当前路段的限速
+                            current_speed_limit = self.target_vehicle.get_speed_limit()
 
-                        # 简洁输出：限速、实际速度、是否在路口
-                        print(
-                            f"前车状态 | 限速:{current_speed_limit:.1f} km/h | 实际:{target_speed_actual:.1f} km/h | 路口:{is_junction}")
+                            # 诊断信息：前车状态监控
+                            target_speed_actual = VehicleUtils.get_vehicle_speed(self.target_vehicle)
+                            target_location = self.target_vehicle.get_location()
+                            target_waypoint = self.world.get_map().get_waypoint(target_location)
+                            is_junction = target_waypoint.is_junction if target_waypoint else False
 
-                        # 防御性处理：处理无效的限速值
-                        if current_speed_limit is None:
-                            print(f"⚠️ 防御性处理: get_speed_limit()返回None（可能原因：车辆刚生成，尚未通过限速标志）")
-                            current_speed_limit = 30.0  # 使用默认限速
-                        elif current_speed_limit <= 0.0:
+                            # 简洁输出：限速、实际速度、是否在路口
                             print(
-                                f"⚠️ 防御性处理: get_speed_limit()返回无效值{current_speed_limit:.1f}（可能原因：地图数据异常）")
-                            current_speed_limit = 30.0  # 使用默认限速
-                        elif not np.isfinite(current_speed_limit):
-                            print(f"⚠️ 防御性处理: get_speed_limit()返回非有限值（Inf或NaN）")
-                            current_speed_limit = 30.0  # 使用默认限速
+                                f"前车状态 | 限速:{current_speed_limit:.1f} km/h | 实际:{target_speed_actual:.1f} km/h | 路口:{is_junction}")
 
-                        # 检查限速是否变化
-                        if self.last_speed_limit != current_speed_limit:
-                            # 计算速度百分比偏差
-                            # percentage = (speed_limit - target_speed) / speed_limit * 100
-                            percentage_diff = ((
-                                                           current_speed_limit - self.target_speed_kmh) / current_speed_limit) * 100.0
+                            # 防御性处理：处理无效的限速值
+                            if current_speed_limit is None:
+                                print(f"⚠️ 防御性处理: get_speed_limit()返回None（可能原因：车辆刚生成，尚未通过限速标志）")
+                                current_speed_limit = 30.0  # 使用默认限速
+                            elif current_speed_limit <= 0.0:
+                                print(
+                                    f"⚠️ 防御性处理: get_speed_limit()返回无效值{current_speed_limit:.1f}（可能原因：地图数据异常）")
+                                current_speed_limit = 30.0  # 使用默认限速
+                            elif not np.isfinite(current_speed_limit):
+                                print(f"⚠️ 防御性处理: get_speed_limit()返回非有限值（Inf或NaN）")
+                                current_speed_limit = 30.0  # 使用默认限速
 
-                            # 更新Traffic Manager设置
-                            self.tm.vehicle_percentage_speed_difference(self.target_vehicle, percentage_diff)
+                            # 检查限速是否变化
+                            if self.last_speed_limit != current_speed_limit:
+                                # 计算速度百分比偏差
+                                # percentage = (speed_limit - target_speed) / speed_limit * 100
+                                percentage_diff = ((
+                                                               current_speed_limit - self.target_speed_kmh) / current_speed_limit) * 100.0
 
-                            # 输出限速变化信息
-                            if self.last_speed_limit is not None:
-                                print(f"\n🚦 路段限速变化: {self.last_speed_limit:.1f} → {current_speed_limit:.1f} km/h")
-                            else:
-                                print(f"\n🚦 初始路段限速: {current_speed_limit:.1f} km/h")
+                                # 更新Traffic Manager设置
+                                self.tm.vehicle_percentage_speed_difference(self.target_vehicle, percentage_diff)
 
-                            print(f"   前车目标速度: {self.target_speed_kmh:.1f} km/h")
-                            print(f"   速度百分比偏差: {percentage_diff:.1f}%")
+                                # 输出限速变化信息
+                                if self.last_speed_limit is not None:
+                                    print(f"\n🚦 路段限速变化: {self.last_speed_limit:.1f} → {current_speed_limit:.1f} km/h")
+                                else:
+                                    print(f"\n🚦 初始路段限速: {current_speed_limit:.1f} km/h")
 
-                            # 更新记录
-                            self.last_speed_limit = current_speed_limit
+                                print(f"   前车目标速度: {self.target_speed_kmh:.1f} km/h")
+                                print(f"   速度百分比偏差: {percentage_diff:.1f}%")
+
+                                # 更新记录
+                                self.last_speed_limit = current_speed_limit
                 # Constant Velocity模式：无需更新，速度已经固定
 
                 # 世界更新
@@ -838,14 +884,23 @@ class acc:
                 if acc_should_control:
                     # ACC控制模式 - 只有在主动控制模式下才执行
                     try:
-                        # === 横向控制：使用PID控制器计算转向 ===
-                        # CARLA API模式：米为单位
-                        # 符号约定：carla_perception返回"左负右正"
-                        # PID控制器期望：车偏左为负，需要向右转=负转向
-                        lateral_error = -lane_offset  # 反转符号
+                        # === 横向控制：使用增强控制器（PID + 预瞄）===
+                        # 1. 获取当前横向偏移
+                        current_offset = -lane_offset  # 符号反转：左负右正
 
-                        # 使用PID控制器计算转向输出
-                        steer_output = self.lateral_pid.update(lateral_error, dt=0.05)
+                        # 2. 计算预瞄距离（根据车速动态调整）
+                        lookahead_distance = self.lateral_controller.calculate_lookahead_distance(ego_speed_ms)
+
+                        # 3. 获取前瞻偏移
+                        lookahead_offset = -self.carla_perception.get_lookahead_offset(lookahead_distance)
+
+                        # 4. 使用增强控制器计算转向输出
+                        steer_output = self.lateral_controller.update(
+                            current_offset=current_offset,
+                            lookahead_offset=lookahead_offset,
+                            speed_ms=ego_speed_ms,
+                            dt=0.05
+                        )
 
                         # Decide control action based on enable flag
                         if decision_output.get('control_enabled', False):
