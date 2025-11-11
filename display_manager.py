@@ -143,6 +143,7 @@ class DisplayManager:
             "  R / T : Increase / Decrease Distance",
             "  C     : Cancel ACC",
             "  W     : Manual Throttle (torque arbitration)",
+            "  F     : Trigger Target Vehicle Ramp Speed",
             "",
             "View Control:",
             "  I  : Toggle Info Display",

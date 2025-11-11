@@ -22,6 +22,8 @@ from torque_to_throttle_converter import TorqueToThrottleConverter
 from two_mode_controller import calculate_two_mode_desired_distance, set_two_mode_parameters, enhanced_two_mode_control
 # 导入拆分后的工具模块
 from vehicle_utils import VehicleUtils
+# 导入斜坡速度控制器
+from ramp_speed_controller import RampSpeedController
 
 
 # $env:HTTP_PROXY = "http://127.0.0.1:7890"
@@ -110,15 +112,15 @@ class acc:
         # === 初始化实时时距绘图器 ===
         self.realtime_plotter = RealtimeTimeGapPlotter(max_points=500, update_interval=100)
         self.realtime_plotter.start()
-        print("🎨 实时时距绘图器已启动（Simulink风格）")
+        print(" 实时时距绘图器已启动")
 
     def init_carla(self):
         # 初始化 Carla 客户端
-        self.client = carla.Client('192.168.0.146', 2000)
-        map_name = 'acc_30km'
+        # self.client = carla.Client('192.168.0.146', 2000)
+        # map_name = 'acc_30km'
 
-        # self.client = carla.Client('localhost', 2000)
-        # map_name = 'Town04'
+        self.client = carla.Client('localhost', 2000)
+        map_name = 'Town04'
         self.client.set_timeout(60.0)
         try:
             self.world = self.client.get_world()
@@ -162,8 +164,22 @@ class acc:
         self.target_vehicle = target_vehicle
         self.target_vehicle.set_autopilot(True)
 
+        # === 斜坡速度控制器配置 ===
+        # 🔧 可调整参数：修改这些参数来改变斜坡响应特性
+        self.ramp_start_speed_kmh = 50.0   # 斜坡起始速度 (km/h)
+        self.ramp_target_speed_kmh = 90.0  # 斜坡目标速度 (km/h)
+        self.ramp_duration_s = 10.0        # 斜坡持续时间 (秒)
+
+        # 初始化斜坡速度控制器
+        self.ramp_controller = RampSpeedController(
+            start_speed_kmh=self.ramp_start_speed_kmh,
+            target_speed_kmh=self.ramp_target_speed_kmh,
+            duration_s=self.ramp_duration_s
+        )
+
         # 前车速度配置（使用constant velocity定速巡航）
-        self.target_speed_kmh = 90.0  # 🔧 可调整：前车目标速度 (km/h)
+        # 初始速度设为斜坡起始速度，按F键后触发斜坡变化
+        self.target_speed_kmh = self.ramp_start_speed_kmh  # 初始使用斜坡起始速度
         self.use_constant_velocity = True  # 使用constant velocity模式（不受路口影响）
 
         # 生成自车：沿车道前进方向偏移一定距离以避免碰撞
@@ -209,9 +225,13 @@ class acc:
                 vehicle.enable_constant_velocity(carla.Vector3D(target_speed_ms, 0, 0))
 
             print(f"✅ 前车速度配置完成 (Constant Velocity模式):")
-            print(f"   目标速度: {self.target_speed_kmh:.1f} km/h ({target_speed_ms:.2f} m/s)")
+            print(f"   初始速度: {self.target_speed_kmh:.1f} km/h ({target_speed_ms:.2f} m/s)")
             print(f"   模式: 恒定速度（不受路口/限速影响）")
             print(f"   转向控制: Autopilot")
+            print(f"\n📊 斜坡速度配置 (按F键触发):")
+            print(f"   起始速度: {self.ramp_start_speed_kmh:.1f} km/h")
+            print(f"   目标速度: {self.ramp_target_speed_kmh:.1f} km/h")
+            print(f"   斜坡时间: {self.ramp_duration_s:.1f} 秒")
 
         else:
             # === 使用Traffic Manager限速百分比模式 ===
@@ -375,6 +395,9 @@ class acc:
                     self.a_key_pressed = True
                 elif event_data == K_d:
                     self.d_key_pressed = True
+                elif event_data == K_f:
+                    # F键：触发前车斜坡速度
+                    self.ramp_controller.trigger()
 
             elif event_type == 'keyup':
                 if event_data == K_w:
@@ -454,6 +477,7 @@ class acc:
             print("  E: 降速/当速启控  Q: 增速/继承启控(需有历史)")
             print("  R/T: 增距/降距  C: 取消ACC")
             print("  W/S: 油门/刹车  A/D: 转向")
+            print("  F: 触发前车斜坡速度(测试ACC跟随响应)")
             print("  P: 调试模式  ESC: 退出")
             print(f"\n当前状态: ACC系统关闭, 请先按空格键开启")
             print("")
@@ -544,8 +568,16 @@ class acc:
                 )
                 self._last_manual_steer_update = current_time
 
+                # === 斜坡速度控制（优先级最高）===
+                if self.ramp_controller.is_ramp_active():
+                    # 斜坡模式激活时，使用斜坡控制器计算的目标速度
+                    ramp_target_speed = self.ramp_controller.get_target_speed()
+                    if ramp_target_speed is not None and self.target_vehicle:
+                        target_speed_ms = ramp_target_speed / 3.6
+                        self.target_vehicle.enable_constant_velocity(carla.Vector3D(target_speed_ms, 0, 0))
+
                 # === 前车速度控制（根据模式选择）===
-                if not self.use_constant_velocity:
+                elif not self.use_constant_velocity:
                     # Traffic Manager模式：每周期更新速度控制（根据实时路段限速）
                     if self.target_vehicle:
                         # 获取前车当前路段的限速
