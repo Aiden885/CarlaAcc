@@ -7,13 +7,13 @@ import numpy as np
 import pygame
 from pygame.locals import *
 
+from acc_config import ACCConfig
 from acc_decision_sppvt_interface import ACCDecisionSPPVTInterface
 # 导入显示管理器
 from display_manager import DisplayManager
 # 导入换道控制器
 from lane_change_controller import LaneChangeController
-# 导入横向PID控制器
-from lateral_pid_controller import LateralPIDController
+
 # 导入增强横向控制器（PID + 预瞄）
 from enhanced_lateral_controller import EnhancedLateralController
 from manual_input_controller import ManualSteeringController
@@ -22,6 +22,8 @@ from output_formatter import OutputFormatter
 from ramp_speed_controller import RampSpeedController
 # 导入实时绘图器
 from realtime_time_gap_plotter import RealtimeTimeGapPlotter
+# 导入结果保存绘图器（可选，用于保存结果）
+from result_plotter import RealtimeResultPlotter
 # 导入扭矩到油门转换器
 from torque_to_throttle_converter import TorqueToThrottleConverter
 # ACC相关模块
@@ -37,21 +39,33 @@ from vehicle_utils import VehicleUtils
 
 
 class acc:
-    def __init__(self):
+    def __init__(self, use_result_plotter=None):
         """
         初始化ACC系统
         使用CARLA API直接获取前车距离和车道信息
+
+        Args:
+            use_result_plotter: True=使用结果保存画图器, False=使用实时测试画图器
+                               None=使用配置文件默认值
         """
+        # === 加载配置 ===
+        self.config = ACCConfig()
+
+        # 允许通过参数覆盖配置
+        if use_result_plotter is not None:
+            self.config.use_result_plotter = use_result_plotter
+        self.use_result_plotter = self.config.use_result_plotter
+
         # === 显示管理器初始化 ===
-        self.display_manager = DisplayManager(1280, 720)
+        self.display_manager = DisplayManager(self.config.display_width, self.config.display_height)
 
         # === CARLA API感知模块 ===
         self.carla_perception = None  # 将在init_carla()后初始化
 
         # === 通用变量 ===
-        self.max_follow_distance = 50
-        self.image_width = 1280
-        self.image_height = 720
+        self.max_follow_distance = self.config.max_follow_distance
+        self.image_width = self.config.display_width
+        self.image_height = self.config.display_height
         self.target_vehicle = None
         self.start_time = None
         self.csv_file = None
@@ -59,16 +73,13 @@ class acc:
 
         # === ACC决策+SPPVT一体化模块 ===
         # 使用完整Simulink模型（包含决策+SPPVT控制），不使用简化的realtime_sppvt_manager
-        self.acc_decision_sppvt = ACCDecisionSPPVTInterface(debug=True, use_realtime_sppvt=False)
+        self.acc_decision_sppvt = ACCDecisionSPPVTInterface(
+            debug=self.config.acc_decision_debug,
+            use_realtime_sppvt=self.config.use_realtime_sppvt
+        )
 
         # === ACC系统可配置参数 (环境相关，需要传递给Simulink) ===
-        self.acc_params = {
-            'V_target_kmh': 50.0,  # 默认巡航速度 - 传递给Simulink
-            'V_min_kmh': 20.0,  # 最小速度阈值 - 传递给Simulink
-            'G2_s': 2.0,  # 时距参数 - 传递给Simulink
-            'V_threshold_kmh': 50.0,  # 模式切换阈值 - 用于Two Mode控制器
-            'speed_step': 5.0  # 速度调整步长
-        }
+        self.acc_params = self.config.get_acc_params()
 
         # === 保持原有决策接口兼容性 ===
         self.acc_decision = self.acc_decision_sppvt  # 兼容性别名
@@ -98,11 +109,24 @@ class acc:
 
         # === 横向控制器 ===
         # 使用增强横向控制器（PID + 预瞄）
-        self.lateral_controller = EnhancedLateralController(kp=0.1, ki=0.01, kd=0.02)
+        lateral_params = self.config.get_lateral_controller_params()
+        self.lateral_controller = EnhancedLateralController(
+            kp=lateral_params['kp'],
+            ki=lateral_params['ki'],
+            kd=lateral_params['kd']
+        )
 
-        # 🔧 可调整预瞄参数
-        # self.lateral_controller.set_weights(weight_current=0.7, weight_lookahead=0.3)
-        # self.lateral_controller.set_lookahead_params(base=8.0, gain=0.3)
+        # 可选预瞄参数配置（如果配置文件中定义了）
+        if hasattr(self.config, 'lateral_lookahead_params'):
+            lookahead = self.config.lateral_lookahead_params
+            self.lateral_controller.set_weights(
+                weight_current=lookahead['weight_current'],
+                weight_lookahead=lookahead['weight_lookahead']
+            )
+            self.lateral_controller.set_lookahead_params(
+                base=lookahead['base_distance'],
+                gain=lookahead['gain']
+            )
 
         # === 运行控制 ===
         self.running = True
@@ -117,52 +141,73 @@ class acc:
         if hasattr(self.acc_decision_sppvt, 'init_two_mode_controller'):
             self.acc_decision_sppvt.init_two_mode_controller()
 
-        # === 初始化实时时距绘图器 ===
-        self.realtime_plotter = RealtimeTimeGapPlotter(max_points=500, update_interval=100)
-        self.realtime_plotter.start()
-        print(" 实时时距绘图器已启动")
+        # === 初始化绘图器 ===
+        if self.use_result_plotter:
+            # 使用结果保存画图器（Step模式，ACC开启后记录，自动保存CSV和PNG）
+            self.realtime_plotter = RealtimeResultPlotter(
+                max_points=self.config.plotter_max_points,
+                update_interval=self.config.plotter_update_interval
+            )
+            self.realtime_plotter.start()
+            print("✅ 结果保存绘图器已启动 (Step模式，自动保存)")
+        else:
+            # 使用实时测试画图器（Time模式，有滑动条控件）
+            self.realtime_plotter = RealtimeTimeGapPlotter(
+                max_points=self.config.plotter_max_points,
+                update_interval=self.config.plotter_update_interval
+            )
+            self.realtime_plotter.start()
+            print("✅ 实时测试绘图器已启动 (Time模式)")
 
     def init_carla(self):
-        # 初始化 Carla 客户端
-        # self.client = carla.Client('192.168.0.146', 2000)
-        # map_name = 'acc_30km'
+        # 初始化 Carla 客户端（使用配置）
+        self.client = carla.Client(self.config.carla_host, self.config.carla_port)
 
-        self.client = carla.Client('localhost', 2000)
-        map_name = 'Town04'
-        self.client.set_timeout(60.0)
+        # 远程服务器配置示例（已注释）
+        # self.client = carla.Client('192.168.0.144', 2000)
+        # self.config.map_name = 'acc_30km_new'
+
+        self.client.set_timeout(self.config.carla_timeout)
         try:
             self.world = self.client.get_world()
-            self.world = self.client.load_world(map_name, carla.MapLayer.Buildings | carla.MapLayer.ParkedVehicles)
+            self.world = self.client.load_world(
+                self.config.map_name,
+                carla.MapLayer.Buildings | carla.MapLayer.ParkedVehicles
+            )
         except RuntimeError as e:
-            raise RuntimeError(f"Failed to load map {map_name}: {e}")
+            raise RuntimeError(f"Failed to load map {self.config.map_name}: {e}")
 
         # 设置同步模式（放宽时间步长以匹配Simulink处理能力）
         settings = self.world.get_settings()
-        settings.synchronous_mode = True
-        settings.fixed_delta_seconds = 0.05  # 20 FPS (50ms per frame)
+        settings.synchronous_mode = self.config.synchronous_mode
+        settings.fixed_delta_seconds = self.config.fixed_delta_seconds
         self.world.apply_settings(settings)
 
         # 获取蓝图库和地图
         self.blueprint_library = self.world.get_blueprint_library()
         map = self.world.get_map()
 
-        # 获取车辆蓝图
-        vehicle_bp = self.blueprint_library.filter('vehicle.tesla.model3')[0]
-        ego_vehicle_bp = self.blueprint_library.filter('vehicle.audi.etron')[0]
+        # 获取车辆蓝图（使用配置）
+        vehicle_bp = self.blueprint_library.filter(self.config.target_vehicle_blueprint)[0]
+        ego_vehicle_bp = self.blueprint_library.filter(self.config.ego_vehicle_blueprint)[0]
 
-        # 定义固定生成点x=0.663731, y=-203.651886, z=0.5
-        # right x = -352.701508, y = 4627.016113, z=0.5
-        # left x=-951.054749, y=4027.188232, z=-0.009344
-        # up  x=1951.489014, y=-4947.605469, z=-0.009341
-        # down x=2121.978760, y=-3415.833252, z=54.469646
-        fixed_point = carla.Location(x=0.663731, y=-203.651886, z=0.5)
-        waypoint = map.get_waypoint(fixed_point, project_to_road=True, lane_type=carla.LaneType.Driving)
+        # 定义固定生成点（使用配置）
+        # 其他可选位置（注释保留供参考）:
+        # right x=1654.013672, y=6322.584473, z=-0.009410
+        # left x=897.991394, y=5805.217773, z=-0.009344
+        # up  x=1964.847778, y=-4824.012207, z=-0.009341
+        # down x=2127.969482, y=-3362.775146, z=54.469646
+        waypoint = map.get_waypoint(
+            self.config.spawn_location,
+            project_to_road=True,
+            lane_type=carla.LaneType.Driving
+        )
         if waypoint is None:
             raise RuntimeError("Failed to find a valid waypoint near the specified location")
 
         # 生成目标车辆
         spawn_point = waypoint.transform
-        spawn_point.location.z += 0.1
+        spawn_point.location.z += self.config.spawn_z_offset
 
         vehicles = []
         target_vehicle = self.world.try_spawn_actor(vehicle_bp, spawn_point)
@@ -172,13 +217,18 @@ class acc:
         self.target_vehicle = target_vehicle
         self.target_vehicle.set_autopilot(True)
 
-        # === 斜坡速度控制器配置 ===
-        # 🔧 可调整参数：修改这些参数来改变斜坡响应特性
-        self.ramp_start_speed_kmh = 50.0   # 斜坡起始速度 (km/h)
-        self.ramp_target_speed_kmh = 120.0  # 斜坡目标速度 (km/h)
-        self.ramp_duration_s = 10.0        # 斜坡持续时间 (秒)
+        # === Traffic Manager速度控制配置 ===
+        # 假设的道路限速（根据实际CARLA地图调整）
+        # 如果前车速度不对，需要调整这个值来匹配实际道路限速
+        self.assumed_road_speed_limit_kmh = self.config.assumed_road_speed_limit_kmh
 
-        # 初始化斜坡速度控制器
+        # === 斜坡速度控制器配置 ===
+        # 初始化斜坡速度控制器（使用配置）
+        ramp_params = self.config.get_ramp_controller_params()
+        self.ramp_start_speed_kmh = ramp_params['start_speed_kmh']
+        self.ramp_target_speed_kmh = ramp_params['target_speed_kmh']
+        self.ramp_duration_s = ramp_params['duration_s']
+
         self.ramp_controller = RampSpeedController(
             start_speed_kmh=self.ramp_start_speed_kmh,
             target_speed_kmh=self.ramp_target_speed_kmh,
@@ -187,33 +237,33 @@ class acc:
 
         # 前车速度配置（使用constant velocity定速巡航）
         # 初始速度设为斜坡起始速度，按F键后触发斜坡变化
-        self.target_speed_kmh = self.ramp_start_speed_kmh  # 初始使用斜坡起始速度
-        self.use_constant_velocity = True  # 使用constant velocity模式（不受路口影响）
+        self.target_speed_kmh = self.config.target_speed_kmh  # 使用配置的初始速度
+        self.use_constant_velocity = self.config.use_constant_velocity
 
         # 生成自车：沿车道前进方向偏移一定距离以避免碰撞
-        ego_waypoints = waypoint.previous(10.0)
+        ego_waypoints = waypoint.previous(self.config.ego_spawn_distance)
         if not ego_waypoints:
             raise RuntimeError("Failed to find a waypoint 20 meters ahead for ego vehicle spawn")
         ego_spawn_point = ego_waypoints[0].transform
-        ego_spawn_point.location.z += 0.1
+        ego_spawn_point.location.z += self.config.spawn_z_offset
         self.ego_vehicle = self.world.try_spawn_actor(ego_vehicle_bp, ego_spawn_point)
         if self.ego_vehicle is None:
             raise RuntimeError("Failed to spawn ego vehicle")
         self.vehicles = vehicles
         self.ego_vehicle.set_autopilot(False)
 
-        # 初始化扭矩到油门转换器
+        # 初始化扭矩到油门转换器（使用配置）
         print("初始化扭矩到油门转换器...")
         self.torque_converter = TorqueToThrottleConverter(self.ego_vehicle)
-        self.use_torque_converter = True  # 是否使用物理模型转换器（True）或简单映射（False）
+        self.use_torque_converter = self.config.use_torque_converter
 
         # 初始化显示管理器的相机
         self.display_manager.init_camera_manager(self.ego_vehicle)
 
         # 设置交通管理器（必须与CARLA世界同步模式一致）
-        tm = self.client.get_trafficmanager(8000)
-        tm.set_global_distance_to_leading_vehicle(2.0)
-        tm.set_synchronous_mode(True)
+        tm = self.client.get_trafficmanager(self.config.tm_port)
+        tm.set_global_distance_to_leading_vehicle(self.config.tm_global_distance)
+        tm.set_synchronous_mode(self.config.synchronous_mode)
         self.tm_port = tm.get_port()
         tm.auto_lane_change(self.ego_vehicle, False)
 
@@ -221,24 +271,33 @@ class acc:
         self.tm = tm
 
         # === 初始化换道控制器 ===
-        self.lane_change_controller = LaneChangeController(tm, self.target_vehicle)
+        self.lane_change_controller = LaneChangeController(
+            tm,
+            self.target_vehicle,
+            assumed_road_speed_limit_kmh=self.config.assumed_road_speed_limit_kmh
+        )
         print("✅ 前车换道控制器已初始化 (Z键向左, X键向右)")
 
         if self.use_constant_velocity:
-            # === 使用constant velocity模式（定速巡航，不受路口影响）===
-            # 注意：需要保持autopilot开启以获得转向控制
+            # === 使用Traffic Manager速度控制（替代constant_velocity）===
+            # constant_velocity与autopilot冲突，改用TM速度控制
             for vehicle in vehicles:
                 vehicle.set_autopilot(True, self.tm_port)
-                tm.auto_lane_change(vehicle, True)  # 启用换道能力（由换道控制器管理）
+                tm.auto_lane_change(vehicle, True)  # 启用换道能力
                 tm.ignore_lights_percentage(vehicle, 100.0)  # 忽略红绿灯
 
-                # 启用恒定速度模式（m/s）
-                target_speed_ms = self.target_speed_kmh / 3.6
-                vehicle.enable_constant_velocity(carla.Vector3D(target_speed_ms, 0, 0))
+                # 设置目标速度（使用speed_limit百分比机制）
+                # percentage_diff正值=减速，负值=超速
+                percentage_diff = ((self.assumed_road_speed_limit_kmh - self.target_speed_kmh) / self.assumed_road_speed_limit_kmh) * 100.0
+                tm.vehicle_percentage_speed_difference(vehicle, percentage_diff)
 
-            print(f"✅ 前车速度配置完成 (Constant Velocity模式):")
-            print(f"   初始速度: {self.target_speed_kmh:.1f} km/h ({target_speed_ms:.2f} m/s)")
-            print(f"   模式: 恒定速度（不受路口/限速影响）")
+                # 设置其他TM参数，使速度更稳定
+                tm.distance_to_leading_vehicle(vehicle, self.config.tm_target_vehicle_distance)
+
+            print(f"✅ 前车速度配置完成 (Traffic Manager模式):")
+            print(f"   假设道路限速: {self.assumed_road_speed_limit_kmh:.1f} km/h")
+            print(f"   目标速度: {self.target_speed_kmh:.1f} km/h")
+            print(f"   速度控制: Traffic Manager (百分比差值{percentage_diff:.1f}%)")
             print(f"   转向控制: Autopilot")
             print(f"\n📊 斜坡速度配置 (按F键触发):")
             print(f"   起始速度: {self.ramp_start_speed_kmh:.1f} km/h")
@@ -275,8 +334,8 @@ class acc:
         print("✅ CARLA API感知模块初始化完成")
 
     def init_csv(self):
-        """初始化CSV文件"""
-        self.csv_file = open('speed_data_integrated.csv', 'w', newline='')
+        """初始化CSV文件（使用配置）"""
+        self.csv_file = open(self.config.csv_output_file, 'w', newline='')
         self.csv_writer = csv.writer(self.csv_file)
         self.csv_writer.writerow([
             'Time(s)',
@@ -295,23 +354,6 @@ class acc:
             'Manual_Brake',
             'Manual_Steer'
         ])
-
-    def _sync_two_mode_parameters(self):
-        """同步ACC决策参数到两模式控制器"""
-        acc_params = self.acc_decision.get_current_parameters()
-        set_two_mode_parameters(
-            V_threshold_kmh=acc_params['V_target_kmh'],
-            G2_s=acc_params['G2_s'],
-            target_speed_kmh=acc_params['V_target_kmh']
-        )
-
-        # 同时同步到一体化接口
-        if hasattr(self.acc_decision_sppvt, 'update_two_mode_parameters'):
-            self.acc_decision_sppvt.update_two_mode_parameters(
-                V_threshold_kmh=acc_params['V_target_kmh'],
-                G2_s=acc_params['G2_s'],
-                target_speed_kmh=acc_params['V_target_kmh']
-            )
 
     def get_current_parameters(self):
         """获取当前ACC参数，直接使用Simulink管理的参数"""
@@ -573,16 +615,16 @@ class acc:
                 # self.handle_keyboard_input()
 
                 # === 按键持续检测和开度累加逻辑（无论ACC是否开启）===
-                # W键（油门）持续按下：每帧累加0.1，松开时立即归零
+                # W键（油门）持续按下：每帧累加配置步长，松开时立即归零
                 if self.w_key_pressed:
-                    self.manual_throttle_input = min(1.0, self.manual_throttle_input + 0.1)
+                    self.manual_throttle_input = min(1.0, self.manual_throttle_input + self.config.manual_throttle_step)
                 else:
                     # W键未按下时，确保油门归零
                     self.manual_throttle_input = 0.0
 
-                # S键（刹车）持续按下：每帧累加0.2，松开时立即归零
+                # S键（刹车）持续按下：每帧累加配置步长，松开时立即归零
                 if self.s_key_pressed:
-                    self.manual_brake_input = min(1.0, self.manual_brake_input + 0.2)
+                    self.manual_brake_input = min(1.0, self.manual_brake_input + self.config.manual_brake_step)
                 else:
                     # S键未按下时，确保刹车归零
                     self.manual_brake_input = 0.0
@@ -600,16 +642,18 @@ class acc:
                 # === 换道控制器状态更新 ===
                 lane_change_completed = self.lane_change_controller.update()
                 if lane_change_completed:
-                    # 换道完成，恢复constant velocity
+                    # 换道完成，恢复TM速度控制
                     if self.ramp_controller.is_ramp_active():
                         # 如果斜坡激活，使用斜坡速度
                         restore_speed = self.ramp_controller.get_target_speed()
                     else:
                         # 否则使用默认速度
                         restore_speed = self.target_speed_kmh
-                    target_speed_ms = restore_speed / 3.6
-                    self.target_vehicle.enable_constant_velocity(carla.Vector3D(target_speed_ms, 0, 0))
-                    print(f"🔄 恢复constant velocity: {restore_speed:.1f} km/h")
+
+                    # 使用TM速度控制
+                    percentage_diff = ((self.assumed_road_speed_limit_kmh - restore_speed) / self.assumed_road_speed_limit_kmh) * 100.0
+                    self.tm.vehicle_percentage_speed_difference(self.target_vehicle, percentage_diff)
+                    print(f"🔄 恢复TM速度控制: {restore_speed:.1f} km/h (百分比{percentage_diff:.1f}%)")
 
                 # === 前车速度控制 ===
                 # 如果正在换道，跳过constant velocity控制（由TM接管）
@@ -619,8 +663,9 @@ class acc:
                         # 斜坡模式激活时，使用斜坡控制器计算的目标速度
                         ramp_target_speed = self.ramp_controller.get_target_speed()
                         if ramp_target_speed is not None and self.target_vehicle:
-                            target_speed_ms = ramp_target_speed / 3.6
-                            self.target_vehicle.enable_constant_velocity(carla.Vector3D(target_speed_ms, 0, 0))
+                            # 使用TM速度控制（每帧更新）
+                            percentage_diff = ((self.assumed_road_speed_limit_kmh - ramp_target_speed) / self.assumed_road_speed_limit_kmh) * 100.0
+                            self.tm.vehicle_percentage_speed_difference(self.target_vehicle, percentage_diff)
 
                     # === 前车速度控制（根据模式选择）===
                     elif not self.use_constant_velocity:
@@ -684,9 +729,9 @@ class acc:
                 self.display_manager.tick(60)  # 60 FPS
                 perf_times['4_display_tick'].append(time.time() - t0)
 
-                # === 定期输出性能报告 (每10秒) ===
+                # === 定期输出性能报告（使用配置的间隔）===
                 current_time = time.time()
-                if current_time - last_perf_report_time >= 10.0:
+                if current_time - last_perf_report_time >= self.config.performance_report_interval:
                     elapsed = current_time - perf_start_time
                     print_performance_report(perf_times, elapsed)
                     last_perf_report_time = current_time
@@ -700,7 +745,7 @@ class acc:
                 vehicle_distance = self.carla_perception.get_vehicle_distance()
                 lane_offset = self.carla_perception.get_lane_offset()
 
-                has_target = vehicle_distance < 200.0  # 检测范围：200米
+                has_target = vehicle_distance < self.config.detection_range  # 检测范围（使用配置）
 
                 # === 使用Simulink一体化接口进行决策和控制 ===
                 # 获取当前ACC参数（可能被Simulink或用户修改）
@@ -1155,11 +1200,7 @@ class acc:
         if hasattr(self, 'realtime_plotter'):
             self.realtime_plotter.stop()
 
-        # 禁用前车的constant velocity（如果启用）
-        if hasattr(self, 'use_constant_velocity') and self.use_constant_velocity:
-            if self.target_vehicle:
-                self.target_vehicle.disable_constant_velocity()
-                print("✅ 已禁用前车的constant velocity模式")
+        # 前车速度控制已由TM管理，无需手动禁用
 
         # 销毁车辆
         for vehicle in self.vehicles:
@@ -1176,14 +1217,11 @@ class acc:
 
 
 def main():
-    """
-    主函数 - 使用CARLA API模式
-
-    Usage:
-        python acc_updated.py
-    """
     # 创建ACC实例
-    acc_actor = acc()
+    # 使用配置文件默认值，或通过参数覆盖：
+    # acc_actor = acc(use_result_plotter=False)  # 测试模式
+    # acc_actor = acc(use_result_plotter=True)   # 结果保存模式
+    acc_actor = acc()  # 使用 acc_config.py 中的配置
 
     try:
         acc_actor.generate_target()

@@ -122,12 +122,12 @@ class RealtimeTimeGapPlotter:
             "Real-Time Time Gap Tracking - TIME Mode"
         )
 
-        # 调整布局以腾出底部空间放置滑动条
+
         # 现在有3个子图，分别显示：时距跟踪、误差、速度
         # 增加子图间距以避免重叠
         self.ax1 = plt.axes([0.1, 0.68, 0.85, 0.24], facecolor=bg_color)  # 时距跟踪
-        self.ax2 = plt.axes([0.1, 0.40, 0.85, 0.19], facecolor=bg_color)  # 误差（往下移）
-        self.ax3 = plt.axes([0.1, 0.12, 0.85, 0.19], facecolor=bg_color)  # 速度（往下移）
+        self.ax2 = plt.axes([0.1, 0.40, 0.85, 0.19], facecolor=bg_color)  # 误差
+        self.ax3 = plt.axes([0.1, 0.12, 0.85, 0.19], facecolor=bg_color)  # 速度
 
         self.axes = [self.ax1, self.ax2, self.ax3]
 
@@ -223,15 +223,15 @@ class RealtimeTimeGapPlotter:
                 self._updating_slider = True
                 self.checkbox_auto.set_active(0)
                 self._updating_slider = False
-            print("📊 手动拖动滑块，切换到手动控制模式")
+            print("手动拖动滑块，切换到手动控制模式")
 
     def _on_checkbox_toggle(self, label):
         """自动跟随checkbox切换回调"""
         self.auto_follow = not self.auto_follow
         if self.auto_follow:
-            print("📊 切换到自动跟随模式")
+            print("切换到自动跟随模式")
         else:
-            print("📊 切换到手动控制模式")
+            print("切换到手动控制模式")
 
     def _plot_loop(self) -> None:
         """Own the matplotlib event loop on a dedicated thread."""
@@ -428,23 +428,3 @@ class RealtimeTimeGapPlotter:
         return self.line_desired, self.line_actual, self.line_error, self.line_ego_speed, self.line_target_speed
 
 
-if __name__ == "__main__":  # pragma: no cover - manual smoke test
-    plotter = RealtimeTimeGapPlotter(max_points=300, update_interval=50)
-    plotter.start()
-
-    print("Generating simulated data...")
-    import math
-
-    try:
-        for i in range(1000):
-            t = i * 0.1
-            desired_gap = 2.0
-            actual_gap = 2.0 + 0.5 * math.sin(t * 0.5) + np.random.normal(0, 0.1)
-            plotter.add_data(desired_gap, actual_gap, t)
-            time.sleep(0.1)
-
-        print("Data generation complete. Press Ctrl+C to exit.")
-        while True:
-            time.sleep(1.0)
-    except KeyboardInterrupt:
-        plotter.stop()

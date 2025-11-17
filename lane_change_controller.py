@@ -14,16 +14,18 @@ class LaneChangeController:
     在换道期间禁用constant velocity，使用TM保持目标速度
     """
 
-    def __init__(self, traffic_manager, target_vehicle):
+    def __init__(self, traffic_manager, target_vehicle, assumed_road_speed_limit_kmh=30.0):
         """
         初始化换道控制器
 
         Args:
             traffic_manager: CARLA Traffic Manager实例
             target_vehicle: 目标车辆（前车）
+            assumed_road_speed_limit_kmh: 假设的道路限速 (km/h)
         """
         self.tm = traffic_manager
         self.vehicle = target_vehicle
+        self.assumed_road_speed_limit_kmh = assumed_road_speed_limit_kmh
 
         # 换道状态管理
         self.is_changing_lane = False
@@ -41,14 +43,9 @@ class LaneChangeController:
         # 记录目标速度
         self.target_speed_during_change = current_target_speed_kmh
 
-        # 禁用constant velocity
-        self.vehicle.disable_constant_velocity()
-
         # 设置TM速度控制：让车辆尽量保持目标速度
-        speed_limit = self.vehicle.get_speed_limit()
-        if speed_limit and speed_limit > 0:
-            percentage_diff = ((speed_limit - current_target_speed_kmh) / speed_limit) * 100.0
-            self.tm.vehicle_percentage_speed_difference(self.vehicle, percentage_diff)
+        percentage_diff = ((self.assumed_road_speed_limit_kmh - current_target_speed_kmh) / self.assumed_road_speed_limit_kmh) * 100.0
+        self.tm.vehicle_percentage_speed_difference(self.vehicle, percentage_diff)
 
         # 降低安全检查，提高换道成功率
         self.tm.distance_to_leading_vehicle(self.vehicle, 0.5)  # 减小安全距离
@@ -73,14 +70,9 @@ class LaneChangeController:
         # 记录目标速度
         self.target_speed_during_change = current_target_speed_kmh
 
-        # 禁用constant velocity
-        self.vehicle.disable_constant_velocity()
-
         # 设置TM速度控制：让车辆尽量保持目标速度
-        speed_limit = self.vehicle.get_speed_limit()
-        if speed_limit and speed_limit > 0:
-            percentage_diff = ((speed_limit - current_target_speed_kmh) / speed_limit) * 100.0
-            self.tm.vehicle_percentage_speed_difference(self.vehicle, percentage_diff)
+        percentage_diff = ((self.assumed_road_speed_limit_kmh - current_target_speed_kmh) / self.assumed_road_speed_limit_kmh) * 100.0
+        self.tm.vehicle_percentage_speed_difference(self.vehicle, percentage_diff)
 
         # 降低安全检查，提高换道成功率
         self.tm.distance_to_leading_vehicle(self.vehicle, 0.5)  # 减小安全距离
