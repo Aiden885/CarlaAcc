@@ -190,6 +190,8 @@ class RealtimeResultPlotter:
         # 子图2：误差
         ax2.plot(steps, errors, color=color_error, linewidth=2.0,
                 label="Time Gap Error", marker='d', markersize=2, markevery=10)
+        # 添加零位参考线（虚线）
+        ax2.axhline(y=0, color='#808080', linestyle='--', linewidth=1.5, alpha=0.8, label="Zero Reference")
         ax2.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         ax2.set_ylabel("Error (s)", color=text_color, fontsize=11, fontweight='bold')
         ax2.set_title("Time Gap Error (Actual - Desired)", color=text_color,
@@ -334,6 +336,8 @@ class RealtimeResultPlotter:
         self.line_error, = self.ax2.plot(
             [], [], color=self.color_error, linewidth=2.0, label="Time Gap Error", marker='d', markersize=2, markevery=10
         )
+        # 添加零位参考线（虚线）
+        self.ax2.axhline(y=0, color='#808080', linestyle='--', linewidth=1.5, alpha=0.8, label="Zero Reference")
         self.ax2.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         self.ax2.set_ylabel("Error (s)", color=text_color, fontsize=11, fontweight='bold')
         self.ax2.set_title(

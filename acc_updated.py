@@ -163,9 +163,6 @@ class acc:
         # 初始化 Carla 客户端（使用配置）
         self.client = carla.Client(self.config.carla_host, self.config.carla_port)
 
-        # 远程服务器配置示例（已注释）
-        # self.client = carla.Client('192.168.0.144', 2000)
-        # self.config.map_name = 'acc_30km_new'
 
         self.client.set_timeout(self.config.carla_timeout)
         try:
@@ -1219,9 +1216,9 @@ class acc:
 def main():
     # 创建ACC实例
     # 使用配置文件默认值，或通过参数覆盖：
-    # acc_actor = acc(use_result_plotter=False)  # 测试模式
+    acc_actor = acc(use_result_plotter=False)  # 测试模式
     # acc_actor = acc(use_result_plotter=True)   # 结果保存模式
-    acc_actor = acc()  # 使用 acc_config.py 中的配置
+    # acc_actor = acc()  # 使用 acc_config.py 中的配置
 
     try:
         acc_actor.generate_target()

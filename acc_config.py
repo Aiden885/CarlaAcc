@@ -17,7 +17,7 @@ class ACCConfig:
         self.carla_host = 'localhost'
         self.carla_port = 2000
         self.carla_timeout = 60.0
-        self.map_name = 'Town04'
+        self.map_name = 'acc_30km_new'
 
         # 同步模式配置
         self.synchronous_mode = True
@@ -64,7 +64,7 @@ class ACCConfig:
             'kd': 0.02
         }
 
-        # 预瞄参数（可选，注释掉表示使用默认值）
+        # 预瞄参数（注释掉表示使用默认值）
         # self.lateral_lookahead_params = {
         #     'weight_current': 0.7,
         #     'weight_lookahead': 0.3,
