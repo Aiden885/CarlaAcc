@@ -129,33 +129,21 @@ class OutputFormatter:
               f"stage:{unified_output.get('sppvt_stage_output', 0)} "
               f"仲裁:{unified_output.get('torque_arbitration_active', False)}")
 
-        # 输出22个关键字段（全部标量化），便于逐帧检查成功/异常
-        output_fields = [
+        # 分类显示输出字段，便于逐帧检查
+        print("\n[Python ACC决策输出]")
+        python_decision_fields = [
             'control_enabled',
             'current_state',
             'current_decision',
             'torque_arbitration_active',
             'updated_V_target_kmh',
             'updated_G2_s',
-            'sppvt_control_output',
-            'sppvt_velocity_output',
-            'sppvt_acceleration_output',
-            'sppvt_stage_output',
-            'sppvt_status_output',
             'debug_message',
             'next_state',
             'next_has_history',
             'next_last_active_decision',
-            'new_stage_offset',
-            'new_stage',
-            'new_error_sign',
-            'new_upgrade_count',
-            'new_control_error',
-            'new_error_derivative',
-            'new_error_second_derivative',
         ]
-        print("[Simulink输出字段]")
-        for name in output_fields:
+        for name in python_decision_fields:
             present = name in unified_output
             value = unified_output.get(name, None)
             if not present:
@@ -173,6 +161,55 @@ class OutputFormatter:
                     status += " [长度异常]"
                 print(f"  {name:24s}: [{formatted}] {status}")
             elif isinstance(value, float):
+                print(f"  {name:24s}: {value:.6f} [OK]")
+            else:
+                print(f"  {name:24s}: {value} [OK]")
+
+        # Simulink SPPVT控制输出 (Simulink模型8个输出端口中直接用于控制的4个)
+        print("\n[Simulink SPPVT控制输出]")
+        simulink_sppvt_fields = [
+            'sppvt_control_output',    # 控制输出（目标加速度）
+            'sppvt_velocity_output',   # 误差导数（速度）
+            'sppvt_acceleration_output',  # 误差二阶导数（加速度）
+            'sppvt_jerk_output',       # 加加速度
+        ]
+        for name in simulink_sppvt_fields:
+            present = name in unified_output
+            value = unified_output.get(name, None)
+            if not present:
+                print(f"  {name:24s}: <缺失> [MISSING]")
+                continue
+            if value is None:
+                print(f"  {name:24s}: None [None]")
+                continue
+            if isinstance(value, float):
+                print(f"  {name:24s}: {value:.6f} [OK]")
+            else:
+                print(f"  {name:24s}: {value} [OK]")
+
+        # Python SPPVT阶段管理输出 (Python端根据Simulink输出计算的状态)
+        print("\n[Python SPPVT阶段管理输出]")
+        python_stage_fields = [
+            'sppvt_stage_output',      # 当前阶段
+            'sppvt_status_output',     # 状态指示
+            'new_stage_offset',        # 级差值
+            'new_stage',               # 新阶段
+            'new_error_sign',          # 误差符号
+            'new_upgrade_count',       # 升级计数
+            'new_control_error',       # 控制误差
+            'new_error_derivative',    # 误差导数
+            'new_error_second_derivative',  # 误差二阶导数
+        ]
+        for name in python_stage_fields:
+            present = name in unified_output
+            value = unified_output.get(name, None)
+            if not present:
+                print(f"  {name:24s}: <缺失> [MISSING]")
+                continue
+            if value is None:
+                print(f"  {name:24s}: None [None]")
+                continue
+            if isinstance(value, float):
                 print(f"  {name:24s}: {value:.6f} [OK]")
             else:
                 print(f"  {name:24s}: {value} [OK]")
@@ -251,7 +288,7 @@ class OutputFormatter:
             'has_target': has_target,
             'acc_system_enabled': acc_system_enabled,
             'acc_control_active': acc_decision.current_state == ACCState.IN_CONTROL,
-            'acc_state': 'Pure Simulink Mode',  # 状态描述
+            'acc_state': 'Hybrid Python+Simulink Mode',  # 状态描述
             'torque_arbitration_active': (hasattr(acc_decision, 'torque_arbitration_active') and
                                           acc_decision.torque_arbitration_active),
             'V_target_kmh': acc_params['V_target_kmh'],

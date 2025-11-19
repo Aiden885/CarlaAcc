@@ -52,6 +52,7 @@ class ACCConfig:
             'V_threshold_kmh': 50.0,   # 模式切换阈值
             'speed_step': 5.0          # 速度调整步长
         }
+        self.max_target_speed_kmh = 150.0    # 巡航速度上限（键盘/ACC控制使用）
 
         # ========== 感知配置 ==========
         self.max_follow_distance = 50.0     # 最大跟车距离（用于初始化）

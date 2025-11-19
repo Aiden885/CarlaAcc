@@ -8,7 +8,7 @@ import pygame
 from pygame.locals import *
 
 from acc_config import ACCConfig
-from acc_decision_sppvt_interface import ACCDecisionSPPVTInterface
+from acc_hybrid_controller import ACCHybridController
 # 导入显示管理器
 from display_manager import DisplayManager
 # 导入换道控制器
@@ -71,11 +71,11 @@ class acc:
         self.csv_file = None
         self.csv_writer = None
 
-        # === ACC决策+SPPVT一体化模块 ===
-        # 使用完整Simulink模型（包含决策+SPPVT控制），不使用简化的realtime_sppvt_manager
-        self.acc_decision_sppvt = ACCDecisionSPPVTInterface(
+        # === ACC混合控制器模块 ===
+        # Python决策 + Simulink SPPVT控制的混合架构
+        self.acc_decision_sppvt = ACCHybridController(
             debug=self.config.acc_decision_debug,
-            use_realtime_sppvt=self.config.use_realtime_sppvt
+            max_target_speed_kmh=self.config.max_target_speed_kmh
         )
 
         # === ACC系统可配置参数 (环境相关，需要传递给Simulink) ===
@@ -357,9 +357,9 @@ class acc:
         return self.acc_params.copy()
 
     def get_status_info(self):
-        """获取ACC状态信息，基于Simulink状态"""
+        """获取ACC状态信息，基于混合架构"""
         return {
-            'state_description': 'Pure Simulink Mode',
+            'state_description': 'Hybrid Python+Simulink Mode',
             'system_enabled': self.acc_system_enabled
         }
 
@@ -855,7 +855,7 @@ class acc:
                     # 为了向后兼容，从统一输出中提取传统的决策输出格式
                     decision_output = {
                         'control_enabled': unified_output['control_enabled'],
-                        'current_control_mode': f"SPPVT_{unified_output.get('sppvt_stage', 1)}",
+                        'current_control_mode': f"SPPVT_{unified_output.get('sppvt_stage_output', 1)}",
                         'current_decision': unified_output['current_decision'],
                         'torque_arbitration_active': unified_output['torque_arbitration_active']
                     }
@@ -881,8 +881,8 @@ class acc:
                             decision_output['control_enabled']  # ACC控制状态
                         )
 
-                    # 获取Simulink的原始控制输出（与control_error同符号）
-                    control_output = unified_output.get('target_accel', 0.0)
+                    # 获取SPPVT的原始控制输出
+                    control_output = unified_output.get('sppvt_control_output', 0.0)
 
                     # 根据控制模式进行符号转换
                     if control_mode_flag == 1:  # TIME模式
@@ -1196,6 +1196,10 @@ class acc:
         # 停止实时绘图器
         if hasattr(self, 'realtime_plotter'):
             self.realtime_plotter.stop()
+
+        # 清理混合控制器资源
+        if hasattr(self, 'acc_decision_sppvt'):
+            self.acc_decision_sppvt.cleanup()
 
         # 前车速度控制已由TM管理，无需手动禁用
 

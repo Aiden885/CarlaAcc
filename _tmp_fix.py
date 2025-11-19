@@ -1,5 +1,5 @@
 ﻿from pathlib import Path
-path = Path('generate_output_formatter_code.m')
+path = Path('output_formatter_code.m')
 lines = path.read_text(encoding='utf-8', errors='ignore').splitlines()
 for i, line in enumerate(lines):
     if '构造' in line:

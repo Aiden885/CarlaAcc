@@ -223,7 +223,7 @@ class ACCDecisionModule:
             print(f"执行决策: {decision.value}")
 
         # 根据决策类型执行相应的动作
-        if decision == ACCDecision.SPEED_DECREASE:
+        elif decision == ACCDecision.SPEED_DECREASE:
             # R1: 速度降低 - 速度减，控制继续
             self.V_target_kmh = max(self.V_min_kmh + 1, self.V_target_kmh - self.speed_step)
             self._update_two_mode_parameters()
