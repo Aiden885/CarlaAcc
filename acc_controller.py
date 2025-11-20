@@ -4,7 +4,19 @@ ACC核心控制器 - 高内聚设计
 """
 import numpy as np
 import time
+from enum import Enum
 from typing import Dict, Any, Tuple, Optional
+
+
+class ACCState(Enum):
+    """ACC状态枚举 - 用于类型安全的状态表示"""
+    ACTIVE_CONTROL = 0           # S0: 在控状态
+    ADAPTIVE_HISTORY_STANDBY = 1 # S1: 适速有史待命
+    ADAPTIVE_NO_HISTORY_STANDBY = 2 # S2: 适速无史待命
+    LOW_SPEED = 3                # S3: 低速状态
+
+    # 兼容性别名（用于向后兼容）
+    IN_CONTROL = 0
 
 
 class ACCController:

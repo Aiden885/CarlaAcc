@@ -7,8 +7,8 @@ import sys
 import time
 
 try:
-    from sppvt_manager_python import SPPVTManager
-    print("✅ 成功导入 SPPVTManager")
+    from sppvt_manager_simulink import SimulinkSPPVTManager
+    print("✅ 成功导入 SimulinkSPPVTManager")
 except Exception as e:
     print(f"❌ 导入失败: {e}")
     sys.exit(1)
@@ -20,12 +20,12 @@ def test_sppvt_manager():
     print("SPPVT Manager 测试")
     print("="*80)
 
-    # 1. 创建SPPVTManager实例
-    print("\n[步骤1] 创建SPPVTManager实例...")
+    # 1. 创建SimulinkSPPVTManager实例
+    print("\n[步骤1] 创建SimulinkSPPVTManager实例...")
     try:
-        sppvt_mgr = SPPVTManager()
+        sppvt_mgr = SimulinkSPPVTManager()
         sppvt_mgr.debug = True  # 启用调试输出
-        print("✅ SPPVTManager实例创建成功")
+        print("✅ SimulinkSPPVTManager实例创建成功")
     except Exception as e:
         print(f"❌ 创建失败: {e}")
         return False

@@ -8,7 +8,7 @@ import pygame
 from pygame.locals import *
 
 from acc_config import ACCConfig
-from acc_hybrid_controller import ACCHybridController
+from acc_control_facade import ACCControlFacade
 # 导入显示管理器
 from display_manager import DisplayManager
 # 导入换道控制器
@@ -73,9 +73,9 @@ class acc:
 
         # === ACC混合控制器模块 ===
         # Python决策 + Simulink SPPVT控制的混合架构
-        self.acc_decision_sppvt = ACCHybridController(
-            debug=self.config.acc_decision_debug,
-            max_target_speed_kmh=self.config.max_target_speed_kmh
+        self.acc_decision_sppvt = ACCControlFacade(
+            config=self.config,
+            debug=self.config.acc_decision_debug
         )
 
         # === ACC系统可配置参数 (环境相关，需要传递给Simulink) ===

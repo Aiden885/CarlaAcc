@@ -54,6 +54,16 @@ class ACCConfig:
         }
         self.max_target_speed_kmh = 150.0    # 巡航速度上限（键盘/ACC控制使用）
 
+        self.sppvt_params = {
+            'dt': 0.05,
+            'kp': 1.0,
+            'max_accel': 2.0,
+            'max_decel': -3.0,
+            'delta': 0.05,
+            'eta': 0.2,
+            'sppvt_rho': 0.1,
+        }
+
         # ========== 感知配置 ==========
         self.max_follow_distance = 50.0     # 最大跟车距离（用于初始化）
         self.detection_range = 200.0        # 前车检测范围（米）
@@ -113,6 +123,9 @@ class ACCConfig:
     def get_ramp_controller_params(self):
         """获取斜坡速度控制器参数"""
         return self.ramp_controller_params.copy()
+
+    def get_sppvt_params(self):
+        return self.sppvt_params.copy()
 
     def __str__(self):
         """打印配置摘要"""

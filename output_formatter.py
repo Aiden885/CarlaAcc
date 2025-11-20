@@ -2,6 +2,7 @@
 Output formatting utilities for ACC system
 输出格式化模块 - 提供Simulink I/O和系统信息的格式化输出
 """
+from acc_controller import ACCState
 
 
 class OutputFormatter:
@@ -268,8 +269,6 @@ class OutputFormatter:
         Returns:
             dict: 系统信息字典
         """
-        from acc_decision import ACCState  # 延迟导入避免循环依赖
-
         ego_speed = get_vehicle_speed_func(ego_vehicle)
         target_distance = get_vehicle_distance_func(ego_vehicle, target_vehicle)
         has_target = target_distance < 50.0
@@ -282,12 +281,20 @@ class OutputFormatter:
         except Exception:
             lane_offset = 0.0
 
+        # 兼容性处理：acc_decision.current_state 可能是整数或枚举
+        current_state = acc_decision.current_state
+        if isinstance(current_state, ACCState):
+            is_in_control = (current_state == ACCState.ACTIVE_CONTROL)
+        else:
+            # 如果是整数，比较值
+            is_in_control = (current_state == ACCState.ACTIVE_CONTROL.value)
+
         return {
             'ego_speed': ego_speed,
             'target_distance': target_distance,
             'has_target': has_target,
             'acc_system_enabled': acc_system_enabled,
-            'acc_control_active': acc_decision.current_state == ACCState.IN_CONTROL,
+            'acc_control_active': is_in_control,
             'acc_state': 'Hybrid Python+Simulink Mode',  # 状态描述
             'torque_arbitration_active': (hasattr(acc_decision, 'torque_arbitration_active') and
                                           acc_decision.torque_arbitration_active),
