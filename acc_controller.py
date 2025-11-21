@@ -1,7 +1,10 @@
 """
 ACC核心控制器 - 高内聚设计
 整合决策逻辑、输入验证、状态管理
+使用外化的状态转移表 (state_transitions.json)
 """
+import json
+import os
 import numpy as np
 import time
 from enum import Enum
@@ -27,18 +30,19 @@ class ACCController:
     - 处理键盘指令和参数调整
     """
     
-    def __init__(self, debug: bool = False, max_target_speed_kmh: float = 150.0):
+    def __init__(self, debug: bool = False, max_target_speed_kmh: float = 150.0,
+                 transition_table_path: str = None):
         self.debug = debug
         self.max_target_speed_kmh = max_target_speed_kmh
-        
+
         # ACC状态定义
         self.STATES = {
             'ACTIVE_CONTROL': 0,           # S0: 在控状态
-            'ADAPTIVE_HISTORY_STANDBY': 1, # S1: 适速有史待命  
+            'ADAPTIVE_HISTORY_STANDBY': 1, # S1: 适速有史待命
             'ADAPTIVE_NO_HISTORY_STANDBY': 2, # S2: 适速无史待命
             'LOW_SPEED': 3                 # S3: 低速状态
         }
-        
+
         # 决策定义
         self.DECISIONS = {
             'DECREASE_SPEED': 1,           # R1: 速度降低
@@ -50,19 +54,35 @@ class ACCController:
             'TORQUE_ARBITRATION': 7,       # R7: 扭矩仲裁
             'SYSTEM_STANDBY': 8            # R8: 系统待命
         }
-        
+
+        # 加载状态转移表
+        if transition_table_path is None:
+            # 默认路径：与当前文件同目录下的state_transitions.json
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            transition_table_path = os.path.join(current_dir, 'state_transitions.json')
+
+        try:
+            with open(transition_table_path, 'r', encoding='utf-8') as f:
+                self.transition_table = json.load(f)
+            if self.debug:
+                print(f"✅ 成功加载状态转移表: {transition_table_path}")
+        except FileNotFoundError:
+            raise RuntimeError(f"状态转移表文件未找到: {transition_table_path}")
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"状态转移表JSON解析失败: {e}")
+
         # ACC状态
         self.current_state = self.STATES['ADAPTIVE_NO_HISTORY_STANDBY']
         self.has_history = False
         self.last_active_decision = self.DECISIONS['SYSTEM_STANDBY']
-        
+
         # 控制参数
         self.params = {
             'V_target_kmh': 50.0,
             'V_min_kmh': 30.0,
             'G2_s': 2.0
         }
-        
+
         # 调试计数器
         self.debug_counter = 0
         
@@ -184,77 +204,60 @@ class ACCController:
     
     def _handle_state_machine(self, command_type: int) -> Tuple[bool, int]:
         """
-        内部状态机逻辑
-        
+        内部状态机逻辑 - 使用外化的状态转移表
+
         Returns:
             Tuple[control_enabled, decision]
         """
-        if command_type == 0:  # 无指令
-            if self.current_state == self.STATES['ACTIVE_CONTROL']:
-                return True, self.last_active_decision  # 保持控制
-            else:
-                return False, self.DECISIONS['SYSTEM_STANDBY']
-        
-        # 根据当前状态处理指令
-        if self.current_state == self.STATES['ACTIVE_CONTROL']:
-            return self._handle_active_control_state(command_type)
-        elif self.current_state == self.STATES['ADAPTIVE_HISTORY_STANDBY']:
-            return self._handle_adaptive_history_standby_state(command_type)
-        elif self.current_state == self.STATES['ADAPTIVE_NO_HISTORY_STANDBY']:
-            return self._handle_adaptive_no_history_standby_state(command_type)
-        elif self.current_state == self.STATES['LOW_SPEED']:
-            return False, self.DECISIONS['SYSTEM_STANDBY']  # 低速状态不响应指令
-        else:
-            # 错误状态，重置
+        # 从转移表中查找当前状态的转移规则
+        state_key = str(self.current_state)
+        # 确保command_type为整数类型（防止float导致键查找失败）
+        command_key = str(int(command_type))
+
+        # 获取当前状态的转移表
+        if state_key not in self.transition_table['transitions']:
+            # 未知状态，使用错误状态的默认转移
+            if self.debug:
+                print(f"⚠️ 未知状态 {self.current_state}，重置到S2")
             self.current_state = self.STATES['ADAPTIVE_NO_HISTORY_STANDBY']
             self.has_history = False
             return False, self.DECISIONS['SYSTEM_STANDBY']
-    
-    def _handle_active_control_state(self, command_type: int) -> Tuple[bool, int]:
-        """处理S0在控状态"""
-        if command_type == 1:  # E: 降速
-            return True, self.DECISIONS['DECREASE_SPEED']
-        elif command_type == 2:  # Q: 增速
-            return True, self.DECISIONS['INCREASE_SPEED']
-        elif command_type == 3:  # T: 降距
-            return True, self.DECISIONS['DECREASE_DISTANCE']
-        elif command_type == 4:  # R: 增距
-            return True, self.DECISIONS['INCREASE_DISTANCE']
-        elif command_type == 5:  # W: 油门
-            return True, self.DECISIONS['TORQUE_ARBITRATION']
-        elif command_type in [6, 7]:  # S: 刹车, C: 取消
-            self.current_state = self.STATES['ADAPTIVE_HISTORY_STANDBY']
-            if self.debug:
-                print("🔄 退出控制，转入S1有史待命")
-            return False, self.DECISIONS['SYSTEM_STANDBY']
+
+        state_transitions = self.transition_table['transitions'][state_key]
+
+        # 查找匹配的转移规则
+        if command_key in state_transitions:
+            transition = state_transitions[command_key]
+        elif 'default' in state_transitions:
+            transition = state_transitions['default']
         else:
-            return True, self.DECISIONS['SYSTEM_STANDBY']
-    
-    def _handle_adaptive_history_standby_state(self, command_type: int) -> Tuple[bool, int]:
-        """处理S1适速有史待命状态"""
-        if command_type == 1:  # E: 当速启控
-            self.current_state = self.STATES['ACTIVE_CONTROL']
+            # 如果没有找到转移规则，返回待命状态
             if self.debug:
-                print("🚀 当速启控，转入S0在控状态")
-            return True, self.DECISIONS['ACTIVATE_CURRENT_SPEED']
-        elif command_type == 2:  # Q: 继承启控
-            self.current_state = self.STATES['ACTIVE_CONTROL']
-            if self.debug:
-                print("🚀 继承启控，转入S0在控状态")
-            return True, self.DECISIONS['ACTIVATE_INHERITED_SPEED']
-        else:
+                print(f"⚠️ 状态S{self.current_state}未找到指令{command_type}的转移规则")
             return False, self.DECISIONS['SYSTEM_STANDBY']
-    
-    def _handle_adaptive_no_history_standby_state(self, command_type: int) -> Tuple[bool, int]:
-        """处理S2适速无史待命状态"""
-        if command_type == 1:  # E: 当速启控
-            self.current_state = self.STATES['ACTIVE_CONTROL']
-            self.has_history = True  # 启控后产生历史
-            if self.debug:
-                print("🚀 当速启控，转入S0在控状态，产生历史数据")
-            return True, self.DECISIONS['ACTIVATE_CURRENT_SPEED']
-        else:
-            return False, self.DECISIONS['SYSTEM_STANDBY']
+
+        # 提取转移信息
+        next_state = transition['next_state']
+        decision = transition['decision']
+        control_enabled = transition['control_enabled']
+        description = transition.get('description', '')
+        side_effect = transition.get('side_effect', None)
+
+        # 处理特殊决策值 -1 (使用last_active_decision)
+        if decision == -1:
+            decision = self.last_active_decision
+
+        # 执行状态转移（只在状态改变时）
+        if next_state != self.current_state:
+            self.current_state = next_state
+            if self.debug and description:
+                print(description)
+
+        # 处理副作用
+        if side_effect == 'set_has_history_true':
+            self.has_history = True
+
+        return control_enabled, decision
     
     def get_state_info(self) -> Dict[str, Any]:
         """获取当前状态信息"""

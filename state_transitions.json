@@ -1,0 +1,163 @@
+{
+  "version": "1.0",
+  "description": "ACC状态机转移表 - 外化配置",
+  "author": "Generated from acc_controller.py state machine logic",
+  "date": "2025-11-21",
+
+  "comment": "此配置文件定义了ACC系统的完整状态转移逻辑。状态(0-3)对应S0-S3，指令(0-7)对应键盘输入。decision=-1表示使用last_active_decision。",
+
+  "transitions": {
+    "0": {
+      "_comment": "S0 - ACTIVE_CONTROL (在控状态)",
+      "0": {
+        "next_state": 0,
+        "decision": -1,
+        "control_enabled": true,
+        "description": "保持控制"
+      },
+      "1": {
+        "next_state": 0,
+        "decision": 1,
+        "control_enabled": true,
+        "description": "E键:降速"
+      },
+      "2": {
+        "next_state": 0,
+        "decision": 2,
+        "control_enabled": true,
+        "description": "Q键:增速"
+      },
+      "3": {
+        "next_state": 0,
+        "decision": 3,
+        "control_enabled": true,
+        "description": "T键:降距"
+      },
+      "4": {
+        "next_state": 0,
+        "decision": 4,
+        "control_enabled": true,
+        "description": "R键:增距"
+      },
+      "5": {
+        "next_state": 0,
+        "decision": 7,
+        "control_enabled": true,
+        "description": "W键:扭矩仲裁"
+      },
+      "6": {
+        "next_state": 1,
+        "decision": 8,
+        "control_enabled": false,
+        "description": "🔄 退出控制，转入S1有史待命"
+      },
+      "7": {
+        "next_state": 1,
+        "decision": 8,
+        "control_enabled": false,
+        "description": "🔄 退出控制，转入S1有史待命"
+      },
+      "default": {
+        "next_state": 0,
+        "decision": 8,
+        "control_enabled": true,
+        "description": "未知指令"
+      }
+    },
+
+    "1": {
+      "_comment": "S1 - ADAPTIVE_HISTORY_STANDBY (适速有史待命)",
+      "0": {
+        "next_state": 1,
+        "decision": 8,
+        "control_enabled": false,
+        "description": "待命状态"
+      },
+      "1": {
+        "next_state": 0,
+        "decision": 5,
+        "control_enabled": true,
+        "description": "🚀 当速启控，转入S0在控状态"
+      },
+      "2": {
+        "next_state": 0,
+        "decision": 6,
+        "control_enabled": true,
+        "description": "🚀 继承启控，转入S0在控状态"
+      },
+      "default": {
+        "next_state": 1,
+        "decision": 8,
+        "control_enabled": false,
+        "description": "待命状态"
+      }
+    },
+
+    "2": {
+      "_comment": "S2 - ADAPTIVE_NO_HISTORY_STANDBY (适速无史待命)",
+      "0": {
+        "next_state": 2,
+        "decision": 8,
+        "control_enabled": false,
+        "description": "待命状态"
+      },
+      "1": {
+        "next_state": 0,
+        "decision": 5,
+        "control_enabled": true,
+        "side_effect": "set_has_history_true",
+        "description": "🚀 当速启控，转入S0在控状态，产生历史数据"
+      },
+      "default": {
+        "next_state": 2,
+        "decision": 8,
+        "control_enabled": false,
+        "description": "待命状态"
+      }
+    },
+
+    "3": {
+      "_comment": "S3 - LOW_SPEED (低速状态)",
+      "default": {
+        "next_state": 3,
+        "decision": 8,
+        "control_enabled": false,
+        "description": "低速状态不响应指令"
+      }
+    }
+  },
+
+  "state_names": {
+    "0": "ACTIVE_CONTROL",
+    "1": "ADAPTIVE_HISTORY_STANDBY",
+    "2": "ADAPTIVE_NO_HISTORY_STANDBY",
+    "3": "LOW_SPEED"
+  },
+
+  "decision_names": {
+    "1": "DECREASE_SPEED",
+    "2": "INCREASE_SPEED",
+    "3": "DECREASE_DISTANCE",
+    "4": "INCREASE_DISTANCE",
+    "5": "ACTIVATE_CURRENT_SPEED",
+    "6": "ACTIVATE_INHERITED_SPEED",
+    "7": "TORQUE_ARBITRATION",
+    "8": "SYSTEM_STANDBY"
+  },
+
+  "command_names": {
+    "0": "NONE",
+    "1": "I0_降速/当速启控",
+    "2": "I1_增速/继承启控",
+    "3": "I2_降距",
+    "4": "I3_增距",
+    "5": "I4_油门",
+    "6": "I5_刹车",
+    "7": "I6_取消"
+  },
+
+  "special_values": {
+    "use_last_active_decision": -1,
+    "_comment": "decision=-1表示使用last_active_decision（仅用于S0+cmd0的保持控制场景）"
+  }
+}
