@@ -11,11 +11,10 @@ from acc_config import ACCConfig
 from acc_control_facade import ACCControlFacade
 # 导入显示管理器
 from display_manager import DisplayManager
-# 导入换道控制器
-from lane_change_controller import LaneChangeController
-
 # 导入增强横向控制器（PID + 预瞄）
 from enhanced_lateral_controller import EnhancedLateralController
+# 导入换道控制器
+from lane_change_controller import LaneChangeController
 from manual_input_controller import ManualSteeringController
 from output_formatter import OutputFormatter
 # 导入斜坡速度控制器
@@ -163,7 +162,6 @@ class acc:
         # 初始化 Carla 客户端（使用配置）
         self.client = carla.Client(self.config.carla_host, self.config.carla_port)
 
-
         self.client.set_timeout(self.config.carla_timeout)
         try:
             self.world = self.client.get_world()
@@ -285,7 +283,8 @@ class acc:
 
                 # 设置目标速度（使用speed_limit百分比机制）
                 # percentage_diff正值=减速，负值=超速
-                percentage_diff = ((self.assumed_road_speed_limit_kmh - self.target_speed_kmh) / self.assumed_road_speed_limit_kmh) * 100.0
+                percentage_diff = ((
+                                               self.assumed_road_speed_limit_kmh - self.target_speed_kmh) / self.assumed_road_speed_limit_kmh) * 100.0
                 tm.vehicle_percentage_speed_difference(vehicle, percentage_diff)
 
                 # 设置其他TM参数，使速度更稳定
@@ -648,7 +647,8 @@ class acc:
                         restore_speed = self.target_speed_kmh
 
                     # 使用TM速度控制
-                    percentage_diff = ((self.assumed_road_speed_limit_kmh - restore_speed) / self.assumed_road_speed_limit_kmh) * 100.0
+                    percentage_diff = ((
+                                                   self.assumed_road_speed_limit_kmh - restore_speed) / self.assumed_road_speed_limit_kmh) * 100.0
                     self.tm.vehicle_percentage_speed_difference(self.target_vehicle, percentage_diff)
                     print(f"🔄 恢复TM速度控制: {restore_speed:.1f} km/h (百分比{percentage_diff:.1f}%)")
 
@@ -661,7 +661,8 @@ class acc:
                         ramp_target_speed = self.ramp_controller.get_target_speed()
                         if ramp_target_speed is not None and self.target_vehicle:
                             # 使用TM速度控制（每帧更新）
-                            percentage_diff = ((self.assumed_road_speed_limit_kmh - ramp_target_speed) / self.assumed_road_speed_limit_kmh) * 100.0
+                            percentage_diff = ((
+                                                           self.assumed_road_speed_limit_kmh - ramp_target_speed) / self.assumed_road_speed_limit_kmh) * 100.0
                             self.tm.vehicle_percentage_speed_difference(self.target_vehicle, percentage_diff)
 
                     # === 前车速度控制（根据模式选择）===
@@ -698,14 +699,15 @@ class acc:
                                 # 计算速度百分比偏差
                                 # percentage = (speed_limit - target_speed) / speed_limit * 100
                                 percentage_diff = ((
-                                                               current_speed_limit - self.target_speed_kmh) / current_speed_limit) * 100.0
+                                                           current_speed_limit - self.target_speed_kmh) / current_speed_limit) * 100.0
 
                                 # 更新Traffic Manager设置
                                 self.tm.vehicle_percentage_speed_difference(self.target_vehicle, percentage_diff)
 
                                 # 输出限速变化信息
                                 if self.last_speed_limit is not None:
-                                    print(f"\n🚦 路段限速变化: {self.last_speed_limit:.1f} → {current_speed_limit:.1f} km/h")
+                                    print(
+                                        f"\n🚦 路段限速变化: {self.last_speed_limit:.1f} → {current_speed_limit:.1f} km/h")
                                 else:
                                     print(f"\n🚦 初始路段限速: {current_speed_limit:.1f} km/h")
 
