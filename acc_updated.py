@@ -863,8 +863,11 @@ class acc:
                     }
 
                     # === 同步扭矩仲裁状态到acc_decision对象（用于pygame显示）===
-                    self.acc_decision_sppvt.torque_arbitration_active = unified_output.get('torque_arbitration_active',
-                                                                                           False)
+                    # 保存决策层的原始标志，显示层可做平滑处理
+                    self.acc_decision_sppvt.torque_arbitration_active_raw = unified_output.get(
+                        'torque_arbitration_active', False)
+                    self.acc_decision_sppvt.torque_arbitration_active = unified_output.get(
+                        'torque_arbitration_active', False)
 
                     # === 实时绘图：添加TIME模式数据 ===
                     if control_mode_flag == 1 and has_target:  # TIME模式且有前车
@@ -913,6 +916,12 @@ class acc:
                 # === ACC控制执行条件判断 ===
                 acc_should_control = (self.acc_system_enabled and
                                       decision_output['control_enabled'])
+
+                # 显示用的仲裁标志：仅在ACC在控且有人为油门输入时显示，避免ACC未开启时误亮
+                display_torque_arbitration = bool(acc_should_control and (
+                        self.w_key_pressed or self.manual_throttle_input > 0))
+                self.torque_arbitration_display = display_torque_arbitration
+                self.acc_decision_sppvt.torque_arbitration_active = display_torque_arbitration
 
                 # 初始化最终控制信息字典
                 final_control = {
@@ -982,8 +991,11 @@ class acc:
                                 control.throttle = 0.0
                                 control.brake = 0.0
 
-                            # Apply PID-based lateral steering
-                            control.steer = steer_output
+                            # Apply PID-based lateral steering，手动转向输入优先
+                            if abs(self.manual_steer_input) > 1e-3:
+                                control.steer = self.manual_steer_input
+                            else:
+                                control.steer = steer_output
 
                             # === Handle W/S override ===
                             if self.manual_throttle_input > 0:
@@ -1127,12 +1139,16 @@ class acc:
                     'sppvt_target_accel': sppvt_target_accel  # 符号转换后的加速度
                 }
 
+                # 显示输出使用防误亮/防闪烁的仲裁标志
+                display_unified_output = dict(unified_output)
+                display_unified_output['torque_arbitration_active'] = display_torque_arbitration
+
                 # === 格式化输出Simulink I/O信息 ===
                 OutputFormatter.print_simulink_io(
                     frame_num=frame_count,
                     current_time=time.time() - self.start_time,
                     unified_input=unified_input,
-                    unified_output=unified_output,
+                    unified_output=display_unified_output,
                     duration_ms=simulink_duration_ms,
                     manual_throttle_input=self.manual_throttle_input,
                     manual_brake_input=self.manual_brake_input,

@@ -77,6 +77,18 @@ class ACCControlFacade:
         if hasattr(self.sppvt_manager, 'cleanup'):
             self.sppvt_manager.cleanup()
 
+    def reset(self):
+        """Reset decision/controller state and performance counters."""
+        if hasattr(self.acc_controller, 'reset'):
+            self.acc_controller.reset()
+        if hasattr(self.sppvt_manager, 'reset'):
+            self.sppvt_manager.reset()
+        self.torque_arbitration_active = False
+        self.call_count = 0
+        self.total_processing_time = 0.0
+        self.last_processing_time = 0.0
+        self._last_decision_output = None
+
     # ------------------------------------------------------------------ helpers
     def _sanitize_input(self, input_data: Dict) -> Dict:
         sanitized = {}

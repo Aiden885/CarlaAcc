@@ -197,7 +197,8 @@ class ACCController:
         control_enabled, decision = self._handle_state_machine(command_type)
         
         # 更新有效决策历史
-        if decision >= 1 and decision <= 7:
+        # 注意：不记录R7(扭矩仲裁)和R8(待命)，只记录R1-R6(有效的ACC控制决策)
+        if decision >= 1 and decision <= 6:
             self.last_active_decision = decision
             
         return control_enabled, decision, updated_params
