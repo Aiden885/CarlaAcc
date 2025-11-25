@@ -29,10 +29,22 @@ class ACCConfig:
         # 目标车蓝图
         self.target_vehicle_blueprint = 'vehicle.tesla.model3'
 
+        # 侧向切入工况配置
+        self.enable_cut_in_scenario = True          # 是否启用切入测试工况
+        self.cut_in_vehicle_blueprint = 'vehicle.tesla.model3'
+        self.cut_in_from_left = True                 # True 从左侧切入，False 从右侧
+        self.cut_in_trigger_time_s = 10.0             # 多少秒后触发切入
+        self.cut_in_lateral_threshold_m = 0.5        # 进入本车道的横向阈值（米）
+        self.cut_in_target_spawn_location = carla.Location(x=2393.492188, y=-340.496368, z=35.952347)
+        self.cut_in_side_spawn_location = carla.Location(x=2394.350342, y=-367.901031, z=37.677494)
+        self.cut_in_side_spawn_back_offset_m = 10.0  # 侧车沿车道后移距离（米），0=不后移
+        self.cut_in_side_spawn_z_lift_m = 0.5        # 侧车生成抬升高度（米），避免贴地失败
+        self.cut_in_lane_entry_margin_m = 0.1        # 车身中心跨过车道线内侧距离阈值（米）
+
         # 固定生成点 (Town04默认位置)
         self.spawn_location = carla.Location(x=2511.432617, y=1281.097046, z=0.5)
         self.spawn_z_offset = 0.1  # 生成高度偏移，避免掉落
-        self.ego_spawn_distance = 10.0  # 自车生成距离（米，目标车后方）
+        self.ego_spawn_distance = 50.0  # 自车生成距离（米，目标车后方）
 
         # ========== Traffic Manager配置 ==========
         self.tm_port = 8000
@@ -48,7 +60,7 @@ class ACCConfig:
         self.acc_params = {
             'V_target_kmh': 50.0,      # 默认巡航速度
             'V_min_kmh': 20.0,         # 最小速度阈值
-            'G2_s': 2.0,               # 时距参数
+            'G2_s': 4.0,               # 时距参数
             'V_threshold_kmh': 50.0,   # 模式切换阈值
             'speed_step': 5.0          # 速度调整步长
         }

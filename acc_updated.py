@@ -17,6 +17,7 @@ from enhanced_lateral_controller import EnhancedLateralController
 from lane_change_controller import LaneChangeController
 from manual_input_controller import ManualSteeringController
 from output_formatter import OutputFormatter
+from cut_in_scenario import CutInScenarioManager
 # 导入斜坡速度控制器
 from ramp_speed_controller import RampSpeedController
 # 导入实时绘图器
@@ -79,6 +80,12 @@ class acc:
 
         # === ACC系统可配置参数 (环境相关，需要传递给Simulink) ===
         self.acc_params = self.config.get_acc_params()
+        # 初始化两模式控制参数与配置一致
+        set_two_mode_parameters(
+            V_threshold_kmh=self.acc_params['V_target_kmh'],
+            G2_s=self.acc_params['G2_s'],
+            target_speed_kmh=self.acc_params['V_target_kmh']
+        )
 
         # === 保持原有决策接口兼容性 ===
         self.acc_decision = self.acc_decision_sppvt  # 兼容性别名
@@ -96,6 +103,9 @@ class acc:
         self.manual_brake_input = 0.0
         self.manual_steer_input = 0.0
         self._last_manual_steer_update = time.time()
+        self.cut_in_manager = None
+        self.cut_in_vehicle = None
+        self.sim_elapsed_s = 0.0
 
         # 按键按下状态跟踪
         self.w_key_pressed = False  # W键（油门）是否按下
@@ -186,14 +196,17 @@ class acc:
         vehicle_bp = self.blueprint_library.filter(self.config.target_vehicle_blueprint)[0]
         ego_vehicle_bp = self.blueprint_library.filter(self.config.ego_vehicle_blueprint)[0]
 
-        # 定义固定生成点（使用配置）
+        # 定义固定生成点（使用配置；切入工况下改用预设前车位置）
+        spawn_location = (self.config.cut_in_target_spawn_location
+                          if self.config.enable_cut_in_scenario and self.config.cut_in_target_spawn_location
+                          else self.config.spawn_location)
         # 其他可选位置（注释保留供参考）:
         # right x=1654.013672, y=6322.584473, z=-0.009410
         # left x=897.991394, y=5805.217773, z=-0.009344
         # up  x=1964.847778, y=-4824.012207, z=-0.009341
         # down x=2127.969482, y=-3362.775146, z=54.469646
         waypoint = map.get_waypoint(
-            self.config.spawn_location,
+            spawn_location,
             project_to_road=True,
             lane_type=carla.LaneType.Driving
         )
@@ -205,7 +218,21 @@ class acc:
         spawn_point.location.z += self.config.spawn_z_offset
 
         vehicles = []
-        target_vehicle = self.world.try_spawn_actor(vehicle_bp, spawn_point)
+        # 目标车：若启用切入工况，使用预设位置；否则使用waypoint位置
+        target_vehicle = None
+        if self.config.enable_cut_in_scenario and self.config.cut_in_target_spawn_location is not None:
+            tgt_wp = map.get_waypoint(self.config.cut_in_target_spawn_location, project_to_road=True,
+                                      lane_type=carla.LaneType.Driving)
+            if tgt_wp is not None:
+                tgt_transform = tgt_wp.transform
+                tgt_transform.location = carla.Location(self.config.cut_in_target_spawn_location.x,
+                                                        self.config.cut_in_target_spawn_location.y,
+                                                        self.config.cut_in_target_spawn_location.z + 0.0)
+                target_vehicle = self.world.try_spawn_actor(vehicle_bp, tgt_transform)
+            else:
+                print("⚠️ 切入工况预设前车坐标不在可行驶车道，回退到默认spawn点")
+        if target_vehicle is None:
+            target_vehicle = self.world.try_spawn_actor(vehicle_bp, spawn_point)
         if target_vehicle is None:
             raise RuntimeError("Failed to spawn target vehicle at waypoint location")
         vehicles.append(target_vehicle)
@@ -235,7 +262,7 @@ class acc:
         self.target_speed_kmh = self.config.target_speed_kmh  # 使用配置的初始速度
         self.use_constant_velocity = self.config.use_constant_velocity
 
-        # 生成自车：沿车道前进方向偏移一定距离以避免碰撞
+        # 生成自车：沿车道前进方向偏移一定距离以避免碰撞（相对于目标车所在车道）
         ego_waypoints = waypoint.previous(self.config.ego_spawn_distance)
         if not ego_waypoints:
             raise RuntimeError("Failed to find a waypoint 20 meters ahead for ego vehicle spawn")
@@ -264,6 +291,28 @@ class acc:
 
         # 保存Traffic Manager引用供后续使用
         self.tm = tm
+
+        # 可选：初始化切入工况，生成侧向待切入车辆
+        if self.config.enable_cut_in_scenario:
+            self.cut_in_manager = CutInScenarioManager(
+                world=self.world,
+                traffic_manager=tm,
+                ego_vehicle=self.ego_vehicle,
+                lead_vehicle=self.target_vehicle,
+                blueprint_library=self.blueprint_library,
+                enable_from_left=self.config.cut_in_from_left,
+                trigger_time_s=self.config.cut_in_trigger_time_s,
+                lateral_threshold_m=self.config.cut_in_lateral_threshold_m,
+                vehicle_blueprint=self.config.cut_in_vehicle_blueprint,
+                side_spawn_location=self.config.cut_in_side_spawn_location,
+                side_back_offset=self.config.cut_in_side_spawn_back_offset_m,
+                side_spawn_z_lift=self.config.cut_in_side_spawn_z_lift_m,
+                lane_entry_margin=self.config.cut_in_lane_entry_margin_m
+            )
+            if self.cut_in_manager and self.cut_in_manager.cut_in_vehicle:
+                self.cut_in_vehicle = self.cut_in_manager.cut_in_vehicle
+                vehicles.append(self.cut_in_vehicle)
+                print("✅ 切入工况：侧向车辆已加入控制列表")
 
         # === 初始化换道控制器 ===
         self.lane_change_controller = LaneChangeController(
@@ -504,6 +553,14 @@ class acc:
         }
         print(f"⌨️ 已记录键盘指令: {description} (将在下一帧处理)")
 
+    def _set_target_vehicle(self, vehicle):
+        """统一更新前车引用（感知/换道控制器同步）"""
+        self.target_vehicle = vehicle
+        if hasattr(self, 'carla_perception') and self.carla_perception:
+            self.carla_perception.target_vehicle = vehicle
+        if hasattr(self, 'lane_change_controller') and self.lane_change_controller:
+            self.lane_change_controller.vehicle = vehicle
+
     def get_system_info(self):
         """获取系统状态信息，用于显示 """
         acc_params = self.get_current_parameters()
@@ -530,6 +587,7 @@ class acc:
         """主循环 - 完整集成ACC决策、控制和显示"""
         try:
             self.start_time = time.time()
+            self.sim_elapsed_s = 0.0
             frame_count = 0
 
             print("\n=== ACC Integrated Control System ===")
@@ -734,9 +792,14 @@ class acc:
                     elapsed = current_time - perf_start_time
                     print_performance_report(perf_times, elapsed)
                     last_perf_report_time = current_time
+                # 由于同步模式固定步长，使用固定delta积累更符合触发时间控制
+                self.sim_elapsed_s += self.config.fixed_delta_seconds
 
                 t0 = time.time()
                 # === 获取车辆状态 ===
+                # 切入工况更新（触发变道、尝试切换跟车目标）
+                self._update_cut_in_scenario(self.sim_elapsed_s)
+
                 ego_speed = VehicleUtils.get_vehicle_speed(self.ego_vehicle)
                 target_speed = VehicleUtils.get_vehicle_speed(self.target_vehicle) if self.target_vehicle else 0.0
 
@@ -1233,6 +1296,19 @@ class acc:
             self.world.apply_settings(settings)
 
         print(f"Destroyed {len(self.vehicles)} vehicles, ego vehicle, and restored settings.")
+
+    def _update_cut_in_scenario(self, elapsed_time_s: float):
+        """切入工况的周期更新：触发变道并在满足条件时切换跟车目标。"""
+        if not self.cut_in_manager:
+            return
+
+        self.cut_in_manager.maybe_trigger_cut_in(elapsed_time_s)
+
+        if (self.cut_in_manager.cut_in_vehicle and
+                self.target_vehicle != self.cut_in_manager.cut_in_vehicle and
+                self.cut_in_manager.should_switch_to_cut_in()):
+            print("🚗 切入车辆已进入本车道，切换跟车目标")
+            self._set_target_vehicle(self.cut_in_manager.cut_in_vehicle)
 
 
 def main():

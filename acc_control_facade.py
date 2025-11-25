@@ -32,6 +32,11 @@ class ACCControlFacade:
             debug=debug,
             max_target_speed_kmh=self.config.max_target_speed_kmh
         )
+        # 初始化决策参数与配置保持一致
+        try:
+            self.acc_controller.params.update(self.config.acc_params)
+        except Exception:
+            pass
         self.sppvt_manager = SimulinkSPPVTManager(
             matlab_engine=matlab_engine,
             model_name=model_name,
