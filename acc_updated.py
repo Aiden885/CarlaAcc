@@ -37,7 +37,7 @@ from vehicle_utils import VehicleUtils
 # $env:ALL_PROXY = "socks5://127.0.0.1:7891"
 # 升级条件: (acceleration < 0) && (|velocity| <= delta) && (|error| > eta)
 
-
+#测试commit 和 push
 class acc:
     def __init__(self, use_result_plotter=None):
         """
