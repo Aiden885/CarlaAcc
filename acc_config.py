@@ -37,14 +37,24 @@ class ACCConfig:
         self.cut_in_lateral_threshold_m = 0.5        # 进入本车道的横向阈值（米）
         self.cut_in_target_spawn_location = carla.Location(x=2393.492188, y=-340.496368, z=35.952347)
         self.cut_in_side_spawn_location = carla.Location(x=2394.350342, y=-367.901031, z=37.677494)
+
+
         self.cut_in_side_spawn_back_offset_m = 10.0  # 侧车沿车道后移距离（米），0=不后移
         self.cut_in_side_spawn_z_lift_m = 0.5        # 侧车生成抬升高度（米），避免贴地失败
         self.cut_in_lane_entry_margin_m = 0.1        # 车身中心跨过车道线内侧距离阈值（米）
 
+        # 侧向切出工况配置
+        self.enable_cut_out_scenario = False          # 是否启用切出测试工况
+        self.cut_out_vehicle_blueprint = 'vehicle.tesla.model3'
+        self.cut_out_trigger_time_s = 15.0            # 多少秒后触发切出前车变道
+        self.cut_out_change_to_right = True           # True 向右切出，False 向左
+        self.cut_out_front_spawn_location = carla.Location(x=2566.59, y=2065.70, z=12)
+        self.cut_out_cut_back_distance_m = 50.0       # 切出车相对前车的后移距离（米）
+
         # 固定生成点 (Town04默认位置)
         self.spawn_location = carla.Location(x=2511.432617, y=1281.097046, z=0.5)
         self.spawn_z_offset = 0.1  # 生成高度偏移，避免掉落
-        self.ego_spawn_distance = 50.0  # 自车生成距离（米，目标车后方）
+        self.ego_spawn_distance = 100.0  # 自车生成距离（米，目标车后方）
 
         # ========== Traffic Manager配置 ==========
         self.tm_port = 8000

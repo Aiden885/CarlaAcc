@@ -1,5 +1,6 @@
 import csv
 import time
+import argparse
 
 import carla
 import numpy as np
@@ -18,6 +19,7 @@ from lane_change_controller import LaneChangeController
 from manual_input_controller import ManualSteeringController
 from output_formatter import OutputFormatter
 from cut_in_scenario import CutInScenarioManager
+from cut_out_scenario import CutOutScenarioManager
 # 导入斜坡速度控制器
 from ramp_speed_controller import RampSpeedController
 # 导入实时绘图器
@@ -37,9 +39,8 @@ from vehicle_utils import VehicleUtils
 # $env:ALL_PROXY = "socks5://127.0.0.1:7891"
 # 升级条件: (acceleration < 0) && (|velocity| <= delta) && (|error| > eta)
 
-#测试commit 和 push
 class acc:
-    def __init__(self, use_result_plotter=None):
+    def __init__(self, use_result_plotter=None, scenario_mode=None):
         """
         初始化ACC系统
         使用CARLA API直接获取前车距离和车道信息
@@ -50,6 +51,21 @@ class acc:
         """
         # === 加载配置 ===
         self.config = ACCConfig()
+
+        # 根据入参选择工况模式（互斥：none / cut-in / cut-out）
+        if scenario_mode == 'none':
+            self.config.enable_cut_in_scenario = False
+            self.config.enable_cut_out_scenario = False
+        elif scenario_mode == 'cut-in':
+            self.config.enable_cut_in_scenario = True
+            self.config.enable_cut_out_scenario = False
+        elif scenario_mode == 'cut-out':
+            self.config.enable_cut_in_scenario = False
+            self.config.enable_cut_out_scenario = True
+        elif scenario_mode is None:
+            # 按配置文件：若两者都开，默认优先切出
+            if self.config.enable_cut_out_scenario and self.config.enable_cut_in_scenario:
+                self.config.enable_cut_in_scenario = False
 
         # 允许通过参数覆盖配置
         if use_result_plotter is not None:
@@ -105,6 +121,9 @@ class acc:
         self._last_manual_steer_update = time.time()
         self.cut_in_manager = None
         self.cut_in_vehicle = None
+        self.cut_out_manager = None
+        self.cut_out_front_vehicle = None
+        self.cut_out_follow_vehicle = None
         self.sim_elapsed_s = 0.0
 
         # 按键按下状态跟踪
@@ -196,10 +215,13 @@ class acc:
         vehicle_bp = self.blueprint_library.filter(self.config.target_vehicle_blueprint)[0]
         ego_vehicle_bp = self.blueprint_library.filter(self.config.ego_vehicle_blueprint)[0]
 
-        # 定义固定生成点（使用配置；切入工况下改用预设前车位置）
-        spawn_location = (self.config.cut_in_target_spawn_location
-                          if self.config.enable_cut_in_scenario and self.config.cut_in_target_spawn_location
-                          else self.config.spawn_location)
+        # 定义固定生成点（使用配置；切入/切出工况下改用预设前车位置）
+        if self.config.enable_cut_out_scenario and self.config.cut_out_front_spawn_location:
+            spawn_location = self.config.cut_out_front_spawn_location
+        elif self.config.enable_cut_in_scenario and self.config.cut_in_target_spawn_location:
+            spawn_location = self.config.cut_in_target_spawn_location
+        else:
+            spawn_location = self.config.spawn_location
         # 其他可选位置（注释保留供参考）:
         # right x=1654.013672, y=6322.584473, z=-0.009410
         # left x=897.991394, y=5805.217773, z=-0.009344
@@ -218,26 +240,57 @@ class acc:
         spawn_point.location.z += self.config.spawn_z_offset
 
         vehicles = []
-        # 目标车：若启用切入工况，使用预设位置；否则使用waypoint位置
         target_vehicle = None
-        if self.config.enable_cut_in_scenario and self.config.cut_in_target_spawn_location is not None:
-            tgt_wp = map.get_waypoint(self.config.cut_in_target_spawn_location, project_to_road=True,
-                                      lane_type=carla.LaneType.Driving)
-            if tgt_wp is not None:
-                tgt_transform = tgt_wp.transform
-                tgt_transform.location = carla.Location(self.config.cut_in_target_spawn_location.x,
-                                                        self.config.cut_in_target_spawn_location.y,
-                                                        self.config.cut_in_target_spawn_location.z + 0.0)
-                target_vehicle = self.world.try_spawn_actor(vehicle_bp, tgt_transform)
-            else:
-                print("⚠️ 切入工况预设前车坐标不在可行驶车道，回退到默认spawn点")
-        if target_vehicle is None:
-            target_vehicle = self.world.try_spawn_actor(vehicle_bp, spawn_point)
-        if target_vehicle is None:
-            raise RuntimeError("Failed to spawn target vehicle at waypoint location")
-        vehicles.append(target_vehicle)
+
+        # 优先处理切出工况：生成两个前车（lead在最前，cut在中间将切出），初始跟车对象为cut
+        if self.config.enable_cut_out_scenario:
+            lead_wp = map.get_waypoint(self.config.cut_out_front_spawn_location, project_to_road=True,
+                                       lane_type=carla.LaneType.Driving)
+            if lead_wp is None:
+                raise RuntimeError("Cut-out spawn locations are not on drivable lanes")
+
+            lead_tf = lead_wp.transform
+            lead_tf.location = self.config.cut_out_front_spawn_location
+
+            # cut车辆：沿lead_wp反向后移指定距离，保持同车道
+            cut_prev = lead_wp.previous(self.config.cut_out_cut_back_distance_m)
+            if not cut_prev:
+                raise RuntimeError("Failed to find waypoint for cut-out cut vehicle")
+            cut_tf = cut_prev[0].transform
+            cut_tf.location.z += self.config.spawn_z_offset
+
+            lead_vehicle = self.world.try_spawn_actor(vehicle_bp, lead_tf)
+            cut_vehicle = self.world.try_spawn_actor(vehicle_bp, cut_tf)
+            if lead_vehicle is None or cut_vehicle is None:
+                raise RuntimeError("Failed to spawn cut-out scenario vehicles")
+            vehicles.extend([lead_vehicle, cut_vehicle])
+            target_vehicle = cut_vehicle  # 初始跟车目标=将要切出的车辆（中间车）
+            self.cut_out_lead_vehicle = lead_vehicle
+            self.cut_out_cut_vehicle = cut_vehicle
+            lead_vehicle.set_autopilot(True)
+            cut_vehicle.set_autopilot(True)
+
+        else:
+            # 目标车：若启用切入工况，使用预设位置；否则使用waypoint位置
+            if self.config.enable_cut_in_scenario and self.config.cut_in_target_spawn_location is not None:
+                tgt_wp = map.get_waypoint(self.config.cut_in_target_spawn_location, project_to_road=True,
+                                          lane_type=carla.LaneType.Driving)
+                if tgt_wp is not None:
+                    tgt_transform = tgt_wp.transform
+                    tgt_transform.location = carla.Location(self.config.cut_in_target_spawn_location.x,
+                                                            self.config.cut_in_target_spawn_location.y,
+                                                            self.config.cut_in_target_spawn_location.z + 0.0)
+                    target_vehicle = self.world.try_spawn_actor(vehicle_bp, tgt_transform)
+                else:
+                    print("⚠️ 切入工况预设前车坐标不在可行驶车道，回退到默认spawn点")
+            if target_vehicle is None:
+                target_vehicle = self.world.try_spawn_actor(vehicle_bp, spawn_point)
+            if target_vehicle is None:
+                raise RuntimeError("Failed to spawn target vehicle at waypoint location")
+            vehicles.append(target_vehicle)
+            target_vehicle.set_autopilot(True)
+
         self.target_vehicle = target_vehicle
-        self.target_vehicle.set_autopilot(True)
 
         # === Traffic Manager速度控制配置 ===
         # 假设的道路限速（根据实际CARLA地图调整）
@@ -263,9 +316,16 @@ class acc:
         self.use_constant_velocity = self.config.use_constant_velocity
 
         # 生成自车：沿车道前进方向偏移一定距离以避免碰撞（相对于目标车所在车道）
-        ego_waypoints = waypoint.previous(self.config.ego_spawn_distance)
+        # 自车生成：切出工况时以切出车位置为基准后移，其余沿目标车基准点后移
+        ego_base_location = (self.config.cut_out_front_spawn_location
+                             if self.config.enable_cut_out_scenario and self.config.cut_out_front_spawn_location
+                             else spawn_location)
+        ego_base_wp = map.get_waypoint(ego_base_location, project_to_road=True, lane_type=carla.LaneType.Driving)
+        if ego_base_wp is None:
+            raise RuntimeError("Failed to find ego base waypoint for spawn")
+        ego_waypoints = ego_base_wp.previous(self.config.ego_spawn_distance)
         if not ego_waypoints:
-            raise RuntimeError("Failed to find a waypoint 20 meters ahead for ego vehicle spawn")
+            raise RuntimeError("Failed to find a waypoint for ego vehicle spawn")
         ego_spawn_point = ego_waypoints[0].transform
         ego_spawn_point.location.z += self.config.spawn_z_offset
         self.ego_vehicle = self.world.try_spawn_actor(ego_vehicle_bp, ego_spawn_point)
@@ -313,6 +373,19 @@ class acc:
                 self.cut_in_vehicle = self.cut_in_manager.cut_in_vehicle
                 vehicles.append(self.cut_in_vehicle)
                 print("✅ 切入工况：侧向车辆已加入控制列表")
+        elif self.config.enable_cut_out_scenario:
+            # 初始化切出工况管理器（cut_vehicle为初始跟车目标，lead_vehicle为最前车）
+            self.cut_out_manager = CutOutScenarioManager(
+                world=self.world,
+                traffic_manager=tm,
+                ego_vehicle=self.ego_vehicle,
+                cut_vehicle=self.cut_out_cut_vehicle,
+                lead_vehicle=self.cut_out_lead_vehicle,
+                blueprint_library=self.blueprint_library,
+                trigger_time_s=self.config.cut_out_trigger_time_s,
+                change_to_right=self.config.cut_out_change_to_right
+            )
+            print("✅ 切出工况管理器已初始化（初始跟车=切出车，切出后切到前车）")
 
         # === 初始化换道控制器 ===
         self.lane_change_controller = LaneChangeController(
@@ -327,7 +400,9 @@ class acc:
             # constant_velocity与autopilot冲突，改用TM速度控制
             for vehicle in vehicles:
                 vehicle.set_autopilot(True, self.tm_port)
-                tm.auto_lane_change(vehicle, True)  # 启用换道能力
+                # 切入/切出场景下禁用自动换道，避免TM提前变道
+                allow_lane_change = not (self.config.enable_cut_in_scenario or self.config.enable_cut_out_scenario)
+                tm.auto_lane_change(vehicle, allow_lane_change)
                 tm.ignore_lights_percentage(vehicle, 100.0)  # 忽略红绿灯
 
                 # 设置目标速度（使用speed_limit百分比机制）
@@ -799,6 +874,8 @@ class acc:
                 # === 获取车辆状态 ===
                 # 切入工况更新（触发变道、尝试切换跟车目标）
                 self._update_cut_in_scenario(self.sim_elapsed_s)
+                # 切出工况更新（触发变道、尝试切换跟车目标）
+                self._update_cut_out_scenario(self.sim_elapsed_s)
 
                 ego_speed = VehicleUtils.get_vehicle_speed(self.ego_vehicle)
                 target_speed = VehicleUtils.get_vehicle_speed(self.target_vehicle) if self.target_vehicle else 0.0
@@ -1310,13 +1387,33 @@ class acc:
             print("🚗 切入车辆已进入本车道，切换跟车目标")
             self._set_target_vehicle(self.cut_in_manager.cut_in_vehicle)
 
+    def _update_cut_out_scenario(self, elapsed_time_s: float):
+        """切出工况的周期更新：触发前车切出并在离开本车道后切换跟车目标。"""
+        if not self.cut_out_manager:
+            return
+
+        self.cut_out_manager.maybe_trigger_cut_out(elapsed_time_s)
+
+        # 切出车离开本车道后，切换跟车目标到留在本车道的车辆
+        if self.cut_out_manager._lane_change_completed:
+            if self.cut_out_lead_vehicle and self.target_vehicle != self.cut_out_lead_vehicle:
+                print("🚗 切出车已离开车道，切换跟车目标到最前车")
+                self._set_target_vehicle(self.cut_out_lead_vehicle)
+            # 重置状态，停止重试
+            self.cut_out_manager._lane_change_triggered = False
+            self.cut_out_manager._lane_change_completed = False
+            self.cut_out_manager._scenario_completed = True
+
 
 def main():
+    # 手动切换工况 "none" / "cut-in" / "cut-out"
+    SCENARIO_MODE = "cut-out"  # None=按配置文件，"none"=普通，"cut-in"=切入，"cut-out"=切出
+
+    # 可选：启用结果保存画图器
+    USE_RESULT_PLOTTER = False
+
     # 创建ACC实例
-    # 使用配置文件默认值，或通过参数覆盖：
-    acc_actor = acc(use_result_plotter=False)  # 测试模式
-    # acc_actor = acc(use_result_plotter=True)   # 结果保存模式
-    # acc_actor = acc()  # 使用 acc_config.py 中的配置
+    acc_actor = acc(use_result_plotter=USE_RESULT_PLOTTER, scenario_mode=SCENARIO_MODE)
 
     try:
         acc_actor.generate_target()

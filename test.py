@@ -6,7 +6,7 @@
 
         # self.error_save_file_name = "cut_out_"
         # followed_car_point = carla.Location(x=-1593.882324, y=-5234.983398, z=0.5)
-        # left_point = carla.Location(x=-1599.364136, y=-5215.684082, z=0.5)
+        # cutout_car_point = carla.Location(x=-1599.364136, y=-5215.684082, z=0.5)
         # ego_point = carla.Location(x=-1604.839478, y=-5196.538086, z=0.5)
 
 
