@@ -1014,13 +1014,11 @@ class acc:
                         # 提取时距数据
                         desired_time_gap = enhanced_two_mode_output.get('reference_value', 0.0)  # 期望时距
                         actual_time_gap = enhanced_two_mode_output.get('current_value', 0.0)  # 实际时距
-                        current_time = time.time() - self.start_time
-
-                        # 添加到实时绘图器（包含速度数据和控制状态）
+                        # 使用步数作为横轴（避免将步长误解为秒）
                         self.realtime_plotter.add_data(
                             desired_time_gap,
                             actual_time_gap,
-                            current_time,
+                            frame_count,  # step index
                             ego_speed,  # 自车速度 (km/h)
                             target_speed,  # 前车速度 (km/h)
                             decision_output['control_enabled']  # ACC控制状态
@@ -1103,10 +1101,16 @@ class acc:
                             control.gear = 1
 
                             if sppvt_target_accel is not None:
-                                # 使用扭矩到油门转换器（完整RPM模型）
-                                # 注意：变量名sppvt_target_accel是历史遗留，实际上SPPVT输出的是发动机扭矩(N·m)
-                                sppvt_engine_torque = sppvt_target_accel * 400  # 重命名以明确含义
-                                print(f"SPPVT输出扭矩: {sppvt_engine_torque}")
+                                # === SPPVT输出缩放转换 ===
+                                # 根据正负值使用不同的缩放系数
+                                if sppvt_target_accel >= 0:
+                                    # 加速模式：SPPVT输出 → 发动机扭矩 (N·m)
+                                    sppvt_engine_torque = sppvt_target_accel * self.config.sppvt_accel_scale
+                                    print(f"[加速] SPPVT输出: {sppvt_target_accel:.3f} × {self.config.sppvt_accel_scale} = 扭矩: {sppvt_engine_torque:.2f} N·m")
+                                else:
+                                    # 减速模式：SPPVT输出 → 减速度 (m/s²)
+                                    sppvt_engine_torque = sppvt_target_accel * self.config.sppvt_decel_scale
+                                    print(f"[减速] SPPVT输出: {sppvt_target_accel:.3f} × {self.config.sppvt_decel_scale} = 减速度: {sppvt_engine_torque:.2f} m/s²")
                                 if self.use_torque_converter:
                                     # 使用完整RPM模型：发动机扭矩 → 油门/刹车
                                     control.throttle, control.brake = self.torque_converter.engine_torque_to_throttle(
@@ -1407,9 +1411,9 @@ class acc:
 
 def main():
     # 手动切换工况 "none" / "cut-in" / "cut-out"
-    SCENARIO_MODE = "cut-out"  # None=按配置文件，"none"=普通，"cut-in"=切入，"cut-out"=切出
+    SCENARIO_MODE = "cut-in"  # None=按配置文件，"none"=普通，"cut-in"=切入，"cut-out"=切出
 
-    # 可选：启用结果保存画图器
+    # 启用结果保存画图器
     USE_RESULT_PLOTTER = False
 
     # 创建ACC实例

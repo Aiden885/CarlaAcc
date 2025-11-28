@@ -19,9 +19,22 @@ class TorqueToThrottleConverter:
     """
     发动机扭矩到油门转换器
 
-    假设：SPPVT输出的是发动机扭矩(N·m)
-    目标：转换为CARLA的油门值(0-1)
+    正扭矩：SPPVT输出发动机扭矩(N·m) → 油门开度(0-1)
+    负扭矩：SPPVT输出减速度(m/s²) → 刹车开度(0-1)
+
+    所有物理参数均从CARLA Audi e-tron真实测量获得
     """
+
+    # === CARLA Audi e-tron 真实物理参数（通过carla_vehicle_params_inspector.py测得）===
+    VEHICLE_MASS = 2370.00  # kg - 车辆质量
+    WHEEL_RADIUS = 0.37  # m - 车轮有效半径
+    MAX_BRAKE_TORQUE_PER_WHEEL = 1000.0  # N·m - 单轮最大制动扭矩
+    NUM_DRIVE_WHEELS = 4  # 驱动轮数量
+    TOTAL_GEAR_RATIO = 9.204  # 总传动比（第1档）
+
+    # 理论最大减速度 = (总制动扭矩 / 轮半径) / 质量
+    # = (4 × 1000 / 0.37) / 2370 = 4.56 m/s²
+    THEORETICAL_MAX_DECEL = 4.56  # m/s²
 
     def __init__(self, vehicle):
         """
@@ -32,7 +45,15 @@ class TorqueToThrottleConverter:
         """
         self.vehicle = vehicle
 
-        # 从CARLA加载车辆物理参数
+        # 使用硬编码的真实物理参数
+        self.vehicle_mass = self.VEHICLE_MASS
+        self.wheel_radius = self.WHEEL_RADIUS
+        self.max_brake_torque_per_wheel = self.MAX_BRAKE_TORQUE_PER_WHEEL
+        self.num_drive_wheels = self.NUM_DRIVE_WHEELS
+        self.total_gear_ratio = self.TOTAL_GEAR_RATIO
+        self.theoretical_max_decel = self.THEORETICAL_MAX_DECEL
+
+        # 从CARLA加载其他参数（扭矩曲线等）
         self._load_vehicle_parameters()
 
         print(f"\n{'='*60}")
@@ -54,37 +75,26 @@ class TorqueToThrottleConverter:
         print(f"{'='*60}\n")
 
     def _load_vehicle_parameters(self):
-        """从CARLA车辆加载物理参数"""
+        """
+        从CARLA加载无法硬编码的参数（主要是扭矩曲线）
+        物理参数（质量、轮半径等）已硬编码为真实测量值
+        """
         physics = self.vehicle.get_physics_control()
 
-        # === 车轮参数 ===
-        # 假设4个车轮相同，取第一个
-        self.wheel_radius = physics.wheels[0].radius / 100.0  # cm转m
-        self.num_drive_wheels = 4  # Audi e-tron是四轮驱动
-
-        # === 传动系统参数 ===
-        # 档位传动比（电动车通常是单速，取第一档）
+        # === 传动系统参数（用于打印显示）===
         self.gear_ratio = physics.forward_gears[0].ratio if physics.forward_gears else 1.0
-
-        # 最终传动比（差速器）
         self.final_ratio = physics.final_ratio
-
-        # 总传动比 = 档位比 × 最终比
-        self.total_gear_ratio = self.gear_ratio * self.final_ratio
 
         # === 发动机参数 ===
         self.max_rpm = physics.max_rpm
 
-        # 提取扭矩曲线数据
+        # 提取扭矩曲线数据（必须从CARLA读取，无法硬编码）
         # physics.torque_curve 是 Vector2D 列表，x=RPM, y=扭矩(N·m)
         self.torque_curve_rpm = np.array([point.x for point in physics.torque_curve])
         self.torque_curve_torque = np.array([point.y for point in physics.torque_curve])
 
         # 计算最大扭矩
         self.max_engine_torque = np.max(self.torque_curve_torque)
-
-        # === 制动系统参数 ===
-        self.max_brake_torque_per_wheel = physics.wheels[0].max_brake_torque  # N·m
 
     def _calculate_engine_rpm(self, speed_kmh):
         """
@@ -133,9 +143,55 @@ class TorqueToThrottleConverter:
 
         return max_torque
 
+    def deceleration_to_brake(self, decel_ms2):
+        """
+        减速度 → 刹车开度（物理模型，基于CARLA真实参数）
+
+        完全符合CARLA底层实现：
+        applied_torque = brake × max_brake_torque
+
+        物理推导：
+        1. F_total = m × |a|                    (牛顿第二定律)
+        2. F_per_wheel = F_total / num_wheels   (分配到各轮)
+        3. T_per_wheel = F_per_wheel × r        (力矩 = 力 × 半径)
+        4. brake = T_per_wheel / T_max          (归一化到CARLA范围)
+
+        参数:
+            decel_ms2: 减速度 (m/s²，负值)
+                      例如 -2.5 表示 2.5 m/s² 减速
+
+        返回:
+            brake: 刹车开度 [0, 1]
+        """
+        # 1. 取绝对值
+        abs_decel = abs(decel_ms2)
+
+        # 2. 减速度 → 总制动力 (牛顿第二定律: F = ma)
+        F_total = self.vehicle_mass * abs_decel
+
+        # 3. 分配到各轮
+        F_per_wheel = F_total / self.num_drive_wheels
+
+        # 4. 制动力 → 制动扭矩 (T = F × r)
+        T_per_wheel = F_per_wheel * self.wheel_radius
+
+        # 5. 归一化为刹车值（符合CARLA公式）
+        # 使得：applied_torque = brake × max_brake_torque = T_per_wheel ✓
+        brake = T_per_wheel / self.max_brake_torque_per_wheel
+
+        # 6. 限制范围
+        brake = min(1.0, max(0.0, brake))
+
+        # 7. 超限警告
+        if brake >= 0.99 and abs_decel > 0.1:
+            print(f"⚠️ 需求减速度 {abs_decel:.2f} m/s² 接近/超过极限！")
+            print(f"   该车型理论最大减速度约 {self.theoretical_max_decel:.2f} m/s²")
+
+        return brake
+
     def _brake_torque_to_brake_value(self, engine_brake_torque):
         """
-        将发动机制动扭矩转换为刹车值
+        将发动机制动扭矩转换为刹车值（传统方法，已被deceleration_to_brake替代）
 
         参数:
         engine_brake_torque - 发动机制动扭矩 (N·m, 正值)
@@ -162,24 +218,34 @@ class TorqueToThrottleConverter:
 
     def engine_torque_to_throttle(self, desired_engine_torque, current_speed_kmh):
         """
-        主接口：发动机扭矩 → 油门/刹车
+        主接口：统一处理加速/减速转换
 
-        这是核心转换函数，实现完整的RPM模型：
+        🔄 新逻辑（基于CARLA真实参数）：
+        - 正值：发动机扭矩 (N·m) → 油门开度
+        - 负值：减速度 (m/s²) → 刹车开度
+
+        加速模式（正值）：
         1. 根据车速计算发动机RPM
         2. 从扭矩曲线插值得到该RPM的最大扭矩
-        3. 计算油门 = 需求扭矩 / 最大扭矩
+        3. 油门 = 需求扭矩 / 最大扭矩
+
+        减速模式（负值）：
+        1. 减速度 → 制动力 (F = ma)
+        2. 制动力 → 制动扭矩 (T = F × r)
+        3. 刹车 = 制动扭矩 / 最大制动扭矩
 
         参数:
-        desired_engine_torque - SPPVT输出的发动机扭矩 (N·m)
-                               正值=驱动, 负值=制动
-        current_speed_kmh - 当前车速 (km/h)
+            desired_engine_torque:
+                - 正值：发动机扭矩 (N·m)
+                - 负值：减速度 (m/s²)
+            current_speed_kmh: 当前车速 (km/h)
 
         返回:
-        (throttle, brake) - 油门值和刹车值 (0-1)
+            (throttle, brake): 油门值和刹车值 [0, 1]
         """
-        # === 1. 判断是驱动还是制动 ===
+        # === 1. 判断是加速还是减速 ===
         if desired_engine_torque >= 0:
-            # --- 驱动模式：通过油门控制 ---
+            # --- 加速模式：扭矩 → 油门 ---
 
             # 2. 计算当前发动机RPM
             current_rpm = self._calculate_engine_rpm(current_speed_kmh)
@@ -188,25 +254,19 @@ class TorqueToThrottleConverter:
             max_available_torque = self._get_max_torque_at_rpm(current_rpm)
 
             # 4. 计算油门值
-            # throttle = 需求扭矩 / 最大可用扭矩
             if max_available_torque > 0:
                 throttle = desired_engine_torque / max_available_torque
             else:
-                # 防御性代码：如果最大扭矩为0，油门为0
                 throttle = 0.0
 
             # 5. 限制在[0, 1]范围
             throttle = min(1.0, max(0.0, throttle))
-
             brake = 0.0
 
         else:
-            # --- 制动模式：通过刹车控制 ---
-
+            # --- 减速模式：减速度 → 刹车 ---
             throttle = 0.0
-
-            # 将负扭矩转换为刹车值
-            brake = self._brake_torque_to_brake_value(abs(desired_engine_torque))
+            brake = self.deceleration_to_brake(desired_engine_torque)  # 负值输入
 
         return throttle, brake
 

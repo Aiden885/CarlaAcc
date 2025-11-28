@@ -4,7 +4,7 @@
   "author": "Generated from acc_controller.py state machine logic",
   "date": "2025-11-21",
 
-  "comment": "此配置文件定义了ACC系统的完整状态转移逻辑。状态(0-3)对应S0-S3，指令(0-7)对应键盘输入。decision=-1表示使用last_active_decision。",
+  "comment": "状态(0-3)对应S0-S3，指令(0-7)对应键盘输入。decision=-1表示使用last_active_decision。",
 
   "transitions": {
     "0": {

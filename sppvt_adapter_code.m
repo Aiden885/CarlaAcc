@@ -1,4 +1,4 @@
-function [error_value, dt, stage_offset, kp, max_accel, max_decel, prev_error_out, prev_velocity_out, prev_accel_out, delta, eta, mode_flag, new_control_error, new_error_derivative, new_error_second_derivative] = fcn(validated_input, decision_output, external_stage_offset, external_control_error, external_error_derivative, external_error_second_derivative)
+jiadu function [error_value, dt, stage_offset, kp, max_accel, max_decel, prev_error_out, prev_velocity_out, prev_accel_out, delta, eta, mode_flag, new_control_error, new_error_derivative, new_error_second_derivative] = fcn(validated_input, decision_output, external_stage_offset, external_control_error, external_error_derivative, external_error_second_derivative)
 %#codegen
 % SPPVT接口适配器 - 支持外部状态注入版本 (全部标量化)
 % 输入:

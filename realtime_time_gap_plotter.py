@@ -67,7 +67,7 @@ class RealtimeTimeGapPlotter:
         Args:
             desired_gap: 期望时距 (秒)
             actual_gap: 实际时距 (秒)
-            timestamp: 时间戳 (秒)
+            timestamp: 横轴索引（当前使用step计数）
             ego_speed: 自车速度 (km/h)
             target_speed: 前车速度 (km/h)
             control_enabled: ACC控制是否开启
@@ -146,7 +146,7 @@ class RealtimeTimeGapPlotter:
         self.line_actual, = self.ax1.plot(
             [], [], color=self.color_actual, linewidth=2.0, label="Actual Time Gap", marker='s', markersize=2, markevery=10
         )
-        self.ax1.set_xlabel("Time (s)", color=text_color, fontsize=11, fontweight='bold')
+        self.ax1.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         self.ax1.set_ylabel("Time Gap (s)", color=text_color, fontsize=11, fontweight='bold')
         self.ax1.set_title(
             "Time Gap Tracking", color=text_color, fontsize=13, fontweight="bold"
@@ -160,7 +160,7 @@ class RealtimeTimeGapPlotter:
             [], [], color=self.color_error, linewidth=2.0, label="Time Gap Error", marker='d', markersize=2, markevery=10
         )
         self.ax2.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
-        self.ax2.set_xlabel("Time (s)", color=text_color, fontsize=11, fontweight='bold')
+        self.ax2.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         self.ax2.set_ylabel("Error (s)", color=text_color, fontsize=11, fontweight='bold')
         self.ax2.set_title(
             "Time Gap Error (Actual - Desired)", color=text_color, fontsize=13, fontweight="bold"
@@ -176,7 +176,7 @@ class RealtimeTimeGapPlotter:
         self.line_target_speed, = self.ax3.plot(
             [], [], color=self.color_target, linewidth=2.0, label="Target Speed", marker='^', markersize=2, markevery=10
         )
-        self.ax3.set_xlabel("Time (s)", color=text_color, fontsize=11, fontweight='bold')
+        self.ax3.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         self.ax3.set_ylabel("Speed (km/h)", color=text_color, fontsize=11, fontweight='bold')
         self.ax3.set_title(
             "Vehicle Speeds", color=text_color, fontsize=13, fontweight="bold"
@@ -190,11 +190,11 @@ class RealtimeTimeGapPlotter:
         ax_slider_start = plt.axes([0.1, 0.04, 0.65, 0.03], facecolor='#e0e0e0')
         self.slider_start = Slider(
             ax=ax_slider_start,
-            label='Start Time (s)',
+            label='Start Step',
             valmin=0.0,
-            valmax=100.0,
+            valmax=200.0,
             valinit=0.0,
-            valstep=0.1,
+            valstep=1.0,
             color=self.color_desired
         )
         self.slider_start.on_changed(self._on_slider_start_change)
@@ -323,7 +323,7 @@ class RealtimeTimeGapPlotter:
                         for ax in (self.ax1, self.ax2, self.ax3):
                             ax.axvline(x=t_start, color='k', linestyle='--', linewidth=1.0, alpha=0.7)
                         self.control_start_lines.append(t_start)
-                        print(f"📊 标记ACC控制开启时刻: t={t_start:.2f}s")
+                        print(f"📊 标记ACC控制开启时刻: step={t_start:.0f}")
 
         # 动态更新滑动条范围（但不频繁触发重绘）
         if ts.size and self.slider_start and not self._updating_slider:
@@ -331,7 +331,7 @@ class RealtimeTimeGapPlotter:
             data_max = float(ts[-1])
 
             # 只在数据范围显著增长时更新滑动条的最大值（减少重绘）
-            if data_max > self.slider_start.valmax + 5.0:  # 至少增长5秒才更新
+            if data_max > self.slider_start.valmax - 5.0:  # 步数递增，适当扩大范围
                 self._updating_slider = True
                 self.slider_start.valmax = data_max
                 self.slider_start.ax.set_xlim(0, data_max)
@@ -426,5 +426,4 @@ class RealtimeTimeGapPlotter:
                     self.ax3.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
 
         return self.line_desired, self.line_actual, self.line_error, self.line_ego_speed, self.line_target_speed
-
 
