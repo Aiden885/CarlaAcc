@@ -36,6 +36,8 @@ class RealtimeTimeGapPlotter:
         self.errors = deque()
         self.ego_speeds = deque()  # 自车速度
         self.target_speeds = deque()  # 前车速度
+        self.torques = deque()  # 请求发动机扭矩（正值，Nm）
+        self.decels = deque()  # 请求减速度（正值，m/s^2）
         self.control_enabled_states = deque()  # ACC控制状态
 
         # 垂直线标记（用于标记control_enabled开启时刻）
@@ -61,7 +63,8 @@ class RealtimeTimeGapPlotter:
 
     def add_data(self, desired_gap: float, actual_gap: float, timestamp: float,
                  ego_speed: float = 0.0, target_speed: float = 0.0,
-                 control_enabled: bool = False) -> None:
+                 control_enabled: bool = False,
+                 request_torque: float = 0.0, request_decel: float = 0.0) -> None:
         """Push a new sample into the queue from the producer thread.
 
         Args:
@@ -71,13 +74,17 @@ class RealtimeTimeGapPlotter:
             ego_speed: 自车速度 (km/h)
             target_speed: 前车速度 (km/h)
             control_enabled: ACC控制是否开启
+            request_torque: 请求发动机扭矩 (Nm, 正值)
+            request_decel: 请求减速度 (m/s², 正值)
         """
         try:
-            self.data_queue.put_nowait((desired_gap, actual_gap, timestamp, ego_speed, target_speed, control_enabled))
+            self.data_queue.put_nowait((desired_gap, actual_gap, timestamp, ego_speed,
+                                        target_speed, control_enabled, request_torque, request_decel))
         except queue.Full:
             try:
                 self.data_queue.get_nowait()
-                self.data_queue.put_nowait((desired_gap, actual_gap, timestamp, ego_speed, target_speed, control_enabled))
+                self.data_queue.put_nowait((desired_gap, actual_gap, timestamp, ego_speed,
+                                            target_speed, control_enabled, request_torque, request_decel))
             except queue.Empty:
                 pass
 
@@ -117,19 +124,22 @@ class RealtimeTimeGapPlotter:
         self.color_ego = "#7E2F8E"      # MATLAB紫色 - 自车
         self.color_target = "#77AC30"   # MATLAB绿色 - 前车
 
-        self.fig = plt.figure(figsize=(14, 10.5), facecolor=bg_color)
+        self.fig = plt.figure(figsize=(14, 12), facecolor=bg_color)
         self.fig.canvas.manager.set_window_title(
             "Real-Time Time Gap Tracking - TIME Mode"
         )
 
 
-        # 现在有3个子图，分别显示：时距跟踪、误差、速度
-        # 增加子图间距以避免重叠
-        self.ax1 = plt.axes([0.1, 0.68, 0.85, 0.24], facecolor=bg_color)  # 时距跟踪
-        self.ax2 = plt.axes([0.1, 0.40, 0.85, 0.19], facecolor=bg_color)  # 误差
-        self.ax3 = plt.axes([0.1, 0.12, 0.85, 0.19], facecolor=bg_color)  # 速度
+        # 5个子图：时距跟踪、误差、速度、扭矩、减速度（增加间距，为滑动条留出底部空间）
+        # 5个子图：时距跟踪、误差、速度、扭矩、减速度（增加间距，为滑动条留出底部空间）
+        # 调整布局以增加垂直间距 (Gap ~0.07)
+        self.ax1 = plt.axes([0.1, 0.80, 0.85, 0.16], facecolor=bg_color)  # 时距跟踪
+        self.ax2 = plt.axes([0.1, 0.62, 0.85, 0.11], facecolor=bg_color)  # 误差
+        self.ax3 = plt.axes([0.1, 0.44, 0.85, 0.11], facecolor=bg_color)  # 速度
+        self.ax4 = plt.axes([0.1, 0.26, 0.85, 0.11], facecolor=bg_color)  # 扭矩
+        self.ax5 = plt.axes([0.1, 0.08, 0.85, 0.11], facecolor=bg_color)  # 减速度
 
-        self.axes = [self.ax1, self.ax2, self.ax3]
+        self.axes = [self.ax1, self.ax2, self.ax3, self.ax4, self.ax5]
 
         for ax in self.axes:
             ax.set_facecolor(bg_color)
@@ -185,9 +195,37 @@ class RealtimeTimeGapPlotter:
             loc="upper right", facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
         )
 
+        # 子图4：请求扭矩
+        self.line_torque, = self.ax4.plot(
+            [], [], color="#1f77b4", linewidth=2.0, label="Request Torque", marker='o', markersize=2, markevery=10
+        )
+        self.ax4.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
+        self.ax4.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
+        self.ax4.set_ylabel("Torque (Nm)", color=text_color, fontsize=11, fontweight='bold')
+        self.ax4.set_title(
+            "Request Engine Torque", color=text_color, fontsize=13, fontweight="bold"
+        )
+        self.ax4.legend(
+            loc="upper right", facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
+        )
+
+        # 子图5：请求减速度
+        self.line_decel, = self.ax5.plot(
+            [], [], color="#d62728", linewidth=2.0, label="Request Decel", marker='s', markersize=2, markevery=10
+        )
+        self.ax5.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
+        self.ax5.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
+        self.ax5.set_ylabel("Decel (m/s²)", color=text_color, fontsize=11, fontweight='bold')
+        self.ax5.set_title(
+            "Request Brake Deceleration", color=text_color, fontsize=13, fontweight="bold"
+        )
+        self.ax5.legend(
+            loc="upper right", facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
+        )
+
         # 创建滑动条控件
         # 起始时间滑动条（从此时间开始显示到最新数据）
-        ax_slider_start = plt.axes([0.1, 0.04, 0.65, 0.03], facecolor='#e0e0e0')
+        ax_slider_start = plt.axes([0.1, 0.01, 0.65, 0.02], facecolor='#e0e0e0')
         self.slider_start = Slider(
             ax=ax_slider_start,
             label='Start Step',
@@ -200,7 +238,7 @@ class RealtimeTimeGapPlotter:
         self.slider_start.on_changed(self._on_slider_start_change)
 
         # 自动跟随checkbox
-        ax_checkbox = plt.axes([0.80, 0.02, 0.15, 0.08], facecolor=bg_color)
+        ax_checkbox = plt.axes([0.80, 0.01, 0.15, 0.05], facecolor=bg_color)
         self.checkbox_auto = CheckButtons(
             ax_checkbox,
             ['Auto Follow'],
@@ -265,16 +303,21 @@ class RealtimeTimeGapPlotter:
             try:
                 data_item = self.data_queue.get_nowait()
                 # 兼容新旧数据格式
-                if len(data_item) == 6:
+                if len(data_item) == 8:
+                    desired, actual, timestamp, ego_speed, target_speed, control_enabled, req_torque, req_decel = data_item
+                elif len(data_item) == 6:
                     desired, actual, timestamp, ego_speed, target_speed, control_enabled = data_item
+                    req_torque, req_decel = 0.0, 0.0
                 elif len(data_item) == 5:
                     desired, actual, timestamp, ego_speed, target_speed = data_item
                     control_enabled = False
+                    req_torque, req_decel = 0.0, 0.0
                 else:
                     # 旧格式，只有3个值
                     desired, actual, timestamp = data_item
                     ego_speed, target_speed = 0.0, 0.0
                     control_enabled = False
+                    req_torque, req_decel = 0.0, 0.0
             except queue.Empty:
                 break
 
@@ -284,6 +327,8 @@ class RealtimeTimeGapPlotter:
             self.errors.append(actual - desired)
             self.ego_speeds.append(ego_speed)
             self.target_speeds.append(target_speed)
+            self.torques.append(req_torque)
+            self.decels.append(req_decel)
             self.control_enabled_states.append(control_enabled)
 
             self.total_points += 1
@@ -298,6 +343,8 @@ class RealtimeTimeGapPlotter:
         errors = np.asarray(self.errors, dtype=float)
         ego_speeds = np.asarray(self.ego_speeds, dtype=float)
         target_speeds = np.asarray(self.target_speeds, dtype=float)
+        torques = np.asarray(self.torques, dtype=float)
+        decels = np.asarray(self.decels, dtype=float)
         control_states = np.asarray(self.control_enabled_states, dtype=bool)
 
         self.line_desired.set_data(ts, desired)
@@ -305,6 +352,8 @@ class RealtimeTimeGapPlotter:
         self.line_error.set_data(ts, errors)
         self.line_ego_speed.set_data(ts, ego_speeds)
         self.line_target_speed.set_data(ts, target_speeds)
+        self.line_torque.set_data(ts, torques)
+        self.line_decel.set_data(ts, decels)
 
         # 检测control_enabled从False变True的时刻，画垂直虚线
         if len(control_states) > 1:
@@ -319,8 +368,8 @@ class RealtimeTimeGapPlotter:
                     # 检查是否已经画过这条线（避免重复）
                     already_drawn = any(abs(t_start - t) < 0.01 for t in self.control_start_lines)
                     if not already_drawn:
-                        # 在所有3个子图上画垂直虚线 (MATLAB风格：黑色虚线)
-                        for ax in (self.ax1, self.ax2, self.ax3):
+                        # 在所有5个子图上画垂直虚线 (MATLAB风格：黑色虚线)
+                        for ax in (self.ax1, self.ax2, self.ax3, self.ax4, self.ax5):
                             ax.axvline(x=t_start, color='k', linestyle='--', linewidth=1.0, alpha=0.7)
                         self.control_start_lines.append(t_start)
                         print(f"📊 标记ACC控制开启时刻: step={t_start:.0f}")
@@ -361,7 +410,7 @@ class RealtimeTimeGapPlotter:
                 padding = (x_right - x_left) * 0.02
                 x_right += padding
 
-            for axis in (self.ax1, self.ax2, self.ax3):
+            for axis in (self.ax1, self.ax2, self.ax3, self.ax4, self.ax5):
                 axis.set_xlim(x_left, x_right)
 
         # Set Y-axis limits using ONLY visible data in current X-axis window
@@ -425,5 +474,46 @@ class RealtimeTimeGapPlotter:
                     self.ax3.set_ylim(lower, upper)
                     self.ax3.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
 
-        return self.line_desired, self.line_actual, self.line_error, self.line_ego_speed, self.line_target_speed
+        # Set torque Y-axis limits using ONLY visible data (子图4)
+        if torques.size and ts.size:
+            visible_mask = (ts >= x_left) & (ts <= x_right)
+            if np.any(visible_mask):
+                vis_torque = torques[visible_mask]
+                if vis_torque.size:
+                    t_min = float(np.nanmin(vis_torque))
+                    t_max = float(np.nanmax(vis_torque))
+                    if np.isfinite(t_min) and np.isfinite(t_max):
+                        if np.isclose(t_min, t_max):
+                            span = max(abs(t_min) * 0.1, 10.0)
+                        else:
+                            span = max((t_max - t_min) * 0.1, 10.0)
+                        lower = max(0, t_min - span)  # 扭矩通常>=0
+                        upper = t_max + span
+                        if np.isclose(lower, upper):
+                            upper = lower + 10.0
+                        self.ax4.set_ylim(lower, upper)
+                        self.ax4.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
 
+        # Set decel Y-axis limits using ONLY visible data (子图5)
+        if decels.size and ts.size:
+            visible_mask = (ts >= x_left) & (ts <= x_right)
+            if np.any(visible_mask):
+                vis_decel = decels[visible_mask]
+                if vis_decel.size:
+                    d_min = float(np.nanmin(vis_decel))
+                    d_max = float(np.nanmax(vis_decel))
+                    if np.isfinite(d_min) and np.isfinite(d_max):
+                        if np.isclose(d_min, d_max):
+                            span = max(abs(d_min) * 0.1, 0.5)
+                        else:
+                            span = max((d_max - d_min) * 0.1, 0.5)
+                        lower = max(0, d_min - span)  # 减速度通常>=0
+                        upper = d_max + span
+                        if np.isclose(lower, upper):
+                            upper = lower + 1.0
+                        self.ax5.set_ylim(lower, upper)
+                        self.ax5.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
+
+        return (self.line_desired, self.line_actual, self.line_error,
+                self.line_ego_speed, self.line_target_speed,
+                self.line_torque, self.line_decel)

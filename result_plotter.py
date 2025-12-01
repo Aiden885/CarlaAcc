@@ -40,6 +40,8 @@ class RealtimeResultPlotter:
         self.errors = deque()
         self.ego_speeds = deque()
         self.target_speeds = deque()
+        self.torques = deque()
+        self.decels = deque()
 
         # ACC recording control
         self.acc_started = False  # Only start recording when ACC is enabled
@@ -66,7 +68,8 @@ class RealtimeResultPlotter:
 
     def add_data(self, desired_gap: float, actual_gap: float, timestamp: float,
                  ego_speed: float = 0.0, target_speed: float = 0.0,
-                 control_enabled: bool = False) -> None:
+                 control_enabled: bool = False,
+                 request_torque: float = 0.0, request_decel: float = 0.0) -> None:
         """Push a new sample into the queue from the producer thread.
 
         Args:
@@ -76,6 +79,8 @@ class RealtimeResultPlotter:
             ego_speed: 自车速度 (km/h)
             target_speed: 前车速度 (km/h)
             control_enabled: ACC控制是否开启
+            request_torque: 请求发动机扭矩 (Nm, 正值)
+            request_decel: 请求减速度 (m/s², 正值)
         """
         # Only start recording after ACC is enabled
         if not self.acc_started:
@@ -86,11 +91,13 @@ class RealtimeResultPlotter:
                 return  # Skip data before ACC is enabled
 
         try:
-            self.data_queue.put_nowait((desired_gap, actual_gap, ego_speed, target_speed, control_enabled))
+            self.data_queue.put_nowait((desired_gap, actual_gap, ego_speed, target_speed, control_enabled,
+                                        request_torque, request_decel))
         except queue.Full:
             try:
                 self.data_queue.get_nowait()
-                self.data_queue.put_nowait((desired_gap, actual_gap, ego_speed, target_speed, control_enabled))
+                self.data_queue.put_nowait((desired_gap, actual_gap, ego_speed, target_speed, control_enabled,
+                                            request_torque, request_decel))
             except queue.Empty:
                 pass
 
@@ -147,6 +154,8 @@ class RealtimeResultPlotter:
         errors = np.asarray(self.errors, dtype=float)
         ego_speeds = np.asarray(self.ego_speeds, dtype=float)
         target_speeds = np.asarray(self.target_speeds, dtype=float)
+        torques = np.asarray(self.torques, dtype=float)
+        decels = np.asarray(self.decels, dtype=float)
 
         # MATLAB经典配色
         color_desired = "#0072BD"  # MATLAB蓝色
@@ -160,15 +169,17 @@ class RealtimeResultPlotter:
         text_color = "#000000"
 
         # 创建新的figure用于保存（使用Agg后端，不显示）
-        fig = plt.figure(figsize=(14, 10), facecolor=bg_color)
+        fig = plt.figure(figsize=(14, 12), facecolor=bg_color)
 
         # 使用subplot创建子图，便于自动布局
-        ax1 = fig.add_subplot(3, 1, 1, facecolor=bg_color)
-        ax2 = fig.add_subplot(3, 1, 2, facecolor=bg_color)
-        ax3 = fig.add_subplot(3, 1, 3, facecolor=bg_color)
+        ax1 = fig.add_subplot(5, 1, 1, facecolor=bg_color)
+        ax2 = fig.add_subplot(5, 1, 2, facecolor=bg_color)
+        ax3 = fig.add_subplot(5, 1, 3, facecolor=bg_color)
+        ax4 = fig.add_subplot(5, 1, 4, facecolor=bg_color)
+        ax5 = fig.add_subplot(5, 1, 5, facecolor=bg_color)
 
         # 配置所有子图的样式
-        for ax in [ax1, ax2, ax3]:
+        for ax in [ax1, ax2, ax3, ax4, ax5]:
             ax.set_facecolor(bg_color)
             ax.grid(True, color=grid_color, linestyle="-", linewidth=0.7, alpha=0.8)
             ax.tick_params(colors=text_color, labelsize=10)
@@ -210,6 +221,26 @@ class RealtimeResultPlotter:
         ax3.legend(loc="upper right", facecolor=bg_color, edgecolor="#000000",
                   fontsize=10, framealpha=1.0)
 
+        # 子图4：请求扭矩
+        ax4.plot(steps, torques, color="#1f77b4", linewidth=2.0,
+                label="Request Torque", marker='o', markersize=2, markevery=10)
+        ax4.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
+        ax4.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
+        ax4.set_ylabel("Torque (Nm)", color=text_color, fontsize=11, fontweight='bold')
+        ax4.set_title("Request Engine Torque", color=text_color, fontsize=13, fontweight="bold")
+        ax4.legend(loc="upper right", facecolor=bg_color, edgecolor="#000000",
+                  fontsize=10, framealpha=1.0)
+
+        # 子图5：请求减速度
+        ax5.plot(steps, decels, color="#d62728", linewidth=2.0,
+                label="Request Decel", marker='s', markersize=2, markevery=10)
+        ax5.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
+        ax5.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
+        ax5.set_ylabel("Decel (m/s²)", color=text_color, fontsize=11, fontweight='bold')
+        ax5.set_title("Request Brake Deceleration", color=text_color, fontsize=13, fontweight="bold")
+        ax5.legend(loc="upper right", facecolor=bg_color, edgecolor="#000000",
+                  fontsize=10, framealpha=1.0)
+
         # 自动调整布局
         fig.tight_layout()
 
@@ -249,7 +280,8 @@ class RealtimeResultPlotter:
                 writer = csv.writer(csvfile)
                 # Write header
                 writer.writerow(['Step', 'Desired Gap (s)', 'Actual Gap (s)',
-                                'Error (s)', 'Ego Speed (km/h)', 'Target Speed (km/h)'])
+                                 'Error (s)', 'Ego Speed (km/h)', 'Target Speed (km/h)',
+                                 'Req Torque (Nm)', 'Req Decel (m/s^2)'])
                 # Write data
                 for i in range(len(self.steps)):
                     writer.writerow([
@@ -258,7 +290,9 @@ class RealtimeResultPlotter:
                         self.actual_gaps[i],
                         self.errors[i],
                         self.ego_speeds[i],
-                        self.target_speeds[i]
+                        self.target_speeds[i],
+                        self.torques[i],
+                        self.decels[i]
                     ])
             print(f"✅ CSV数据已保存: {csv_filename}")
         except Exception as e:
@@ -292,7 +326,7 @@ class RealtimeResultPlotter:
         self.color_ego = "#7E2F8E"      # MATLAB紫色 - 自车
         self.color_target = "#77AC30"   # MATLAB绿色 - 前车
 
-        self.fig = plt.figure(figsize=(14, 10), facecolor=bg_color)
+        self.fig = plt.figure(figsize=(14, 12), facecolor=bg_color)
         self.fig.canvas.manager.set_window_title(
             "ACC Results - Step Mode"
         )
@@ -300,13 +334,16 @@ class RealtimeResultPlotter:
         # Register window close event to save results
         self.fig.canvas.mpl_connect('close_event', self._on_window_close)
 
-        # 3个子图：时距跟踪、误差、速度
-        # 调整位置确保有足够边距（左，下，宽，高）
-        self.ax1 = plt.axes([0.08, 0.65, 0.88, 0.25], facecolor=bg_color)  # 时距跟踪
-        self.ax2 = plt.axes([0.08, 0.37, 0.88, 0.20], facecolor=bg_color)  # 误差
-        self.ax3 = plt.axes([0.08, 0.09, 0.88, 0.20], facecolor=bg_color)  # 速度
+        # 5个子图：时距跟踪、误差、速度、扭矩、减速度（增加间距避免标题和横轴重叠）
+        # 5个子图：时距跟踪、误差、速度、扭矩、减速度（增加间距避免标题和横轴重叠）
+        # 调整布局以增加垂直间距 (Gap ~0.07)
+        self.ax1 = plt.axes([0.08, 0.80, 0.88, 0.16], facecolor=bg_color)  # 时距跟踪
+        self.ax2 = plt.axes([0.08, 0.62, 0.88, 0.11], facecolor=bg_color)  # 误差
+        self.ax3 = plt.axes([0.08, 0.44, 0.88, 0.11], facecolor=bg_color)  # 速度
+        self.ax4 = plt.axes([0.08, 0.26, 0.88, 0.11], facecolor=bg_color)  # 扭矩
+        self.ax5 = plt.axes([0.08, 0.08, 0.88, 0.11], facecolor=bg_color)  # 减速度
 
-        self.axes = [self.ax1, self.ax2, self.ax3]
+        self.axes = [self.ax1, self.ax2, self.ax3, self.ax4, self.ax5]
 
         for ax in self.axes:
             ax.set_facecolor(bg_color)
@@ -363,6 +400,34 @@ class RealtimeResultPlotter:
             loc="upper right", facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
         )
 
+        # 子图4：请求扭矩
+        self.line_torque, = self.ax4.plot(
+            [], [], color="#1f77b4", linewidth=2.0, label="Request Torque", marker='o', markersize=2, markevery=10
+        )
+        self.ax4.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
+        self.ax4.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
+        self.ax4.set_ylabel("Torque (Nm)", color=text_color, fontsize=11, fontweight='bold')
+        self.ax4.set_title(
+            "Request Engine Torque", color=text_color, fontsize=13, fontweight="bold"
+        )
+        self.ax4.legend(
+            loc="upper right", facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
+        )
+
+        # 子图5：请求减速度
+        self.line_decel, = self.ax5.plot(
+            [], [], color="#d62728", linewidth=2.0, label="Request Decel", marker='s', markersize=2, markevery=10
+        )
+        self.ax5.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
+        self.ax5.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
+        self.ax5.set_ylabel("Decel (m/s²)", color=text_color, fontsize=11, fontweight='bold')
+        self.ax5.set_title(
+            "Request Brake Deceleration", color=text_color, fontsize=13, fontweight="bold"
+        )
+        self.ax5.legend(
+            loc="upper right", facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
+        )
+
     def _plot_loop(self) -> None:
         """Own the matplotlib event loop on a dedicated thread."""
         try:
@@ -393,7 +458,13 @@ class RealtimeResultPlotter:
         data_count = 0
         while not self.data_queue.empty() and data_count < 50:
             try:
-                desired, actual, ego_speed, target_speed, control_enabled = self.data_queue.get_nowait()
+                item = self.data_queue.get_nowait()
+                if len(item) == 7:
+                    desired, actual, ego_speed, target_speed, control_enabled, req_torque, req_decel = item
+                else:
+                    # 兼容旧格式
+                    desired, actual, ego_speed, target_speed, control_enabled = item
+                    req_torque, req_decel = 0.0, 0.0
             except queue.Empty:
                 break
 
@@ -404,6 +475,8 @@ class RealtimeResultPlotter:
             self.errors.append(actual - desired)
             self.ego_speeds.append(ego_speed)
             self.target_speeds.append(target_speed)
+            self.torques.append(req_torque)
+            self.decels.append(req_decel)
 
             self.current_step += 1
             self.total_points += 1
@@ -419,11 +492,18 @@ class RealtimeResultPlotter:
         ego_speeds = np.asarray(self.ego_speeds, dtype=float)
         target_speeds = np.asarray(self.target_speeds, dtype=float)
 
+        # 转换为numpy数组
+        torques_array = np.asarray(self.torques, dtype=float)
+        decels_array = np.asarray(self.decels, dtype=float)
+
+        # 更新所有曲线数据
         self.line_desired.set_data(steps, desired)
         self.line_actual.set_data(steps, actual)
         self.line_error.set_data(steps, errors)
         self.line_ego_speed.set_data(steps, ego_speeds)
         self.line_target_speed.set_data(steps, target_speeds)
+        self.line_torque.set_data(steps, torques_array)
+        self.line_decel.set_data(steps, decels_array)
 
         # Set X-axis limits
         x_left, x_right = 0, 1
@@ -436,7 +516,7 @@ class RealtimeResultPlotter:
                 padding = (x_right - x_left) * 0.02
                 x_right += padding
 
-            for axis in (self.ax1, self.ax2, self.ax3):
+            for axis in (self.ax1, self.ax2, self.ax3, self.ax4, self.ax5):
                 axis.set_xlim(x_left, x_right)
 
         # Set Y-axis limits for time gap
@@ -483,4 +563,42 @@ class RealtimeResultPlotter:
                 self.ax3.set_ylim(lower, upper)
                 self.ax3.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
 
-        return self.line_desired, self.line_actual, self.line_error, self.line_ego_speed, self.line_target_speed
+        # Set torque Y-axis limits (子图4)
+        if self.torques and steps.size:
+            torques_arr = np.asarray(self.torques, dtype=float)
+            if torques_arr.size:
+                t_min = float(np.nanmin(torques_arr))
+                t_max = float(np.nanmax(torques_arr))
+                if np.isfinite(t_min) and np.isfinite(t_max):
+                    if np.isclose(t_min, t_max):
+                        span = max(abs(t_min) * 0.1, 10.0)
+                    else:
+                        span = max((t_max - t_min) * 0.1, 10.0)
+                    lower = max(0, t_min - span)  # 扭矩通常>=0
+                    upper = t_max + span
+                    if np.isclose(lower, upper):
+                        upper = lower + 10.0
+                    self.ax4.set_ylim(lower, upper)
+                    self.ax4.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
+
+        # Set decel Y-axis limits (子图5)
+        if self.decels and steps.size:
+            decels_arr = np.asarray(self.decels, dtype=float)
+            if decels_arr.size:
+                d_min = float(np.nanmin(decels_arr))
+                d_max = float(np.nanmax(decels_arr))
+                if np.isfinite(d_min) and np.isfinite(d_max):
+                    if np.isclose(d_min, d_max):
+                        span = max(abs(d_min) * 0.1, 0.5)
+                    else:
+                        span = max((d_max - d_min) * 0.1, 0.5)
+                    lower = max(0, d_min - span)  # 减速度通常>=0
+                    upper = d_max + span
+                    if np.isclose(lower, upper):
+                        upper = lower + 1.0
+                    self.ax5.set_ylim(lower, upper)
+                    self.ax5.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
+
+        return (self.line_desired, self.line_actual, self.line_error,
+                self.line_ego_speed, self.line_target_speed,
+                self.line_torque, self.line_decel)

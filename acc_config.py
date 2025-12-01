@@ -110,10 +110,9 @@ class ACCConfig:
 
         # SPPVT 输出到物理量的缩放系数
         # 基于 SPPVT 输出范围 ±2.5 和 Audi e-tron 真实参数设计
-        self.sppvt_accel_scale = 400.0   # 加速：SPPVT输出 → 发动机扭矩 (N·m)
-                                          # 例如：+1.87 × 400 = 748 N·m (接近峰值749)
+        self.sppvt_accel_scale = 223.0   # 加速：SPPVT输出 → 发动机扭矩 (N·m)
+
         self.sppvt_decel_scale = 2.0     # 减速：SPPVT输出 → 减速度 (m/s²)
-                                          # 例如：-2.5 × 2.0 = -5.0 m/s² (限制到-4.56)
                                           # 理论最大减速度：4.56 m/s² (从CARLA测得)
 
         # ========== 斜坡速度控制器配置 ==========

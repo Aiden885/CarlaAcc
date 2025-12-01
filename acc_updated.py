@@ -962,6 +962,9 @@ class acc:
 
                 # 调用一体化接口获取决策+SPPVT输出
                 try:
+                    # 缺省纵向请求（用于绘图）
+                    req_torque = 0.0
+                    req_decel = 0.0
                     t0 = time.time()
                     unified_output = self.acc_decision_sppvt.process_decision_and_control(unified_input)
                     simulink_duration_ms = (time.time() - t0) * 1000  # 保存耗时(毫秒)
@@ -1009,20 +1012,7 @@ class acc:
                     self.acc_decision_sppvt.torque_arbitration_active = unified_output.get(
                         'torque_arbitration_active', False)
 
-                    # === 实时绘图：添加TIME模式数据 ===
-                    if control_mode_flag == 1 and has_target:  # TIME模式且有前车
-                        # 提取时距数据
-                        desired_time_gap = enhanced_two_mode_output.get('reference_value', 0.0)  # 期望时距
-                        actual_time_gap = enhanced_two_mode_output.get('current_value', 0.0)  # 实际时距
-                        # 使用步数作为横轴（避免将步长误解为秒）
-                        self.realtime_plotter.add_data(
-                            desired_time_gap,
-                            actual_time_gap,
-                            frame_count,  # step index
-                            ego_speed,  # 自车速度 (km/h)
-                            target_speed,  # 前车速度 (km/h)
-                            decision_output['control_enabled']  # ACC控制状态
-                        )
+                    # === 注意：实时绘图调用移到了后面，在req_torque和req_decel计算之后 ===
 
                     # 获取SPPVT的原始控制输出
                     control_output = unified_output.get('sppvt_control_output', 0.0)
@@ -1094,6 +1084,8 @@ class acc:
                         )
 
                         # Decide control action based on enable flag
+                        req_torque = 0.0
+                        req_decel = 0.0
                         if decision_output.get('control_enabled', False):
                             # ACC control active; build control command
                             control = carla.VehicleControl()
@@ -1106,10 +1098,14 @@ class acc:
                                 if sppvt_target_accel >= 0:
                                     # 加速模式：SPPVT输出 → 发动机扭矩 (N·m)
                                     sppvt_engine_torque = sppvt_target_accel * self.config.sppvt_accel_scale
+                                    req_torque = sppvt_engine_torque
+                                    req_decel = 0.0
                                     print(f"[加速] SPPVT输出: {sppvt_target_accel:.3f} × {self.config.sppvt_accel_scale} = 扭矩: {sppvt_engine_torque:.2f} N·m")
                                 else:
                                     # 减速模式：SPPVT输出 → 减速度 (m/s²)
                                     sppvt_engine_torque = sppvt_target_accel * self.config.sppvt_decel_scale
+                                    req_torque = 0.0
+                                    req_decel = abs(sppvt_engine_torque)
                                     print(f"[减速] SPPVT输出: {sppvt_target_accel:.3f} × {self.config.sppvt_decel_scale} = 减速度: {sppvt_engine_torque:.2f} m/s²")
                                 if self.use_torque_converter:
                                     # 使用完整RPM模型：发动机扭矩 → 油门/刹车
@@ -1287,6 +1283,23 @@ class acc:
                 display_unified_output = dict(unified_output)
                 display_unified_output['torque_arbitration_active'] = display_torque_arbitration
 
+                # === 实时绘图：添加TIME模式数据（在req_torque和req_decel计算之后）===
+                if control_mode_flag == 1 and has_target:  # TIME模式且有前车
+                    # 提取时距数据
+                    desired_time_gap = enhanced_two_mode_output.get('reference_value', 0.0)  # 期望时距
+                    actual_time_gap = enhanced_two_mode_output.get('current_value', 0.0)  # 实际时距
+                    # 使用步数作为横轴（避免将步长误解为秒）
+                    self.realtime_plotter.add_data(
+                        desired_time_gap,
+                        actual_time_gap,
+                        frame_count,  # step index
+                        ego_speed,  # 自车速度 (km/h)
+                        target_speed,  # 前车速度 (km/h)
+                        decision_output['control_enabled'],  # ACC控制状态
+                        req_torque,  # 现在已经计算完成
+                        req_decel    # 现在已经计算完成
+                    )
+
                 # === 格式化输出Simulink I/O信息 ===
                 OutputFormatter.print_simulink_io(
                     frame_num=frame_count,
@@ -1411,7 +1424,7 @@ class acc:
 
 def main():
     # 手动切换工况 "none" / "cut-in" / "cut-out"
-    SCENARIO_MODE = "cut-in"  # None=按配置文件，"none"=普通，"cut-in"=切入，"cut-out"=切出
+    SCENARIO_MODE = "none"  # None=按配置文件，"none"=普通，"cut-in"=切入，"cut-out"=切出
 
     # 启用结果保存画图器
     USE_RESULT_PLOTTER = False
