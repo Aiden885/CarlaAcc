@@ -950,14 +950,6 @@ class acc:
                     'V_min_kmh': sanitize_value(acc_params['V_min_kmh'], 30.0),
                     'G2_s': sanitize_value(acc_params['G2_s'], 2.0),
                     'timestamp': time.time(),
-                    # 外部状态字段（必需） - 全部标量化（21字段输入总线）
-                    'external_stage_offset': 0.0,
-                    'external_stage': 1.0,
-                    'external_error_sign': 0.0,
-                    'external_upgrade_count': 0.0,
-                    'external_control_error': 0.0,
-                    'external_error_derivative': 0.0,
-                    'external_error_second_derivative': 0.0
                 }
 
                 # 调用一体化接口获取决策+SPPVT输出

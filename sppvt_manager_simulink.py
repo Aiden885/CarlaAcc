@@ -38,13 +38,70 @@ class SimulinkSPPVTManager(BaseSPPVTManager):
                 raise RuntimeError("MATLAB engine is not available.")
 
         if not self.model_loaded:
+            # 加载模型
             self.matlab_engine.load_system(self.model_name, nargout=0)
+
+            # 同步Python参数到Simulink Constant模块
+            self._sync_params_to_constant_blocks()
+
+            # 配置仿真参数
             self.matlab_engine.set_param(self.model_name, 'SimulationMode', 'normal', nargout=0)
             self.matlab_engine.set_param(self.model_name, 'StopTime', str(self.params['dt']), nargout=0)
             self.matlab_engine.set_param(self.model_name, 'SaveOutput', 'on', nargout=0)
             self.matlab_engine.set_param(self.model_name, 'OutputSaveName', 'yout', nargout=0)
             self.matlab_engine.set_param(self.model_name, 'SaveFormat', 'Structure', nargout=0)
             self.model_loaded = True
+
+    def _sync_params_to_constant_blocks(self):
+        """
+        将Python端的参数同步到Simulink模型中的Constant模块
+
+        基于检测结果，模型中有6个Constant模块：
+            SPPVT_dt, SPPVT_kp, SPPVT_max_accel, SPPVT_max_decel,
+            SPPVT_delta, SPPVT_eta
+
+        参考：https://stackoverflow.com/questions/64285280
+        """
+        if self.matlab_engine is None:
+            raise RuntimeError("MATLAB engine not initialized")
+
+        # 定义参数到Constant模块的映射
+        # 格式：'Constant模块名': (Python参数名, 描述)
+        param_blocks = {
+            'SPPVT_dt': ('dt', '控制周期(s)'),
+            'SPPVT_kp': ('kp', '比例系数'),
+            'SPPVT_max_accel': ('max_accel', '最大加速度(m/s²)'),
+            'SPPVT_max_decel': ('max_decel', '最大减速度(m/s²)'),
+            'SPPVT_delta': ('delta', '速度阈值'),
+            'SPPVT_eta': ('eta', '误差阈值'),
+        }
+
+        for block_name, (param_name, description) in param_blocks.items():
+            param_value = self.params[param_name]
+
+            # 构建完整的块路径
+            block_path = f'{self.model_name}/{block_name}'
+
+            # 设置Constant模块的Value参数（值必须转为字符串）
+            try:
+                self.matlab_engine.set_param(
+                    block_path,
+                    'Value',
+                    str(param_value),  # 必须是字符串格式
+                    nargout=0
+                )
+
+                if self.debug:
+                    print(f"✅ {description}: {block_name} = {param_value}")
+
+            except Exception as e:
+                print(f"❌ 设置{block_name}失败: {e}")
+                # 尝试验证块是否存在
+                try:
+                    current_value = self.matlab_engine.get_param(block_path, 'Value', nargout=1)
+                    print(f"   当前值: {current_value}")
+                except:
+                    print(f"   块路径可能不存在: {block_path}")
 
     # ------------------------------------------------------------------ processing
     def process_from_values(self, control_enabled: bool, control_error: float,
@@ -61,7 +118,13 @@ class SimulinkSPPVTManager(BaseSPPVTManager):
         if matlab is None:
             raise RuntimeError("matlab python package is required for Simulink SPPVT manager.")
 
-        # Build external input matrix (time + signals)
+        # Build external input matrix (time + 6 real-time signals)
+        # 输入信号（基于检测结果）：
+        #   In1: error_value, In2: current_stage_offset, In3: prev_error,
+        #   In4: prev_velocity, In5: prev_accel, In6: control_mode_flag
+        # 参数（通过Constant模块提供）：
+        #   SPPVT_dt, SPPVT_kp, SPPVT_max_accel, SPPVT_max_decel,
+        #   SPPVT_delta, SPPVT_eta
         dt = self.params['dt']
         ext_input = [
             [0.0] + inputs,

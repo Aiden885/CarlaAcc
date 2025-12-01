@@ -42,20 +42,29 @@ class BaseSPPVTManager:
     # ------------------------------------------------------------------ helpers
     def _prepare_inputs(self, control_enabled: bool, control_error: float,
                         control_mode_flag: int) -> Tuple[float, List[float]]:
+        """
+        准备Simulink模型的实时输入变量（参数通过Constant模块提供）
+
+        Simulink输入端口映射：
+            In1: error_value - 控制误差 (m)
+            In2: current_stage_offset - 级差状态累积值
+            In3: prev_error - 上一帧控制误差
+            In4: prev_velocity - 上一帧误差导数 (m/s)
+            In5: prev_accel - 上一帧误差二阶导 (m/s²)
+            In6: control_mode_flag - 控制模式 (1=TIME, 2=SPEED)
+
+        Constant模块参数（不在输入列表中）：
+            SPPVT_dt, SPPVT_kp, SPPVT_max_accel, SPPVT_max_decel,
+            SPPVT_delta, SPPVT_eta
+        """
         error_value = control_error if control_enabled else 0.0
         inputs = [
-            error_value,
-            self.params['dt'],
-            self.sppvt_state['stage_offset'],
-            self.params['kp'],
-            self.params['max_accel'],
-            self.params['max_decel'],
-            self.sppvt_state['control_error'],
-            self.sppvt_state['error_derivative'],
-            self.sppvt_state['error_second_derivative'],
-            self.params['delta'],
-            self.params['eta'],
-            float(control_mode_flag),
+            error_value,                                    # In1: 控制误差
+            self.sppvt_state['stage_offset'],               # In2: current_stage_offset
+            self.sppvt_state['control_error'],              # In3: prev_error
+            self.sppvt_state['error_derivative'],           # In4: prev_velocity
+            self.sppvt_state['error_second_derivative'],    # In5: prev_accel
+            float(control_mode_flag),                       # In6: control_mode_flag
         ]
         return error_value, inputs
 
