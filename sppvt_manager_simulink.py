@@ -45,7 +45,15 @@ class SimulinkSPPVTManager(BaseSPPVTManager):
             self._sync_params_to_constant_blocks()
 
             # 配置仿真参数
-            self.matlab_engine.set_param(self.model_name, 'SimulationMode', 'normal', nargout=0)
+            try:
+                self.matlab_engine.set_param(self.model_name, 'SimulationMode', 'accelerator', nargout=0)
+                self.matlab_engine.set_param(self.model_name, 'FastRestart', 'on', nargout=0)
+                if self.debug:
+                    print("✅ SPPVT 模型已启用Accelerator + Fast Restart")
+            except Exception as e:
+                if self.debug:
+                    print(f"⚠️ SPPVT无法启用Accelerator/FastRestart: {e}, fallback到normal")
+                self.matlab_engine.set_param(self.model_name, 'SimulationMode', 'normal', nargout=0)
             self.matlab_engine.set_param(self.model_name, 'StopTime', str(self.params['dt']), nargout=0)
             self.matlab_engine.set_param(self.model_name, 'SaveOutput', 'on', nargout=0)
             self.matlab_engine.set_param(self.model_name, 'OutputSaveName', 'yout', nargout=0)

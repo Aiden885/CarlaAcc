@@ -12,8 +12,9 @@ from typing import Dict, Optional
 import numpy as np
 
 from acc_config import ACCConfig
-from acc_controller import ACCController, ACCState
+from acc_controller import ACCState
 from sppvt_manager_simulink import SimulinkSPPVTManager
+from acc_decision_simulink_manager import SimulinkACCDecisionManager
 
 
 class ACCControlFacade:
@@ -28,15 +29,23 @@ class ACCControlFacade:
         self.mode = mode
         self.debug = debug
 
-        self.acc_controller = ACCController(
+        # 决策模块 - 使用Simulink实现
+        self.acc_controller = SimulinkACCDecisionManager(
+            matlab_engine=matlab_engine,  # 复用MATLAB Engine
             debug=debug,
             max_target_speed_kmh=self.config.max_target_speed_kmh
         )
+
+        if self.debug:
+            print("✅ 使用Simulink决策模块")
+
         # 初始化决策参数与配置保持一致
         try:
             self.acc_controller.params.update(self.config.acc_params)
         except Exception:
             pass
+
+        # SPPVT控制模块（使用Simulink）
         self.sppvt_manager = SimulinkSPPVTManager(
             matlab_engine=matlab_engine,
             model_name=model_name,
@@ -79,6 +88,8 @@ class ACCControlFacade:
         return self.process_cycle(input_data)
 
     def cleanup(self):
+        if hasattr(self.acc_controller, 'cleanup'):
+            self.acc_controller.cleanup()
         if hasattr(self.sppvt_manager, 'cleanup'):
             self.sppvt_manager.cleanup()
 
