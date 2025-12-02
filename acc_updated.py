@@ -106,6 +106,14 @@ class acc:
         # === 保持原有决策接口兼容性 ===
         self.acc_decision = self.acc_decision_sppvt  # 兼容性别名
 
+        # === 资源追踪（提前初始化以确保destroy能安全调用）===
+        self.vehicles = []
+        self.ego_vehicle = None
+        self.sensors = []  # 预留给未来可能添加的传感器
+        self.client = None
+        self.world = None
+        self.tm = None
+
         # === 控制状态 ===
         self.acc_system_enabled = False  # ACC系统开关（空格键）
         self.manual_control_active = True
@@ -134,6 +142,9 @@ class acc:
 
         # 键盘指令队列（单帧有效，只记录指令不立即调用Simulink）
         self.pending_keyboard_command = None  # 格式: {'code': int, 'description': str}
+        
+        # 按键去抖动计时器
+        self.last_space_press_time = 0.0
 
         # === 横向控制器 ===
         # 使用增强横向控制器（PID + 预瞄）
@@ -159,33 +170,40 @@ class acc:
         # === 运行控制 ===
         self.running = True
 
-        # 初始化CARLA
-        self.init_carla()
-        self.init_csv()
+        try:
+            # 初始化CARLA
+            self.init_carla()
+            self.init_csv()
 
-        # 初始化两模式参数 - 已集成到Simulink，无需外部同步
+            # 初始化两模式参数 - 已集成到Simulink，无需外部同步
 
-        # 初始化一体化接口的两模式控制器
-        if hasattr(self.acc_decision_sppvt, 'init_two_mode_controller'):
-            self.acc_decision_sppvt.init_two_mode_controller()
+            # 初始化一体化接口的两模式控制器
+            if hasattr(self.acc_decision_sppvt, 'init_two_mode_controller'):
+                self.acc_decision_sppvt.init_two_mode_controller()
 
-        # === 初始化绘图器 ===
-        if self.use_result_plotter:
-            # 使用结果保存画图器（Step模式，ACC开启后记录，自动保存CSV和PNG）
-            self.realtime_plotter = RealtimeResultPlotter(
-                max_points=self.config.plotter_max_points,
-                update_interval=self.config.plotter_update_interval
-            )
-            self.realtime_plotter.start()
-            print("✅ 结果保存绘图器已启动 (Step模式，自动保存)")
-        else:
-            # 使用实时测试画图器（Time模式，有滑动条控件）
-            self.realtime_plotter = RealtimeTimeGapPlotter(
-                max_points=self.config.plotter_max_points,
-                update_interval=self.config.plotter_update_interval
-            )
-            self.realtime_plotter.start()
-            print("✅ 实时测试绘图器已启动 (Time模式)")
+            # === 初始化绘图器 ===
+            if self.use_result_plotter:
+                # 使用结果保存画图器（Step模式，ACC开启后记录，自动保存CSV和PNG）
+                self.realtime_plotter = RealtimeResultPlotter(
+                    max_points=self.config.plotter_max_points,
+                    update_interval=self.config.plotter_update_interval
+                )
+                self.realtime_plotter.start()
+                print("✅ 结果保存绘图器已启动 (Step模式，自动保存)")
+            else:
+                # 使用实时测试画图器（Time模式，有滑动条控件）
+                self.realtime_plotter = RealtimeTimeGapPlotter(
+                    max_points=self.config.plotter_max_points,
+                    update_interval=self.config.plotter_update_interval
+                )
+                self.realtime_plotter.start()
+                print("✅ 实时测试绘图器已启动 (Time模式)")
+        
+        except Exception as e:
+            print(f"❌ 初始化失败: {e}")
+            print("正在清理资源...")
+            self.destroy()
+            raise e
 
     def init_carla(self):
         # 初始化 Carla 客户端（使用配置）
@@ -540,11 +558,16 @@ class acc:
                     self.acc_decision.debug = not self.acc_decision.debug
                     print(f"ACC debug: {'ON' if self.acc_decision.debug else 'OFF'}")
                 elif event_data == K_SPACE:
-                    self.acc_system_enabled = not self.acc_system_enabled
-                    status = 'ON' if self.acc_system_enabled else 'OFF'
-                    print(f"主开关 ACC master switch: {status}")
-                    if not self.acc_system_enabled:
-                        self.acc_decision.reset()
+                    current_time = time.time()
+                    if current_time - self.last_space_press_time > 0.5:  # 500ms去抖动
+                        self.acc_system_enabled = not self.acc_system_enabled
+                        self.last_space_press_time = current_time
+                        status = 'ON' if self.acc_system_enabled else 'OFF'
+                        print(f"主开关 ACC master switch: {status}")
+                        if not self.acc_system_enabled:
+                            self.acc_decision.reset()
+                    else:
+                        print(f"⚠️ 忽略重复按键 (间隔 {current_time - self.last_space_press_time:.2f}s)")
                 elif event_data in (K_q, K_e, K_r, K_t, K_c):
                     if not self.acc_system_enabled:
                         print('提示 ACC disabled, press SPACE to enable')
@@ -1354,34 +1377,86 @@ class acc:
                 print_performance_report(perf_times, final_elapsed)
 
             print("Cleaning up...")
-            if self.csv_file:
-                self.csv_file.close()
-            self.display_manager.destroy()
             self.destroy()
 
     def destroy(self):
-        # 停止实时绘图器
-        if hasattr(self, 'realtime_plotter'):
-            self.realtime_plotter.stop()
+        print("Cleaning up resources...")
+        
+        # 1. 停止实时绘图器
+        try:
+            if hasattr(self, 'realtime_plotter') and self.realtime_plotter:
+                self.realtime_plotter.stop()
+        except Exception as e:
+            print(f"⚠️ Error stopping plotter: {e}")
 
-        # 清理混合控制器资源
-        if hasattr(self, 'acc_decision_sppvt'):
-            self.acc_decision_sppvt.cleanup()
+        # 2. 清理混合控制器资源
+        try:
+            if hasattr(self, 'acc_decision_sppvt') and self.acc_decision_sppvt:
+                self.acc_decision_sppvt.cleanup()
+        except Exception as e:
+            print(f"⚠️ Error cleaning up ACC controller: {e}")
 
-        # 前车速度控制已由TM管理，无需手动禁用
+        # 3. 批量销毁车辆和传感器 (使用ApplyBatch)
+        if self.client:
+            batch = []
+            
+            # 收集所有车辆ID
+            if hasattr(self, 'vehicles') and self.vehicles:
+                for vehicle in self.vehicles:
+                    if vehicle and vehicle.is_alive:
+                        batch.append(carla.command.DestroyActor(vehicle))
+            
+            # 收集自车ID
+            if hasattr(self, 'ego_vehicle') and self.ego_vehicle and self.ego_vehicle.is_alive:
+                batch.append(carla.command.DestroyActor(self.ego_vehicle))
+                
+            # 收集传感器ID (如果有)
+            if hasattr(self, 'sensors') and self.sensors:
+                for sensor in self.sensors:
+                    if sensor and sensor.is_alive:
+                        batch.append(carla.command.DestroyActor(sensor))
 
-        # 销毁车辆
-        for vehicle in self.vehicles:
-            vehicle.destroy()
-        self.ego_vehicle.destroy()
+            # 执行批量销毁
+            if batch:
+                try:
+                    responses = self.client.apply_batch_sync(batch) if self.config.synchronous_mode else self.client.apply_batch(batch)
+                    # 检查错误
+                    error_count = sum(1 for r in responses if r.has_error())
+                    if error_count > 0:
+                        print(f"⚠️ {error_count} actors failed to destroy during batch cleanup.")
+                    else:
+                        print(f"✅ Successfully destroyed {len(batch)} actors (batch).")
+                except Exception as e:
+                    print(f"⚠️ Error during batch destruction: {e}")
+            else:
+                print("ℹ️ No actors to destroy.")
+        
+        # 4. 恢复异步模式
+        try:
+            if self.world:
+                settings = self.world.get_settings()
+                settings.synchronous_mode = False
+                settings.fixed_delta_seconds = None
+                self.world.apply_settings(settings)
+                print("✅ Restored asynchronous mode.")
+        except Exception as e:
+            print(f"⚠️ Error restoring settings: {e}")
 
-        # 恢复异步模式
-        if self.world:
-            settings = self.world.get_settings()
-            settings.synchronous_mode = False
-            self.world.apply_settings(settings)
+        # 5. 清理显示管理器
+        try:
+            if hasattr(self, 'display_manager') and self.display_manager:
+                self.display_manager.destroy()
+        except Exception as e:
+            print(f"⚠️ Error cleaning up display manager: {e}")
 
-        print(f"Destroyed {len(self.vehicles)} vehicles, ego vehicle, and restored settings.")
+        # 6. 关闭CSV文件
+        try:
+            if hasattr(self, 'csv_file') and self.csv_file:
+                self.csv_file.close()
+        except Exception as e:
+            print(f"⚠️ Error closing CSV file: {e}")
+
+        print("Cleanup complete.")
 
     def _update_cut_in_scenario(self, elapsed_time_s: float):
         """切入工况的周期更新：触发变道并在满足条件时切换跟车目标。"""

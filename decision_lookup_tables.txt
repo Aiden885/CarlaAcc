@@ -1,0 +1,89 @@
+====================================================================
+ACC决策查找表 - 可读格式
+====================================================================
+
+查找表维度:
+  States (行): [0 1 2 3]  (S0=在控, S1=有史待命, S2=无史待命, S3=低速)
+  Commands (列): [0 1 2 3 4 5 6 7]
+  (0=NONE, 1=E键, 2=Q键, 3=T键, 4=R键, 5=W键, 6=S键, 7=C键)
+
+--------------------------------------------------------------------
+表1: next_state_table (下一状态)
+--------------------------------------------------------------------
+        Cmd0 Cmd1 Cmd2 Cmd3 Cmd4 Cmd5 Cmd6 Cmd7
+State0:    0    0    0    0    0    0    1    1
+State1:    1    0    0    1    1    1    1    1
+State2:    2    0    2    2    2    2    2    2
+State3:    3    3    3    3    3    3    3    3
+
+--------------------------------------------------------------------
+表2: decision_table (决策输出, -1=使用last_active_decision)
+--------------------------------------------------------------------
+        Cmd0 Cmd1 Cmd2 Cmd3 Cmd4 Cmd5 Cmd6 Cmd7
+State0:   -1   R1   R2   R3   R4   R7   R8   R8
+State1:   R8   R5   R6   R8   R8   R8   R8   R8
+State2:   R8   R5   R8   R8   R8   R8   R8   R8
+State3:   R8   R8   R8   R8   R8   R8   R8   R8
+
+--------------------------------------------------------------------
+表3: control_enabled_table (控制使能, 0=禁用, 1=启用)
+--------------------------------------------------------------------
+        Cmd0 Cmd1 Cmd2 Cmd3 Cmd4 Cmd5 Cmd6 Cmd7
+State0:    1    1    1    1    1    1    0    0
+State1:    0    1    1    0    0    0    0    0
+State2:    0    1    0    0    0    0    0    0
+State3:    0    0    0    0    0    0    0    0
+
+--------------------------------------------------------------------
+表4: side_effect_table (副作用, 1=set_has_history_true)
+--------------------------------------------------------------------
+        Cmd0 Cmd1 Cmd2 Cmd3 Cmd4 Cmd5 Cmd6 Cmd7
+State0:    0    0    0    0    0    0    0    0
+State1:    0    0    0    0    0    0    0    0
+State2:    0    1    0    0    0    0    0    0
+State3:    0    0    0    0    0    0    0    0
+
+====================================================================
+详细转移规则 (便于验证)
+====================================================================
+
+--- State 0 ---
+  S0 + Cmd0 → S0, R-1, enable=1
+  S0 + Cmd1 → S0, R1, enable=1
+  S0 + Cmd2 → S0, R2, enable=1
+  S0 + Cmd3 → S0, R3, enable=1
+  S0 + Cmd4 → S0, R4, enable=1
+  S0 + Cmd5 → S0, R7, enable=1
+  S0 + Cmd6 → S1, R8, enable=0
+  S0 + Cmd7 → S1, R8, enable=0
+
+--- State 1 ---
+  S1 + Cmd0 → S1, R8, enable=0
+  S1 + Cmd1 → S0, R5, enable=1
+  S1 + Cmd2 → S0, R6, enable=1
+  S1 + Cmd3 → S1, R8, enable=0
+  S1 + Cmd4 → S1, R8, enable=0
+  S1 + Cmd5 → S1, R8, enable=0
+  S1 + Cmd6 → S1, R8, enable=0
+  S1 + Cmd7 → S1, R8, enable=0
+
+--- State 2 ---
+  S2 + Cmd0 → S2, R8, enable=0
+  S2 + Cmd1 → S0, R5, enable=1 [set_history]
+  S2 + Cmd2 → S2, R8, enable=0
+  S2 + Cmd3 → S2, R8, enable=0
+  S2 + Cmd4 → S2, R8, enable=0
+  S2 + Cmd5 → S2, R8, enable=0
+  S2 + Cmd6 → S2, R8, enable=0
+  S2 + Cmd7 → S2, R8, enable=0
+
+--- State 3 ---
+  S3 + Cmd0 → S3, R8, enable=0
+  S3 + Cmd1 → S3, R8, enable=0
+  S3 + Cmd2 → S3, R8, enable=0
+  S3 + Cmd3 → S3, R8, enable=0
+  S3 + Cmd4 → S3, R8, enable=0
+  S3 + Cmd5 → S3, R8, enable=0
+  S3 + Cmd6 → S3, R8, enable=0
+  S3 + Cmd7 → S3, R8, enable=0
+
