@@ -1,115 +1,80 @@
 """
 SimulinkSPPVTManager - SPPVT控制器的Simulink实现
 
-该管理器使用MATLAB Simulink引擎来执行SPPVT控制算法。
+该管理器使用UDP通信与Simulink模型交互，替代MATLAB Engine。
 继承自BaseSPPVTManager，共享状态管理逻辑。
 """
 from __future__ import annotations
 
 import time
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
-try:
-    import matlab  # type: ignore
-except ImportError:  # pragma: no cover - optional dependency
-    matlab = None
-
-from matlab_engine_factory import get_matlab_engine
+from simulink_udp_interface import SimulinkUDPClient
 from sppvt_manager_base import BaseSPPVTManager
 
 
 class SimulinkSPPVTManager(BaseSPPVTManager):
     def __init__(self, matlab_engine=None, model_name: str = 'sppvt_control_model',
                  params: Dict[str, float] | None = None, debug: bool = False):
+        """
+        初始化SPPVT UDP客户端
+
+        Args:
+            matlab_engine: 保留参数用于向后兼容，实际不再使用
+            model_name: 保留参数用于向后兼容
+            params: SPPVT参数字典
+            debug: 是否打印调试信息
+        """
         super().__init__(params=params, debug=debug)
         self.model_name = model_name
-        self.matlab_engine = matlab_engine or get_matlab_engine(force=False)
-        self.model_loaded = False
 
-    # ------------------------------------------------------------------ engine management
-    def initialize_matlab_engine(self):
-        if self.matlab_engine is None:
-            self.matlab_engine = get_matlab_engine()
-        return self.matlab_engine is not None
+        # 创建UDP客户端替代MATLAB Engine
+        # 端口配置：26000（Python→Simulink），26001（Simulink→Python）
+        # 输入：5个double（error, stage_offset, prev_error, prev_vel, prev_accel）
+        # 输出：5个double（control, velocity, accel, jerk, should_upgrade）
+        self.udp_client = SimulinkUDPClient(
+            send_port=26000,
+            recv_port=26001,
+            num_inputs=5,   # ⚠️ 用户已从模型中删除control_mode_flag，从6个改为5个
+            num_outputs=5,
+            timeout=2.0,  # ⚠️ 增加到2秒，解决阻塞模式下顺序调用的超时问题
+            debug=debug,
+            local_send_port=9091  # 绑定固定源端口，匹配Simulink Remote port配置
+        )
 
-    def _ensure_model_loaded(self):
-        if self.matlab_engine is None:
-            if not self.initialize_matlab_engine():
-                raise RuntimeError("MATLAB engine is not available.")
+        if self.debug:
+            print(f"✅ SPPVT UDP客户端已初始化: {self.model_name}")
 
-        if not self.model_loaded:
-            # 加载模型
-            self.matlab_engine.load_system(self.model_name, nargout=0)
-
-            # 同步Python参数到Simulink Constant模块
-            self._sync_params_to_constant_blocks()
-
-            # 配置仿真参数
-            try:
-                self.matlab_engine.set_param(self.model_name, 'SimulationMode', 'accelerator', nargout=0)
-                self.matlab_engine.set_param(self.model_name, 'FastRestart', 'on', nargout=0)
-                if self.debug:
-                    print("✅ SPPVT 模型已启用Accelerator + Fast Restart")
-            except Exception as e:
-                if self.debug:
-                    print(f"⚠️ SPPVT无法启用Accelerator/FastRestart: {e}, fallback到normal")
-                self.matlab_engine.set_param(self.model_name, 'SimulationMode', 'normal', nargout=0)
-            self.matlab_engine.set_param(self.model_name, 'StopTime', str(self.params['dt']), nargout=0)
-            self.matlab_engine.set_param(self.model_name, 'SaveOutput', 'on', nargout=0)
-            self.matlab_engine.set_param(self.model_name, 'OutputSaveName', 'yout', nargout=0)
-            self.matlab_engine.set_param(self.model_name, 'SaveFormat', 'Structure', nargout=0)
-            self.model_loaded = True
-
-    def _sync_params_to_constant_blocks(self):
+    # ------------------------------------------------------------------ input preparation
+    def _prepare_inputs(self, control_enabled: bool, control_error: float,
+                        control_mode_flag: int) -> Tuple[float, List[float]]:
         """
-        将Python端的参数同步到Simulink模型中的Constant模块
+        准备Simulink UDP输入（5个double）
 
-        基于检测结果，模型中有6个Constant模块：
+        ⚠️ 注意：用户已从Simulink模型中删除control_mode_flag输入
+        现在只有5个输入，不再是6个
+
+        Simulink输入端口映射（基于test_sppvt_udp.py）：
+            In1: error_value - 控制误差 (m)
+            In2: current_stage_offset - 级差状态累积值
+            In3: prev_error - 上一帧控制误差
+            In4: prev_velocity - 上一帧误差导数 (m/s)
+            In5: prev_accel - 上一帧误差二阶导 (m/s²)
+
+        参数通过Simulink Constant模块提供，不在UDP输入中：
             SPPVT_dt, SPPVT_kp, SPPVT_max_accel, SPPVT_max_decel,
             SPPVT_delta, SPPVT_eta
-
-        参考：https://stackoverflow.com/questions/64285280
         """
-        if self.matlab_engine is None:
-            raise RuntimeError("MATLAB engine not initialized")
-
-        # 定义参数到Constant模块的映射
-        # 格式：'Constant模块名': (Python参数名, 描述)
-        param_blocks = {
-            'SPPVT_dt': ('dt', '控制周期(s)'),
-            'SPPVT_kp': ('kp', '比例系数'),
-            'SPPVT_max_accel': ('max_accel', '最大加速度(m/s²)'),
-            'SPPVT_max_decel': ('max_decel', '最大减速度(m/s²)'),
-            'SPPVT_delta': ('delta', '速度阈值'),
-            'SPPVT_eta': ('eta', '误差阈值'),
-        }
-
-        for block_name, (param_name, description) in param_blocks.items():
-            param_value = self.params[param_name]
-
-            # 构建完整的块路径
-            block_path = f'{self.model_name}/{block_name}'
-
-            # 设置Constant模块的Value参数（值必须转为字符串）
-            try:
-                self.matlab_engine.set_param(
-                    block_path,
-                    'Value',
-                    str(param_value),  # 必须是字符串格式
-                    nargout=0
-                )
-
-                if self.debug:
-                    print(f"✅ {description}: {block_name} = {param_value}")
-
-            except Exception as e:
-                print(f"❌ 设置{block_name}失败: {e}")
-                # 尝试验证块是否存在
-                try:
-                    current_value = self.matlab_engine.get_param(block_path, 'Value', nargout=1)
-                    print(f"   当前值: {current_value}")
-                except:
-                    print(f"   块路径可能不存在: {block_path}")
+        error_value = control_error if control_enabled else 0.0
+        inputs = [
+            error_value,                                    # In1: 控制误差
+            self.sppvt_state['stage_offset'],               # In2: current_stage_offset
+            self.sppvt_state['control_error'],              # In3: prev_error
+            self.sppvt_state['error_derivative'],           # In4: prev_velocity
+            self.sppvt_state['error_second_derivative'],    # In5: prev_accel
+            # ⚠️ 不再包含control_mode_flag（In6已删除）
+        ]
+        return error_value, inputs
 
     # ------------------------------------------------------------------ processing
     def process_from_values(self, control_enabled: bool, control_error: float,
@@ -122,54 +87,44 @@ class SimulinkSPPVTManager(BaseSPPVTManager):
         return self._build_result(outputs, stage_update, simulation_time_ms=sim_time_ms)
 
     def _run_simulink(self, inputs: List[float]) -> tuple[list[float], float]:
-        self._ensure_model_loaded()
-        if matlab is None:
-            raise RuntimeError("matlab python package is required for Simulink SPPVT manager.")
+        """
+        通过UDP发送输入到Simulink，接收输出
 
-        # Build external input matrix (time + 6 real-time signals)
-        # 输入信号（基于检测结果）：
-        #   In1: error_value, In2: current_stage_offset, In3: prev_error,
-        #   In4: prev_velocity, In5: prev_accel, In6: control_mode_flag
-        # 参数（通过Constant模块提供）：
-        #   SPPVT_dt, SPPVT_kp, SPPVT_max_accel, SPPVT_max_decel,
-        #   SPPVT_delta, SPPVT_eta
-        dt = self.params['dt']
-        ext_input = [
-            [0.0] + inputs,
-            [dt] + inputs,
-        ]
-        matlab_ext_input = matlab.double(ext_input) if matlab else None
+        输入（5个double）：
+            In1: error_value, In2: current_stage_offset, In3: prev_error,
+            In4: prev_velocity, In5: prev_accel
 
-        # Push to workspace and configure SimulationInput
+        输出（5个double）：
+            Out1: control_output, Out2: velocity_output, Out3: acceleration_output,
+            Out4: jerk_output, Out5: should_upgrade
+
+        参数通过Simulink Constant模块提供：
+            SPPVT_dt, SPPVT_kp, SPPVT_max_accel, SPPVT_max_decel,
+            SPPVT_delta, SPPVT_eta
+        """
         start_time = time.time()
-        self.matlab_engine.workspace['ext_input'] = matlab_ext_input
-        sim_in = self.matlab_engine.eval(f"Simulink.SimulationInput('{self.model_name}')", nargout=1)
-        sim_in = self.matlab_engine.setExternalInput(sim_in, 'ext_input', nargout=1)
-        sim_out = self.matlab_engine.sim(sim_in, nargout=1)
+
+        # ⚠️ 双调用解决Simulink UDP延迟问题：
+        # 第一次调用返回的是上一帧的结果，丢弃
+        # 第二次调用才是当前输入对应的结果
+        self.udp_client.call(inputs)  # 预热调用，丢弃结果
+        outputs = self.udp_client.call(inputs)  # 实际调用，使用结果
+
         elapsed_ms = (time.time() - start_time) * 1000.0
 
-        # Extract outputs (control, velocity, acceleration, jerk, should_upgrade, extra)
-        self.matlab_engine.workspace['sim_out'] = sim_out
-        control_output = float(self.matlab_engine.eval('sim_out.yout.signals(1).values(end)', nargout=1))
-        velocity_output = float(self.matlab_engine.eval('sim_out.yout.signals(2).values(end)', nargout=1))
-        acceleration_output = float(self.matlab_engine.eval('sim_out.yout.signals(3).values(end)', nargout=1))
-        jerk_output = float(self.matlab_engine.eval('sim_out.yout.signals(4).values(end)', nargout=1))
-        should_upgrade_flag = float(self.matlab_engine.eval('sim_out.yout.signals(5).values(end)', nargout=1))
-        # Some models output com1-3; reuse com1 as status indicator when present
-        status_output = should_upgrade_flag
-        if self.debug:
-            print(f"✅ Simulink outputs: control={control_output:.4f}, velocity={velocity_output:.4f}, "
-                  f"accel={acceleration_output:.4f}, jerk={jerk_output:.4f}")
+        if self.debug and self.call_count % 20 == 0:
+            print(f"✅ SPPVT UDP输出: control={outputs[0]:.4f}, velocity={outputs[1]:.4f}, "
+                  f"accel={outputs[2]:.4f}, jerk={outputs[3]:.4f}, should_upgrade={outputs[4]:.0f}")
 
-        outputs = [control_output, velocity_output, acceleration_output, jerk_output, status_output]
         return outputs, elapsed_ms
 
     def cleanup(self):
-        if self.matlab_engine and self.model_loaded:
-            try:
-                self.matlab_engine.close_system(self.model_name, 0, nargout=0)
-            except Exception:
-                pass
+        """关闭UDP连接"""
+        try:
+            self.udp_client.cleanup()
+        except Exception as e:
+            if self.debug:
+                print(f"⚠️ SPPVT UDP清理失败: {e}")
 
 
 # Backwards compatibility

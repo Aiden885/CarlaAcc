@@ -1,17 +1,12 @@
 """
 ACC Simulink决策管理器
-使用Simulink实现决策状态机，保持与acc_controller.py完全兼容的接口
+使用UDP通信与Simulink决策模型交互，保持与acc_controller.py完全兼容的接口
 """
 import numpy as np
 import time
 from typing import Dict, Any, Tuple, Optional
 
-try:
-    import matlab  # type: ignore
-except ImportError:
-    matlab = None
-
-from matlab_engine_factory import get_matlab_engine
+from simulink_udp_interface import SimulinkUDPClient
 
 
 class SimulinkACCDecisionManager:
@@ -24,14 +19,17 @@ class SimulinkACCDecisionManager:
 
     def __init__(self, matlab_engine=None, debug: bool = False,
                  max_target_speed_kmh: float = 150.0):
+        """
+        初始化决策UDP客户端
+
+        Args:
+            matlab_engine: 保留参数用于向后兼容，实际不再使用
+            debug: 是否打印调试信息
+            max_target_speed_kmh: 最大目标速度
+        """
         self.debug = debug
         self.max_target_speed_kmh = max_target_speed_kmh
-
-        # MATLAB Engine管理
-        self.matlab_engine = matlab_engine or get_matlab_engine(force=False)
         self.model_name = 'acc_decision_core'
-        self.model_loaded = False
-        self.fast_restart_enabled = False
 
         # ACC状态定义（与ACCController保持一致）
         self.STATES = {
@@ -68,6 +66,35 @@ class SimulinkACCDecisionManager:
         # 调试计数器
         self.debug_counter = 0
 
+        # 创建UDP客户端替代MATLAB Engine
+        # 端口配置：25000（Python→Simulink），25001（Simulink→Python）
+        # 输入：4个double（current_state, command_type, has_history, last_active_decision）
+        # 输出：5个double（next_state, decision, control_enabled, next_has_history, next_last_decision）
+
+        # ⚠️ 重要：初始状态必须是S2（无史待命），不能是S0（在控状态）
+        initial_decision_state = [
+            float(self.current_state),        # 2.0 = S2（无史待命）
+            0.0,                              # command_type = NONE
+            float(1 if self.has_history else 0),  # has_history = False
+            float(self.last_active_decision)  # 8.0 = R8（系统待命）
+        ]
+
+        self.udp_client = SimulinkUDPClient(
+            send_port=25000,
+            recv_port=25001,
+            num_inputs=4,
+            num_outputs=5,
+            timeout=2.0,  # ⚠️ 增加到2秒，解决阻塞模式下顺序调用的超时问题
+            debug=debug,
+            send_initial_packet=True,
+            initial_values=initial_decision_state,  # 使用正确的初始状态
+            local_send_port=9090  # 绑定固定源端口，匹配Simulink Remote port配置
+        )
+
+        if self.debug:
+            print(f"✅ 决策UDP客户端已初始化: {self.model_name}")
+            print(f"   初始状态: S{int(self.current_state)} (待命), R{int(self.last_active_decision)} (待命)")
+
     def reset(self):
         """重置ACC状态"""
         self.current_state = self.STATES['ADAPTIVE_NO_HISTORY_STANDBY']
@@ -76,53 +103,6 @@ class SimulinkACCDecisionManager:
 
         if self.debug:
             print("🔄 ACC控制器已重置 (Simulink版本)")
-
-    def _ensure_model_loaded(self):
-        """确保Simulink模型已加载"""
-        if self.matlab_engine is None:
-            self.matlab_engine = get_matlab_engine()
-            if self.matlab_engine is None:
-                raise RuntimeError("❌ MATLAB Engine未初始化")
-
-        if not self.model_loaded:
-            try:
-                # 加载查找表数据到工作区
-                self.matlab_engine.eval("load('decision_lookup_data.mat')", nargout=0)
-
-                # 检查模型是否已经加载
-                is_loaded = self.matlab_engine.bdIsLoaded(self.model_name, nargout=1)
-
-                if not is_loaded:
-                    # 加载模型
-                    self.matlab_engine.load_system(self.model_name, nargout=0)
-                else:
-                    if self.debug:
-                        print(f"✅ 模型已在工作区: {self.model_name}")
-
-                # 配置仿真参数（快速单步仿真）
-                self.matlab_engine.set_param(self.model_name, 'StopTime', '0.05', nargout=0)
-                self.matlab_engine.set_param(self.model_name, 'Solver', 'FixedStepDiscrete', nargout=0)
-                self.matlab_engine.set_param(self.model_name, 'FixedStep', '0.05', nargout=0)
-
-                # 启用Accelerator模式 + Fast Restart加速仿真
-                # 参考: https://www.mathworks.com/help/simulink/ug/how-the-acceleration-modes-work.html
-                try:
-                    self.matlab_engine.set_param(self.model_name, 'SimulationMode', 'accelerator', nargout=0)
-                    self.matlab_engine.set_param(self.model_name, 'FastRestart', 'on', nargout=0)
-                    if self.debug:
-                        print("✅ 已启用Accelerator模式 + Fast Restart")
-                except Exception as e:
-                    if self.debug:
-                        print(f"⚠️ 无法启用Accelerator/FastRestart: {e}, 使用Normal模式")
-
-                self.model_loaded = True
-
-                if self.debug:
-                    print(f"✅ Simulink决策模型已就绪: {self.model_name}")
-                    print(f"✅ 决策查找表数据已加载")
-
-            except Exception as e:
-                raise RuntimeError(f"❌ 加载Simulink决策模型失败: {e}")
 
     def validate_and_process_input(self, raw_input: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -245,16 +225,24 @@ class SimulinkACCDecisionManager:
 
     def _run_simulink_decision(self, command_type: int) -> Tuple[bool, int]:
         """
-        运行Simulink决策模型 - 核心状态机查表
+        通过UDP与Simulink决策模型通信 - 核心状态机查表
+
+        输入（4个double）：
+            In1: current_state (0-3)
+            In2: command_type (0-7)
+            In3: has_history (0/1)
+            In4: last_active_decision (1-8)
+
+        输出（5个double）：
+            Out1: next_state
+            Out2: decision
+            Out3: control_enabled
+            Out4: next_has_history
+            Out5: next_last_decision
 
         Returns:
             Tuple[control_enabled, decision]
         """
-        self._ensure_model_loaded()
-
-        if matlab is None:
-            raise RuntimeError("matlab python package is required for Simulink decision manager.")
-
         # 准备输入（4个输入端口）
         inputs = [
             float(self.current_state),           # In1: current_state (0-3)
@@ -263,39 +251,23 @@ class SimulinkACCDecisionManager:
             float(self.last_active_decision)     # In4: last_active_decision (1-8)
         ]
 
-        # 构建外部输入（时间 + 信号值）
-        dt = 0.05
-        ext_input = [
-            [0.0] + inputs,
-            [dt] + inputs,
-        ]
-        matlab_ext_input = matlab.double(ext_input)
-
-        # 运行仿真
+        # 通过UDP通信
         start_time = time.time()
         try:
-            self.matlab_engine.workspace['ext_input'] = matlab_ext_input
-
-            # 创建仿真输入对象并设置外部输入
-            sim_in = self.matlab_engine.eval(f"Simulink.SimulationInput('{self.model_name}')", nargout=1)
-            sim_in = self.matlab_engine.setExternalInput(sim_in, 'ext_input', nargout=1)
-
-            # 运行仿真（Rapid Accelerator模式已在模型加载时配置）
-            sim_out = self.matlab_engine.sim(sim_in, nargout=1)
+            # ⚠️ 双调用解决Simulink UDP延迟问题：
+            # 第一次调用返回的是上一帧的结果，丢弃
+            # 第二次调用才是当前输入对应的结果
+            self.udp_client.call(inputs)  # 预热调用，丢弃结果
+            outputs = self.udp_client.call(inputs)  # 实际调用，使用结果
 
             elapsed_ms = (time.time() - start_time) * 1000.0
 
-            # 提取输出（5个输出端口）
-            # 使用花括号{}访问Dataset - 在Python中需要通过eval或subsref
-            self.matlab_engine.workspace['sim_out'] = sim_out
-
-            # 方法: 直接在MATLAB中使用{}索引提取数据
-            # Dataset使用花括号访问,参考: https://www.mathworks.com/help/simulink/slref/simulink.simulationdata.dataset.get.html
-            next_state = int(round(float(self.matlab_engine.eval('sim_out.yout{1}.Values.Data(end)', nargout=1))))
-            decision = int(round(float(self.matlab_engine.eval('sim_out.yout{2}.Values.Data(end)', nargout=1))))
-            control_enabled = bool(int(round(float(self.matlab_engine.eval('sim_out.yout{3}.Values.Data(end)', nargout=1)))))
-            next_has_history = int(round(float(self.matlab_engine.eval('sim_out.yout{4}.Values.Data(end)', nargout=1))))
-            next_last_decision = int(round(float(self.matlab_engine.eval('sim_out.yout{5}.Values.Data(end)', nargout=1))))
+            # 解析输出（5个输出端口）
+            next_state = int(round(outputs[0]))
+            decision = int(round(outputs[1]))
+            control_enabled = bool(int(round(outputs[2])))
+            next_has_history = int(round(outputs[3]))
+            next_last_decision = int(round(outputs[4]))
 
             # 更新Python端状态
             self.current_state = next_state
@@ -303,14 +275,14 @@ class SimulinkACCDecisionManager:
             self.last_active_decision = next_last_decision
 
             if self.debug:
-                print(f"🔧 Simulink决策: S{self.current_state}, R{decision}, "
+                print(f"🔧 决策UDP: S{self.current_state}, R{decision}, "
                       f"enabled={control_enabled}, history={self.has_history} ({elapsed_ms:.1f}ms)")
 
             return control_enabled, decision
 
         except Exception as e:
             if self.debug:
-                print(f"❌ Simulink仿真失败: {e}")
+                print(f"❌ UDP通信失败: {e}")
 
             # 重置到安全状态,避免状态不一致
             # 如果有历史,退到S1(有史待命),否则退到S2(无史待命)
@@ -357,18 +329,9 @@ class SimulinkACCDecisionManager:
             return self.debug_counter
 
     def cleanup(self):
-        """清理资源"""
-        if self.matlab_engine and self.model_loaded:
-            try:
-                # 禁用Fast Restart
-                if self.fast_restart_enabled:
-                    self.matlab_engine.set_param(self.model_name, 'FastRestart', 'off', nargout=0)
-                    self.fast_restart_enabled = False
-                    if self.debug:
-                        print("✅ Fast Restart已禁用")
-
-                self.matlab_engine.close_system(self.model_name, 0, nargout=0)
-                if self.debug:
-                    print(f"✅ Simulink决策模型已关闭: {self.model_name}")
-            except Exception:
-                pass
+        """关闭UDP连接"""
+        try:
+            self.udp_client.cleanup()
+        except Exception as e:
+            if self.debug:
+                print(f"⚠️ 决策UDP清理失败: {e}")

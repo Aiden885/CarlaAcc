@@ -7,6 +7,7 @@ consistent process_cycle interface.
 from __future__ import annotations
 
 import time
+import threading
 from typing import Dict, Optional
 
 import numpy as np
@@ -22,6 +23,16 @@ class ACCControlFacade:
 
     def __init__(self, config: Optional[ACCConfig] = None, mode: str = 'hybrid',
                  debug: bool = False, matlab_engine=None, model_name: str = 'sppvt_control_model'):
+        """
+        初始化ACC控制外观（决策+控制）
+
+        Args:
+            config: ACC配置对象
+            mode: 控制模式（当前仅支持'hybrid'）
+            debug: 是否打印调试信息
+            matlab_engine: 保留参数用于向后兼容，实际不再使用（现使用UDP通信）
+            model_name: 保留参数用于向后兼容
+        """
         if mode not in self.MODES:
             raise ValueError(f"Unsupported control mode '{mode}'.")
 
@@ -29,15 +40,15 @@ class ACCControlFacade:
         self.mode = mode
         self.debug = debug
 
-        # 决策模块 - 使用Simulink实现
+        # 决策模块 - 使用UDP与Simulink通信
         self.acc_controller = SimulinkACCDecisionManager(
-            matlab_engine=matlab_engine,  # 复用MATLAB Engine
+            matlab_engine=matlab_engine,  # 保留参数用于向后兼容
             debug=debug,
             max_target_speed_kmh=self.config.max_target_speed_kmh
         )
 
         if self.debug:
-            print("✅ 使用Simulink决策模块")
+            print("✅ 使用Simulink决策模块（UDP通信）")
 
         # 初始化决策参数与配置保持一致
         try:
@@ -45,9 +56,9 @@ class ACCControlFacade:
         except Exception:
             pass
 
-        # SPPVT控制模块（使用Simulink）
+        # SPPVT控制模块 - 使用UDP与Simulink通信
         self.sppvt_manager = SimulinkSPPVTManager(
-            matlab_engine=matlab_engine,
+            matlab_engine=matlab_engine,  # 保留参数用于向后兼容
             model_name=model_name,
             debug=debug
         )
@@ -58,18 +69,78 @@ class ACCControlFacade:
         self.last_processing_time = 0.0
         self._last_decision_output = None
 
+        # 用于并发调用的上一帧control_enabled（解决阻塞模式顺序调用问题）
+        self._last_control_enabled = False
+
     # ------------------------------------------------------------------ public API
     def process_cycle(self, input_data: Dict) -> Dict:
+        """
+        并发调用decision和sppvt，解决阻塞模式下顺序调用的超时问题
+
+        策略：
+        1. 使用上一帧的control_enabled来调用sppvt（避免依赖）
+        2. decision和sppvt并发执行（threading）
+        3. 更新control_enabled供下一帧使用
+
+        这模仿了test_udp_concurrent.py的成功模式
+        """
         start = time.time()
         self.call_count += 1
 
         sanitized_input = self._sanitize_input(input_data)
-        decision_output = self._process_acc_decision(sanitized_input)
-        sppvt_output = self.sppvt_manager.process_from_values(
-            control_enabled=decision_output['control_enabled'],
-            control_error=sanitized_input.get('control_error', 0.0),
-            control_mode_flag=sanitized_input.get('control_mode_flag', 1)
-        )
+
+        # ⚠️ 并发调用：使用threading同时调用decision和sppvt
+        # 这解决了阻塞模式下顺序调用导致的超时问题
+        decision_output = [None]
+        sppvt_output = [None]
+        decision_error = [None]
+        sppvt_error = [None]
+
+        def call_decision():
+            try:
+                decision_output[0] = self._process_acc_decision(sanitized_input)
+            except Exception as e:
+                decision_error[0] = e
+                if self.debug:
+                    print(f"❌ Decision线程异常: {e}")
+
+        def call_sppvt():
+            try:
+                # 使用上一帧的control_enabled（延迟一帧，但避免依赖）
+                sppvt_output[0] = self.sppvt_manager.process_from_values(
+                    control_enabled=self._last_control_enabled,
+                    control_error=sanitized_input.get('control_error', 0.0),
+                    control_mode_flag=sanitized_input.get('control_mode_flag', 1)
+                )
+            except Exception as e:
+                sppvt_error[0] = e
+                if self.debug:
+                    print(f"❌ SPPVT线程异常: {e}")
+
+        # 创建并启动两个线程
+        t1 = threading.Thread(target=call_decision)
+        t2 = threading.Thread(target=call_sppvt)
+
+        t1.start()
+        t2.start()
+
+        # 等待两个线程完成
+        t1.join()
+        t2.join()
+
+        # 检查异常
+        if decision_error[0]:
+            raise decision_error[0]
+        if sppvt_error[0]:
+            raise sppvt_error[0]
+
+        # 获取结果
+        decision_output = decision_output[0]
+        sppvt_output = sppvt_output[0]
+
+        # 更新control_enabled供下一帧使用
+        self._last_control_enabled = decision_output['control_enabled']
+
         integrated = self._integrate_outputs(decision_output, sppvt_output)
         self._last_decision_output = decision_output
 
@@ -104,6 +175,7 @@ class ACCControlFacade:
         self.total_processing_time = 0.0
         self.last_processing_time = 0.0
         self._last_decision_output = None
+        self._last_control_enabled = False
 
     # ------------------------------------------------------------------ helpers
     def _sanitize_input(self, input_data: Dict) -> Dict:

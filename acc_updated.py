@@ -88,13 +88,14 @@ class acc:
         self.csv_writer = None
 
         # === ACC混合控制器模块 ===
-        # Python决策 + Simulink SPPVT控制的混合架构
+        # Simulink决策 + Simulink SPPVT控制的混合架构
+        # 通过UDP与Simulink模型通信，替代MATLAB Engine
         self.acc_decision_sppvt = ACCControlFacade(
             config=self.config,
             debug=self.config.acc_decision_debug
         )
 
-        # === ACC系统可配置参数 (环境相关，需要传递给Simulink) ===
+        # === ACC系统可配置参数 (环境相关，通过UDP传递给Simulink) ===
         self.acc_params = self.config.get_acc_params()
         # 初始化两模式控制参数与配置一致
         set_two_mode_parameters(

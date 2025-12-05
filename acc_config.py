@@ -21,7 +21,7 @@ class ACCConfig:
 
         # 同步模式配置
         self.synchronous_mode = True
-        self.fixed_delta_seconds = 0.05  # 20 FPS (50ms per frame)
+        self.fixed_delta_seconds = 0.05  # 20 FPS (恢复为0.05s，提供更流畅的仿真)
 
         # ========== 车辆生成配置 ==========
         # 自车蓝图
@@ -63,7 +63,7 @@ class ACCConfig:
 
         # 前车速度控制
         self.assumed_road_speed_limit_kmh = 30.0  # 假设道路限速
-        self.target_speed_kmh = 100.0  # 前车初始目标速度
+        self.target_speed_kmh = 40.0  # 前车初始目标速度 (改为40 km/h，合理的测试速度)
         self.use_constant_velocity = True  # 使用恒速模式（不受路口影响）
 
         # ========== ACC系统参数 ==========
@@ -117,7 +117,7 @@ class ACCConfig:
 
         # ========== 斜坡速度控制器配置 ==========
         self.ramp_controller_params = {
-            'start_speed_kmh': 90.0,    # 斜坡起始速度
+            'start_speed_kmh': 40.0,    # 斜坡起始速度
             'target_speed_kmh': 120.0,  # 斜坡目标速度
             'duration_s': 10.0          # 斜坡持续时间（秒）
         }
