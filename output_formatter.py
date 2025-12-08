@@ -117,103 +117,143 @@ class OutputFormatter:
               f"err:{unified_input['control_error']:.3f}{input_error_unit} mode:{unified_input['control_mode_flag']} "
               f"V_target:{unified_input['V_target_kmh']:.1f} G2:{unified_input['G2_s']:.1f}")
 
-        # [Simulink←] - 紧凑单行
+        # [Simulink←] - 紧凑单行，使用S0/S1/S2/S3格式显示状态
         old_V = unified_input['V_target_kmh']
         new_V = unified_output.get('updated_V_target_kmh', old_V)
         old_G2 = unified_input['G2_s']
         new_G2 = unified_output.get('updated_G2_s', old_G2)
 
-        print(f"[Simulink←] accel:{unified_output.get('target_accel', 0.0):.3f} "
-              f"enabled:{unified_output.get('control_enabled', False)} "
-              f"state:{unified_output.get('current_state', 'Unknown')} "
-              f"R{unified_output.get('current_decision', 0)} "
+        # 状态映射：S0=在控, S1=有史待命, S2=无史待命, S3=低速
+        state_num = unified_output.get('current_state', 2)
+        state_names = {0: 'S0在控', 1: 'S1有史待命', 2: 'S2无史待命', 3: 'S3低速'}
+        state_str = state_names.get(state_num, f'S{state_num}未知')
+
+        # 决策映射
+        decision_num = unified_output.get('current_decision', 0)
+        decision_names = {
+            1: 'R1系统待命', 2: 'R2保持', 3: 'R3跟随', 4: 'R4迫近',
+            5: 'R5降速', 6: 'R6加速', 7: 'R7扭矩仲裁', 8: 'R8取消'
+        }
+        decision_str = decision_names.get(decision_num, f'R{decision_num}')
+
+        control_enabled_str = '✓' if unified_output.get('control_enabled', False) else '✗'
+
+        upgrade_flag = unified_output.get('sppvt_status_output', 0)
+        print(f"[Simulink←] 状态:{state_str} 决策:{decision_str} 控制:{control_enabled_str} "
+              f"accel:{unified_output.get('target_accel', 0.0):.3f} "
               f"stage:{unified_output.get('sppvt_stage_output', 0)} "
+              f"升级:{upgrade_flag:.0f} "
               f"仲裁:{unified_output.get('torque_arbitration_active', False)}")
 
         # 分类显示输出字段，便于逐帧检查
-        print("\n[Python ACC决策输出]")
-        python_decision_fields = [
-            'control_enabled',
-            'current_state',
-            'current_decision',
-            'torque_arbitration_active',
-            'updated_V_target_kmh',
-            'updated_G2_s',
-            'debug_message',
-            'next_state',
-            'next_has_history',
-            'next_last_active_decision',
+        # ===== Simulink集成模型输出（10个UDP返回值）=====
+
+        print("\n[Simulink集成模型输出 - Decision子系统]")
+        simulink_decision_fields = [
+            ('next_state', 'current_state'),  # (输出字段名, 显示名)
+            ('current_decision', 'current_decision'),
+            ('control_enabled', 'control_enabled'),
+            ('next_has_history', 'next_has_history'),
+            ('next_last_active_decision', 'next_last_active_decision'),
         ]
-        for name in python_decision_fields:
-            present = name in unified_output
-            value = unified_output.get(name, None)
+        for field_name, display_name in simulink_decision_fields:
+            present = field_name in unified_output
+            value = unified_output.get(field_name, None)
             if not present:
-                print(f"  {name:24s}: <缺失> [MISSING]")
+                print(f"  {display_name:28s}: <缺失> [MISSING]")
                 continue
             if value is None:
-                print(f"  {name:24s}: None [None]")
+                print(f"  {display_name:28s}: None")
                 continue
-            if isinstance(value, (list, tuple)):
-                formatted = ', '.join(
-                    f"{v:.3f}" if isinstance(v, (int, float)) else str(v) for v in value
-                )
-                status = f"(len={len(value)})"
-                if len(value) < 3:
-                    status += " [长度异常]"
-                print(f"  {name:24s}: [{formatted}] {status}")
-            elif isinstance(value, float):
-                print(f"  {name:24s}: {value:.6f} [OK]")
+            if isinstance(value, float):
+                print(f"  {display_name:28s}: {value:.6f}")
             else:
-                print(f"  {name:24s}: {value} [OK]")
+                print(f"  {display_name:28s}: {value}")
 
-        # Simulink SPPVT控制输出 (Simulink模型8个输出端口中直接用于控制的4个)
-        print("\n[Simulink SPPVT控制输出]")
+        print("\n[Simulink集成模型输出 - SPPVT子系统]")
         simulink_sppvt_fields = [
-            'sppvt_control_output',    # 控制输出（目标加速度）
-            'sppvt_velocity_output',   # 误差导数（速度）
+            'sppvt_control_output',       # 控制输出（SPPVT计算的目标加速度）
+            'sppvt_velocity_output',      # 误差导数（速度）
             'sppvt_acceleration_output',  # 误差二阶导数（加速度）
-            'sppvt_jerk_output',       # 加加速度
+            'sppvt_jerk_output',          # 加加速度（Jerk）
+            'sppvt_status_output',        # should_upgrade 标志
         ]
         for name in simulink_sppvt_fields:
             present = name in unified_output
             value = unified_output.get(name, None)
             if not present:
-                print(f"  {name:24s}: <缺失> [MISSING]")
+                print(f"  {name:28s}: <缺失> [MISSING]")
                 continue
             if value is None:
-                print(f"  {name:24s}: None [None]")
+                print(f"  {name:28s}: None")
                 continue
             if isinstance(value, float):
-                print(f"  {name:24s}: {value:.6f} [OK]")
+                print(f"  {name:28s}: {value:.6f}")
             else:
-                print(f"  {name:24s}: {value} [OK]")
+                print(f"  {name:28s}: {value}")
 
-        # Python SPPVT阶段管理输出 (Python端根据Simulink输出计算的状态)
-        print("\n[Python SPPVT阶段管理输出]")
-        python_stage_fields = [
-            'sppvt_stage_output',      # 当前阶段
-            'sppvt_status_output',     # 状态指示
-            'new_stage_offset',        # 级差值
-            'new_stage',               # 新阶段
-            'new_error_sign',          # 误差符号
-            'new_upgrade_count',       # 升级计数
-            'new_control_error',       # 控制误差
-            'new_error_derivative',    # 误差导数
-            'new_error_second_derivative',  # 误差二阶导数
+        # ===== Python端输出（非Simulink计算）=====
+
+        print("\n[Python端输出 - 参数调整]")
+        python_param_fields = [
+            'updated_V_target_kmh',  # 键盘调整后的目标速度
+            'updated_G2_s',          # 键盘调整后的时距
         ]
-        for name in python_stage_fields:
+        for name in python_param_fields:
             present = name in unified_output
             value = unified_output.get(name, None)
             if not present:
-                print(f"  {name:24s}: <缺失> [MISSING]")
+                print(f"  {name:28s}: <缺失> [MISSING]")
                 continue
             if value is None:
-                print(f"  {name:24s}: None [None]")
+                print(f"  {name:28s}: None")
                 continue
             if isinstance(value, float):
-                print(f"  {name:24s}: {value:.6f} [OK]")
+                print(f"  {name:28s}: {value:.6f}")
             else:
-                print(f"  {name:24s}: {value} [OK]")
+                print(f"  {name:28s}: {value}")
+
+        print("\n[Python端输出 - 决策辅助]")
+        python_decision_aux_fields = [
+            'torque_arbitration_active',  # 扭矩仲裁标志（从decision判断）
+            'debug_message',              # 调试消息
+        ]
+        for name in python_decision_aux_fields:
+            present = name in unified_output
+            value = unified_output.get(name, None)
+            if not present:
+                print(f"  {name:28s}: <缺失> [MISSING]")
+                continue
+            if value is None:
+                print(f"  {name:28s}: None")
+                continue
+            print(f"  {name:28s}: {value}")
+
+        print("\n[Python端输出 - SPPVT状态维护]")
+        python_sppvt_state_fields = [
+            'sppvt_stage_output',     # 当前阶段（简化为固定值1）
+            'sppvt_status_output',    # 状态指示
+            'new_stage_offset',       # 级差值（Python维护）
+            'new_stage',              # 新阶段（Python维护）
+            'new_error_sign',         # 误差符号
+            'new_upgrade_count',      # 升级计数
+            'new_control_error',      # 控制误差（复制自输入）
+            'new_error_derivative',   # 误差导数（复制自Simulink输出）
+            'new_error_second_derivative',  # 误差二阶导数（复制自Simulink输出）
+        ]
+        for name in python_sppvt_state_fields:
+            present = name in unified_output
+            value = unified_output.get(name, None)
+            if not present:
+                print(f"  {name:28s}: <缺失> [MISSING]")
+                continue
+            if value is None:
+                print(f"  {name:28s}: None")
+                continue
+            if isinstance(value, float):
+                print(f"  {name:28s}: {value:.6f}")
+            else:
+                print(f"  {name:28s}: {value}")
 
         # # SPPVT内部状态显示（无条件输出）
         # adapter_states = unified_output.get('new_adapter_states', None)

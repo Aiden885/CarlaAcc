@@ -23,6 +23,9 @@ class ACCConfig:
         self.synchronous_mode = True
         self.fixed_delta_seconds = 0.05  # 20 FPS (恢复为0.05s，提供更流畅的仿真)
 
+        # 实时模式（速率限制）
+        self.enable_realtime = True  # True=1:1实时速度, False=全速运行（默认，3-4倍快）
+
         # ========== 车辆生成配置 ==========
         # 自车蓝图
         self.ego_vehicle_blueprint = 'vehicle.audi.etron'

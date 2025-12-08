@@ -199,7 +199,16 @@ class acc:
                 )
                 self.realtime_plotter.start()
                 print("✅ 实时测试绘图器已启动 (Time模式)")
-        
+
+            # === 可选：实时模式速率限制 ===
+            self.enable_realtime = self.config.enable_realtime
+            if self.enable_realtime:
+                from enable_realtime_mode import RealtimeRateLimiter
+                self.rate_limiter = RealtimeRateLimiter(target_fps=20)
+                print("⏱️  实时模式已启用（1:1速度，20 FPS）")
+            else:
+                print("🚀 加速模式（全速运行，约60-80 FPS）")
+
         except Exception as e:
             print(f"❌ 初始化失败: {e}")
             print("正在清理资源...")
@@ -753,12 +762,19 @@ class acc:
                     print(f"{'总计':20s}: 平均 {total_avg:6.2f}ms/周期")
                     if total_avg > 0:
                         fps = 1000.0 / total_avg
-                        print(f"{'理论帧率':20s}: {fps:6.2f} FPS")
+                        print(f"{'理论帧率':20s}: {fps:6.2f} FPS (未包含sleep)")
+
+                # 真实帧率: 基于累计时间与帧数
+                if '9_total_cycle' in perf_times and perf_times['9_total_cycle']:
+                    real_avg_ms = (sum(perf_times['9_total_cycle']) / len(perf_times['9_total_cycle'])) * 1000
+                    real_fps = 1000.0 / real_avg_ms if real_avg_ms > 0 else 0.0
+                    print(f"{'真实帧率':20s}: {real_fps:6.2f} FPS (含sleep)")
                 print("=" * 60 + "")
 
             while self.running:
                 # === 性能分析：记录每个周期开始时间 ===
                 cycle_start = time.time()
+                frame_start_wall = cycle_start
 
                 # 处理事件
                 t0 = time.time()
@@ -880,6 +896,10 @@ class acc:
                 if self.world:
                     self.world.tick()
                 perf_times['3_world_tick'].append(time.time() - t0)
+
+                # === 实时速率限制 ===
+                if self.enable_realtime and hasattr(self, 'rate_limiter'):
+                    self.rate_limiter.wait()
 
                 t0 = time.time()
                 self.display_manager.tick(60)  # 60 FPS
@@ -1128,8 +1148,11 @@ class acc:
                                     control.throttle, control.brake = self.torque_converter.engine_torque_to_throttle(
                                         sppvt_engine_torque, ego_speed
                                     )
-                                    # 打印油门和刹车
-                                    print(f"油门: {control.throttle}, 刹车: {control.brake}")
+                                    # 防止油门和刹车同时为正：加速指令不应踩刹车
+                                    if sppvt_target_accel >= 0:
+                                        control.brake = 0.0
+                                    # 打印完整控制链
+                                    print(f"[控制链] SPPVT:{control_output:.3f} → accel:{sppvt_target_accel:+.3f}m/s² → 扭矩:{sppvt_engine_torque:+.2f}N·m → 油门:{control.throttle:.3f} 刹车:{control.brake:.3f}")
 
                                 else:
                                     # 简化映射（备用方案，不推荐）
@@ -1158,6 +1181,7 @@ class acc:
                                 if torque_arbitration:
                                     final_throttle = max(control.throttle, self.manual_throttle_input)
                                     control.throttle = final_throttle
+                                    control.brake = 0.0  # 驾驶员主动踩油门时不踩刹车
                                 else:
                                     control.throttle = self.manual_throttle_input
                                     control.brake = 0.0
@@ -1361,6 +1385,10 @@ class acc:
                 self.display_manager.render_display(system_info)
 
                 frame_count += 1
+
+                # 记录包含睡眠在内的完整周期耗时
+                full_cycle_duration = time.time() - frame_start_wall
+                perf_times['9_total_cycle'].append(full_cycle_duration)
 
         except KeyboardInterrupt:
             print("\nStopped by user.")
