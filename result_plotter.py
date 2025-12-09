@@ -195,7 +195,7 @@ class RealtimeResultPlotter:
         ax1.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         ax1.set_ylabel("Time Gap (s)", color=text_color, fontsize=11, fontweight='bold')
         ax1.set_title("Time Gap Tracking", color=text_color, fontsize=13, fontweight="bold")
-        ax1.legend(loc="upper right", facecolor=bg_color, edgecolor="#000000",
+        ax1.legend(loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000",
                   fontsize=10, framealpha=1.0)
 
         # 子图2：误差
@@ -207,7 +207,7 @@ class RealtimeResultPlotter:
         ax2.set_ylabel("Error (s)", color=text_color, fontsize=11, fontweight='bold')
         ax2.set_title("Time Gap Error (Actual - Desired)", color=text_color,
                      fontsize=13, fontweight="bold")
-        ax2.legend(loc="upper right", facecolor=bg_color, edgecolor="#000000",
+        ax2.legend(loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000",
                   fontsize=10, framealpha=1.0)
 
         # 子图3：速度
@@ -218,7 +218,7 @@ class RealtimeResultPlotter:
         ax3.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         ax3.set_ylabel("Speed (km/h)", color=text_color, fontsize=11, fontweight='bold')
         ax3.set_title("Vehicle Speeds", color=text_color, fontsize=13, fontweight="bold")
-        ax3.legend(loc="upper right", facecolor=bg_color, edgecolor="#000000",
+        ax3.legend(loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000",
                   fontsize=10, framealpha=1.0)
 
         # 子图4：请求扭矩
@@ -228,7 +228,7 @@ class RealtimeResultPlotter:
         ax4.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         ax4.set_ylabel("Torque (Nm)", color=text_color, fontsize=11, fontweight='bold')
         ax4.set_title("Request Engine Torque", color=text_color, fontsize=13, fontweight="bold")
-        ax4.legend(loc="upper right", facecolor=bg_color, edgecolor="#000000",
+        ax4.legend(loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000",
                   fontsize=10, framealpha=1.0)
 
         # 子图5：请求减速度
@@ -238,7 +238,7 @@ class RealtimeResultPlotter:
         ax5.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         ax5.set_ylabel("Decel (m/s²)", color=text_color, fontsize=11, fontweight='bold')
         ax5.set_title("Request Brake Deceleration", color=text_color, fontsize=13, fontweight="bold")
-        ax5.legend(loc="upper right", facecolor=bg_color, edgecolor="#000000",
+        ax5.legend(loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000",
                   fontsize=10, framealpha=1.0)
 
         # 自动调整布局
@@ -337,11 +337,11 @@ class RealtimeResultPlotter:
         # 5个子图：时距跟踪、误差、速度、扭矩、减速度（增加间距避免标题和横轴重叠）
         # 5个子图：时距跟踪、误差、速度、扭矩、减速度（增加间距避免标题和横轴重叠）
         # 调整布局以增加垂直间距 (Gap ~0.07)
-        self.ax1 = plt.axes([0.08, 0.80, 0.88, 0.16], facecolor=bg_color)  # 时距跟踪
-        self.ax2 = plt.axes([0.08, 0.62, 0.88, 0.11], facecolor=bg_color)  # 误差
-        self.ax3 = plt.axes([0.08, 0.44, 0.88, 0.11], facecolor=bg_color)  # 速度
-        self.ax4 = plt.axes([0.08, 0.26, 0.88, 0.11], facecolor=bg_color)  # 扭矩
-        self.ax5 = plt.axes([0.08, 0.08, 0.88, 0.11], facecolor=bg_color)  # 减速度
+        self.ax1 = plt.axes([0.08, 0.80, 0.78, 0.16], facecolor=bg_color)  # 时距跟踪
+        self.ax2 = plt.axes([0.08, 0.62, 0.78, 0.11], facecolor=bg_color)  # 误差
+        self.ax3 = plt.axes([0.08, 0.44, 0.78, 0.11], facecolor=bg_color)  # 速度
+        self.ax4 = plt.axes([0.08, 0.26, 0.78, 0.11], facecolor=bg_color)  # 扭矩
+        self.ax5 = plt.axes([0.08, 0.08, 0.78, 0.11], facecolor=bg_color)  # 减速度
 
         self.axes = [self.ax1, self.ax2, self.ax3, self.ax4, self.ax5]
 
@@ -366,7 +366,7 @@ class RealtimeResultPlotter:
             "Time Gap Tracking", color=text_color, fontsize=13, fontweight="bold"
         )
         self.ax1.legend(
-            loc="upper right", facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
+            loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
         )
 
         # 子图2：误差
@@ -381,7 +381,7 @@ class RealtimeResultPlotter:
             "Time Gap Error (Actual - Desired)", color=text_color, fontsize=13, fontweight="bold"
         )
         self.ax2.legend(
-            loc="upper right", facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
+            loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
         )
 
         # 子图3：速度
@@ -397,7 +397,7 @@ class RealtimeResultPlotter:
             "Vehicle Speeds", color=text_color, fontsize=13, fontweight="bold"
         )
         self.ax3.legend(
-            loc="upper right", facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
+            loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
         )
 
         # 子图4：请求扭矩
@@ -411,7 +411,7 @@ class RealtimeResultPlotter:
             "Request Engine Torque", color=text_color, fontsize=13, fontweight="bold"
         )
         self.ax4.legend(
-            loc="upper right", facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
+            loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
         )
 
         # 子图5：请求减速度
@@ -425,7 +425,7 @@ class RealtimeResultPlotter:
             "Request Brake Deceleration", color=text_color, fontsize=13, fontweight="bold"
         )
         self.ax5.legend(
-            loc="upper right", facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
+            loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
         )
 
     def _plot_loop(self) -> None:

@@ -133,11 +133,11 @@ class RealtimeTimeGapPlotter:
         # 5个子图：时距跟踪、误差、速度、扭矩、减速度（增加间距，为滑动条留出底部空间）
         # 5个子图：时距跟踪、误差、速度、扭矩、减速度（增加间距，为滑动条留出底部空间）
         # 调整布局以增加垂直间距 (Gap ~0.07)
-        self.ax1 = plt.axes([0.1, 0.80, 0.85, 0.16], facecolor=bg_color)  # 时距跟踪
-        self.ax2 = plt.axes([0.1, 0.62, 0.85, 0.11], facecolor=bg_color)  # 误差
-        self.ax3 = plt.axes([0.1, 0.44, 0.85, 0.11], facecolor=bg_color)  # 速度
-        self.ax4 = plt.axes([0.1, 0.26, 0.85, 0.11], facecolor=bg_color)  # 扭矩
-        self.ax5 = plt.axes([0.1, 0.08, 0.85, 0.11], facecolor=bg_color)  # 减速度
+        self.ax1 = plt.axes([0.1, 0.80, 0.75, 0.16], facecolor=bg_color)  # 时距跟踪
+        self.ax2 = plt.axes([0.1, 0.62, 0.75, 0.11], facecolor=bg_color)  # 误差
+        self.ax3 = plt.axes([0.1, 0.44, 0.75, 0.11], facecolor=bg_color)  # 速度
+        self.ax4 = plt.axes([0.1, 0.26, 0.75, 0.11], facecolor=bg_color)  # 扭矩
+        self.ax5 = plt.axes([0.1, 0.08, 0.75, 0.11], facecolor=bg_color)  # 减速度
 
         self.axes = [self.ax1, self.ax2, self.ax3, self.ax4, self.ax5]
 
@@ -162,7 +162,7 @@ class RealtimeTimeGapPlotter:
             "Time Gap Tracking", color=text_color, fontsize=13, fontweight="bold"
         )
         self.ax1.legend(
-            loc="upper right", facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
+            loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
         )
 
         # 子图2：误差
@@ -176,7 +176,7 @@ class RealtimeTimeGapPlotter:
             "Time Gap Error (Actual - Desired)", color=text_color, fontsize=13, fontweight="bold"
         )
         self.ax2.legend(
-            loc="upper right", facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
+            loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
         )
 
         # 子图3：速度
@@ -192,7 +192,7 @@ class RealtimeTimeGapPlotter:
             "Vehicle Speeds", color=text_color, fontsize=13, fontweight="bold"
         )
         self.ax3.legend(
-            loc="upper right", facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
+            loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
         )
 
         # 子图4：请求扭矩
@@ -206,7 +206,7 @@ class RealtimeTimeGapPlotter:
             "Request Engine Torque", color=text_color, fontsize=13, fontweight="bold"
         )
         self.ax4.legend(
-            loc="upper right", facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
+            loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
         )
 
         # 子图5：请求减速度
@@ -220,7 +220,7 @@ class RealtimeTimeGapPlotter:
             "Request Brake Deceleration", color=text_color, fontsize=13, fontweight="bold"
         )
         self.ax5.legend(
-            loc="upper right", facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
+            loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
         )
 
         # 创建滑动条控件
