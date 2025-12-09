@@ -25,6 +25,7 @@ class ACCConfig:
 
         # 实时模式（速率限制）
         self.enable_realtime = True  # True=1:1实时速度, False=全速运行（默认，3-4倍快）
+        self.realtime_target_fps = 20  # 实时模式目标FPS
 
         # ========== 车辆生成配置 ==========
         # 自车蓝图
@@ -66,8 +67,14 @@ class ACCConfig:
 
         # 前车速度控制
         self.assumed_road_speed_limit_kmh = 30.0  # 假设道路限速
-        self.target_speed_kmh = 40.0  # 前车初始目标速度 (改为40 km/h，合理的测试速度)
+        self.target_speed_kmh = 80.0  # 前车初始目标速度 (改为40 km/h，合理的测试速度)
         self.use_constant_velocity = True  # 使用恒速模式（不受路口影响）
+
+        # ========== 集成UDP配置 ==========
+        self.integrated_udp_send_port = 27000       # Python → Simulink UDP Receive
+        self.integrated_udp_recv_port = 27001       # Python ← Simulink UDP Send
+        self.integrated_udp_local_send_port = 9090  # Python 源端口
+        self.integrated_udp_timeout = 2.0           # UDP超时（秒）
 
         # ========== ACC系统参数 ==========
         self.acc_params = {
@@ -88,6 +95,7 @@ class ACCConfig:
             'eta': 0.2,
             'sppvt_rho': 0.1,
         }
+        self.integrated_sppvt_rho = self.sppvt_params['sppvt_rho']
 
         # ========== 感知配置 ==========
         self.max_follow_distance = 50.0     # 最大跟车距离（用于初始化）
@@ -120,7 +128,7 @@ class ACCConfig:
 
         # ========== 斜坡速度控制器配置 ==========
         self.ramp_controller_params = {
-            'start_speed_kmh': 40.0,    # 斜坡起始速度
+            'start_speed_kmh': 80.0,    # 斜坡起始速度
             'target_speed_kmh': 120.0,  # 斜坡目标速度
             'duration_s': 10.0          # 斜坡持续时间（秒）
         }
@@ -130,12 +138,13 @@ class ACCConfig:
         self.plotter_update_interval = 100    # 绘图器更新间隔（ms）
         self.use_result_plotter = True        # True=结果保存模式, False=实时测试模式（默认保存模式）
 
+        # ========== 性能分析配置 ==========
+        self.perf_max_samples = 1000          # 性能统计最大样本数（防止内存无限增长）
+        self.performance_report_interval = 10.0  # 性能报告输出间隔（秒）
+
         # ========== 手动控制配置 ==========
         self.manual_throttle_step = 0.1   # 油门累加步长（每帧）
         self.manual_brake_step = 0.2      # 刹车累加步长（每帧）
-
-        # ========== 性能分析配置 ==========
-        self.performance_report_interval = 10.0  # 性能报告输出间隔（秒）
 
         # ========== CSV记录配置 ==========
         self.csv_output_file = 'speed_data_integrated.csv'

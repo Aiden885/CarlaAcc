@@ -15,6 +15,7 @@ import numpy as np
 from typing import Dict, Any, Optional
 
 from simulink_udp_interface import SimulinkUDPClient
+from acc_config import ACCConfig
 
 
 class IntegratedSimulinkManager:
@@ -50,17 +51,19 @@ class IntegratedSimulinkManager:
         'SYSTEM_STANDBY': 8            # R8: 系统待命
     }
 
-    def __init__(self, debug: bool = False, max_target_speed_kmh: float = 150.0):
+    def __init__(self, debug: bool = False, max_target_speed_kmh: Optional[float] = None, config: Optional[ACCConfig] = None):
         """
         初始化统一管理器
 
         Args:
             debug: 是否打印调试信息
-            max_target_speed_kmh: 最大目标速度
+            max_target_speed_kmh: 最大目标速度（None 时使用配置）
+            config: ACC配置对象（未提供时使用默认配置）
         """
         self.debug = debug
-        self.max_target_speed_kmh = max_target_speed_kmh
-        self.sppvt_rho = 0.1  # stage offset累积系数
+        self.config = config or ACCConfig()
+        self.max_target_speed_kmh = max_target_speed_kmh if max_target_speed_kmh is not None else self.config.max_target_speed_kmh
+        self.sppvt_rho = getattr(self.config, 'integrated_sppvt_rho', 0.1)  # stage offset累积系数
 
         # ============ Decision状态（Python端维护） ============
         self.decision_state = {
@@ -97,25 +100,21 @@ class IntegratedSimulinkManager:
         self.last_processing_time = 0.0
 
         # ============ 创建UDP客户端 ============
-        # 端口配置：
-        #   - send_port=27000: Simulink UDP Receive监听端口
-        #   - recv_port=27001: Python接收端口
-        #   - local_send_port=9090: Python发送源端口（匹配Simulink Remote Port配置）
         self.udp_client = SimulinkUDPClient(
-            send_port=27000,
-            recv_port=27001,
+            send_port=self.config.integrated_udp_send_port,
+            recv_port=self.config.integrated_udp_recv_port,
             num_inputs=9,   # Decision 4个 + SPPVT 5个
             num_outputs=10, # Decision 5个 + SPPVT 5个
-            timeout=2.0,
+            timeout=self.config.integrated_udp_timeout,
             debug=debug,
-            local_send_port=9090,  # 绑定固定源端口
+            local_send_port=self.config.integrated_udp_local_send_port,  # 绑定固定源端口
             send_initial_packet=True,
             initial_values=self._get_initial_inputs()
         )
 
         if self.debug:
             print("✅ 统一Simulink管理器已初始化")
-            print(f"   UDP: 发送→27000(源端口9090), 接收←27001")
+            print(f"   UDP: 发送→{self.config.integrated_udp_send_port}(源端口{self.config.integrated_udp_local_send_port}), 接收←{self.config.integrated_udp_recv_port}")
             print(f"   输入: 9个double, 输出: 10个double")
 
     def _get_initial_inputs(self) -> list:

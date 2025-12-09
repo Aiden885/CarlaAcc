@@ -38,7 +38,8 @@ class ACCControlFacade:
 
         self.manager = IntegratedSimulinkManager(
             debug=debug,
-            max_target_speed_kmh=self.config.max_target_speed_kmh
+            max_target_speed_kmh=self.config.max_target_speed_kmh,
+            config=self.config
         )
 
         # 初始化参数

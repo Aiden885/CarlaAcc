@@ -201,21 +201,6 @@
                   <option name="pins">
                     <list>
                       <Pin>
-                        <option name="consoleUUID" value="177f7c8a-dd3b-499d-b550-797c1cc47491" />
-                        <option name="contentType" value="ConsoleContent" />
-                        <option name="grepCompositeModel">
-                          <GrepCompositeModel>
-                            <option name="models">
-                              <list>
-                                <GrepModel>
-                                  <option name="expression" value="模式" />
-                                </GrepModel>
-                              </list>
-                            </option>
-                          </GrepCompositeModel>
-                        </option>
-                      </Pin>
-                      <Pin>
                         <option name="consoleUUID" value="36a0f116-13ee-4964-ae78-f729da7f41a9" />
                         <option name="contentType" value="ConsoleContent" />
                         <option name="grepCompositeModel">
@@ -299,6 +284,21 @@
                               <list>
                                 <GrepModel>
                                   <option name="expression" value="性能" />
+                                </GrepModel>
+                              </list>
+                            </option>
+                          </GrepCompositeModel>
+                        </option>
+                      </Pin>
+                      <Pin>
+                        <option name="consoleUUID" value="67430937-b6de-4e89-816b-b0208c0cc76f" />
+                        <option name="contentType" value="ConsoleContent" />
+                        <option name="grepCompositeModel">
+                          <GrepCompositeModel>
+                            <option name="models">
+                              <list>
+                                <GrepModel>
+                                  <option name="expression" value="sppvt_control_output" />
                                 </GrepModel>
                               </list>
                             </option>

@@ -77,12 +77,17 @@ python acc_updated.py
 - **仿真设置**:
     - `synchronous_mode`: 是否开启同步模式 (推荐 True)。
     - `fixed_delta_seconds`: 仿真步长 (默认 0.05s, 即 20FPS)。
-    - `enable_realtime`: 是否限制真实时间运行。
+    - `enable_realtime` / `realtime_target_fps`: 是否限制真实时间运行及目标 FPS。
+
+- **通信 (UDP)**:
+    - `integrated_udp_send_port` / `integrated_udp_recv_port`: Python→Simulink / Simulink→Python 端口。
+    - `integrated_udp_local_send_port`: Python 源端口 (需与 Simulink Remote Port 对齐)。
+    - `integrated_udp_timeout`: UDP 超时。
 
 - **ACC 参数**:
     - `V_target_kmh`: 默认巡航速度。
     - `G2_s`: 默认跟车时距。
-    - `sppvt_params`: 纵向控制器 PID 及物理参数。
+    - `sppvt_params` / `integrated_sppvt_rho`: 纵向控制器 PID 及阶段偏置系数。
 
 - **场景配置**:
     - `enable_cut_in_scenario`: 启用切入场景。

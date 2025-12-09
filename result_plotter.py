@@ -33,15 +33,15 @@ class RealtimeResultPlotter:
         self.data_queue = queue.Queue(maxsize=1000)
 
         self.max_points = max_points
-        # Store all data for saving
-        self.steps = deque()
-        self.desired_gaps = deque()
-        self.actual_gaps = deque()
-        self.errors = deque()
-        self.ego_speeds = deque()
-        self.target_speeds = deque()
-        self.torques = deque()
-        self.decels = deque()
+        # Store data with maxlen limit to prevent memory issues
+        self.steps = deque(maxlen=max_points)
+        self.desired_gaps = deque(maxlen=max_points)
+        self.actual_gaps = deque(maxlen=max_points)
+        self.errors = deque(maxlen=max_points)
+        self.ego_speeds = deque(maxlen=max_points)
+        self.target_speeds = deque(maxlen=max_points)
+        self.torques = deque(maxlen=max_points)
+        self.decels = deque(maxlen=max_points)
 
         # ACC recording control
         self.acc_started = False  # Only start recording when ACC is enabled

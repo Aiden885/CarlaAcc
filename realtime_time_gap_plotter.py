@@ -28,17 +28,17 @@ class RealtimeTimeGapPlotter:
         """
         self.data_queue = queue.Queue(maxsize=1000)
 
-        self.max_points = max_points  # 保留此参数用于其他逻辑，但不限制数据存储
-        # 移除maxlen限制，保留所有历史数据以支持滑动条回看
-        self.timestamps = deque()
-        self.desired_gaps = deque()
-        self.actual_gaps = deque()
-        self.errors = deque()
-        self.ego_speeds = deque()  # 自车速度
-        self.target_speeds = deque()  # 前车速度
-        self.torques = deque()  # 请求发动机扭矩（正值，Nm）
-        self.decels = deque()  # 请求减速度（正值，m/s^2）
-        self.control_enabled_states = deque()  # ACC控制状态
+        self.max_points = max_points  # 限制数据存储，防止内存无限增长
+        # 使用maxlen限制，保留最近N个数据点（支持滑动条回看）
+        self.timestamps = deque(maxlen=max_points)
+        self.desired_gaps = deque(maxlen=max_points)
+        self.actual_gaps = deque(maxlen=max_points)
+        self.errors = deque(maxlen=max_points)
+        self.ego_speeds = deque(maxlen=max_points)  # 自车速度
+        self.target_speeds = deque(maxlen=max_points)  # 前车速度
+        self.torques = deque(maxlen=max_points)  # 请求发动机扭矩（正值，Nm）
+        self.decels = deque(maxlen=max_points)  # 请求减速度（正值，m/s^2）
+        self.control_enabled_states = deque(maxlen=max_points)  # ACC控制状态
 
         # 垂直线标记（用于标记control_enabled开启时刻）
         self.control_start_lines = []  # 存储已绘制的垂直线
