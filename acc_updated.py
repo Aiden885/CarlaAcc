@@ -95,6 +95,7 @@ class acc:
         # === 8. 初始化CSV记录器 ===
         self.csv_file = None
         self.csv_writer = None
+        self.last_csv_flush_time = 0.0  # 上次 flush 的时间
         self._init_csv()
         if self.csv_file:
             self.resource_manager.register_file(self.csv_file)
@@ -383,7 +384,12 @@ class acc:
             system_state.ego.brake,
             system_state.ego.steer
         ])
-        self.csv_file.flush()
+
+        # 优化：每秒 flush 一次，而不是每帧，避免频繁磁盘写入导致性能下降
+        now = time.time()
+        if now - self.last_csv_flush_time >= 1.0:
+            self.csv_file.flush()
+            self.last_csv_flush_time = now
 
     def _update_plotter(self, step_result, manual_input_state):
         """更新绘图器"""

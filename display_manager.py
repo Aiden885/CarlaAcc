@@ -476,3 +476,7 @@ class DisplayManager:
         if self.camera_manager:
             self.camera_manager.destroy()
         pygame.quit()
+
+    def cleanup(self):
+        """Cleanup resources (called by ResourceManager)."""
+        self.destroy()

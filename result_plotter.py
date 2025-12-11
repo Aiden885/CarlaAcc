@@ -126,6 +126,10 @@ class RealtimeResultPlotter:
             plt.close(self.fig)
         print("[ResultPlotter] Stopped.")
 
+    def cleanup(self) -> None:
+        """Cleanup resources (called by ResourceManager)."""
+        self.stop()
+
     def _signal_handler(self, signum, frame):
         """Handle interrupt signals (Ctrl+C, etc.)"""
         print(f"\n[ResultPlotter] 捕获到退出信号 ({signum})，正在保存结果...")

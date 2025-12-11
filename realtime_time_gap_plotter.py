@@ -41,7 +41,8 @@ class RealtimeTimeGapPlotter:
         self.control_enabled_states = deque(maxlen=max_points)  # ACC控制状态
 
         # 垂直线标记（用于标记control_enabled开启时刻）
-        self.control_start_lines = []  # 存储已绘制的垂直线
+        # 使用deque限制最大数量，防止无限增长导致性能下降和内存泄漏
+        self.control_start_lines = deque(maxlen=100)  # 最多保留100个标记线
 
         self.fig = None
         self.axes = None
@@ -108,6 +109,10 @@ class RealtimeTimeGapPlotter:
         if self.fig:
             plt.close(self.fig)
         print("[RealtimeTimeGapPlotter] Stopped.")
+
+    def cleanup(self) -> None:
+        """Cleanup resources (called by ResourceManager)."""
+        self.stop()
 
     def _setup_matlab_style(self) -> None:
         """Configure axes, colours, and legend to mimic MATLAB defaults."""
