@@ -208,22 +208,7 @@
                             <option name="models">
                               <list>
                                 <GrepModel>
-                                  <option name="expression" value="control_enabled" />
-                                </GrepModel>
-                              </list>
-                            </option>
-                          </GrepCompositeModel>
-                        </option>
-                      </Pin>
-                      <Pin>
-                        <option name="consoleUUID" value="90fbbbcd-fc07-4b60-b68d-799d12abedc5" />
-                        <option name="contentType" value="ConsoleContent" />
-                        <option name="grepCompositeModel">
-                          <GrepCompositeModel>
-                            <option name="models">
-                              <list>
-                                <GrepModel>
-                                  <option name="expression" value="sppvt_jerk_output" />
+                                  <option name="expression" value="切入" />
                                 </GrepModel>
                               </list>
                             </option>
@@ -291,14 +276,14 @@
                         </option>
                       </Pin>
                       <Pin>
-                        <option name="consoleUUID" value="67430937-b6de-4e89-816b-b0208c0cc76f" />
+                        <option name="consoleUUID" value="e46ac3e9-37a8-41a4-b657-c354acb84528" />
                         <option name="contentType" value="ConsoleContent" />
                         <option name="grepCompositeModel">
                           <GrepCompositeModel>
                             <option name="models">
                               <list>
                                 <GrepModel>
-                                  <option name="expression" value="sppvt_control_output" />
+                                  <option name="expression" value="UNIFIED_SPPVT_Stage" />
                                 </GrepModel>
                               </list>
                             </option>

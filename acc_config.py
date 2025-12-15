@@ -33,11 +33,11 @@ class ACCConfig:
         # 目标车蓝图
         self.target_vehicle_blueprint = 'vehicle.tesla.model3'
 
-        # 侧向切入工况配置
+        # 侧向切入工况配置  88次
         self.enable_cut_in_scenario = True          # 是否启用切入测试工况
         self.cut_in_vehicle_blueprint = 'vehicle.tesla.model3'
         self.cut_in_from_left = True                 # True 从左侧切入，False 从右侧
-        self.cut_in_trigger_time_s = 5.0             # 多少秒后触发切入
+        self.cut_in_trigger_time_s = 25.0             # 多少秒后触发切入
         self.cut_in_lateral_threshold_m = 0.5        # 进入本车道的横向阈值（米）
         self.cut_in_target_spawn_location = carla.Location(x=2393.492188, y=-340.496368, z=35.952347)
         self.cut_in_side_spawn_location = carla.Location(x=2394.350342, y=-367.901031, z=37.677494)
@@ -67,7 +67,7 @@ class ACCConfig:
 
         # 前车速度控制
         self.assumed_road_speed_limit_kmh = 30.0  # 假设道路限速
-        self.target_speed_kmh = 80.0  # 前车初始目标速度 (改为40 km/h，合理的测试速度)
+        self.target_speed_kmh = 80.0  # 前车初始目标速度
         self.use_constant_velocity = True  # 使用恒速模式（不受路口影响）
 
         # ========== 集成UDP配置 ==========
@@ -93,9 +93,11 @@ class ACCConfig:
             'max_decel': -4.56,    # 基于 CARLA Audi e-tron 真实测量的理论最大减速度
             'delta': 0.05,
             'eta': 0.2,
-            'sppvt_rho': 0.1,
+            'sppvt_rho': 0.2,
+            'upgrade_cooldown_frames': 2,  # 升级冷却周期（帧数），防止连续升级
         }
         self.integrated_sppvt_rho = self.sppvt_params['sppvt_rho']
+        self.sppvt_upgrade_cooldown = self.sppvt_params['upgrade_cooldown_frames']
 
         # ========== 感知配置 ==========
         self.max_follow_distance = 50.0     # 最大跟车距离（用于初始化）

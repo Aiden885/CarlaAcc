@@ -64,6 +64,7 @@ class IntegratedSimulinkManager:
         self.config = config or ACCConfig()
         self.max_target_speed_kmh = max_target_speed_kmh if max_target_speed_kmh is not None else self.config.max_target_speed_kmh
         self.sppvt_rho = getattr(self.config, 'integrated_sppvt_rho', 0.1)  # stage offset累积系数
+        self.upgrade_cooldown_frames = getattr(self.config, 'sppvt_upgrade_cooldown', 2)  # 升级冷却周期
 
         # ============ Decision状态（Python端维护） ============
         self.decision_state = {
@@ -80,7 +81,8 @@ class IntegratedSimulinkManager:
             'upgrade_count': 0.0,
             'prev_error': 0.0,
             'prev_velocity': 0.0,
-            'prev_accel': 0.0
+            'prev_accel': 0.0,
+            'upgrade_cooldown': 0  # 升级冷却计数器
         }
 
         # ============ ACC参数（Python端管理，传递给Simulink） ============
@@ -400,8 +402,10 @@ class IntegratedSimulinkManager:
             self.sppvt_state['stage'] = 1.0
             self.sppvt_state['stage_offset'] = 0.0
             self.sppvt_state['upgrade_count'] = 0.0
-        elif sppvt_should_upgrade > 0.5:
-            # 升级触发：阶段+1并累加offset
+            self.sppvt_state['upgrade_cooldown'] = 0  # 重置冷却
+        elif sppvt_should_upgrade > 0.5 and self.sppvt_state['upgrade_cooldown'] == 0:
+            # 升级触发（仅在冷却结束后）：阶段+1并累加offset
+            old_stage = int(self.sppvt_state['stage'])
             self.sppvt_state['stage'] += 1.0
             self.sppvt_state['upgrade_count'] += 1.0
             offset_delta = self.sppvt_rho * abs(current_error)
@@ -410,6 +414,18 @@ class IntegratedSimulinkManager:
             else:
                 self.sppvt_state['stage_offset'] -= offset_delta
             self.sppvt_state['stage_offset'] = max(-100.0, min(100.0, self.sppvt_state['stage_offset']))
+
+            # 设置冷却期
+            self.sppvt_state['upgrade_cooldown'] = self.upgrade_cooldown_frames
+
+            # 调试输出
+            if self.debug:
+                print(f"\n🔼 [SPPVT升级] 帧#{self.call_count} | Stage {old_stage} → {int(self.sppvt_state['stage'])} | "
+                      f"冷却:{self.upgrade_cooldown_frames}帧")
+
+        # 每帧减少冷却计数器
+        if self.sppvt_state['upgrade_cooldown'] > 0:
+            self.sppvt_state['upgrade_cooldown'] -= 1
 
         # 更新误差符号历史
         if current_sign != 0:
@@ -483,7 +499,8 @@ class IntegratedSimulinkManager:
             'upgrade_count': 0.0,
             'prev_error': 0.0,
             'prev_velocity': 0.0,
-            'prev_accel': 0.0
+            'prev_accel': 0.0,
+            'upgrade_cooldown': 0  # 升级冷却计数器
         }
 
         self._last_control_enabled = False

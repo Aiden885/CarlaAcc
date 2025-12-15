@@ -247,7 +247,7 @@ class CarlaSystemInitializer:
             'ego_vehicle': ego_vehicle,
             'target_vehicle': target_vehicle,
             'other_vehicles': vehicles,
-            'all_vehicles': vehicles + [ego_vehicle],
+            'all_vehicles': vehicles,  # 只包含前车，不包括自车（自车由ACC控制）
             'cut_out_lead_vehicle': cut_out_lead_vehicle,
             'cut_out_cut_vehicle': cut_out_cut_vehicle
         }
@@ -380,28 +380,32 @@ class CarlaSystemInitializer:
         """配置车辆速度"""
         if self.config.use_constant_velocity:
             print(f"   速度模式: Traffic Manager")
+
+            # 计算速度差异百分比
+            percentage_diff = (
+                (self.config.assumed_road_speed_limit_kmh - self.config.target_speed_kmh) /
+                self.config.assumed_road_speed_limit_kmh
+            ) * 100.0
+
+            # 配置所有前车（all_vehicles只包含前车，不包括自车），确保切入/切出场景中所有车辆速度一致
             for vehicle in all_vehicles:
-                if vehicle == target_vehicle:  # 只配置前车，不包括自车
-                    vehicle.set_autopilot(True, tm.get_port())
+                vehicle.set_autopilot(True, tm.get_port())
 
-                    # 切入/切出场景禁用自动换道
-                    allow_lane_change = not (
-                        self.config.enable_cut_in_scenario or
-                        self.config.enable_cut_out_scenario
-                    )
-                    tm.auto_lane_change(vehicle, allow_lane_change)
-                    tm.ignore_lights_percentage(vehicle, 100.0)
+                # 切入/切出场景禁用自动换道
+                allow_lane_change = not (
+                    self.config.enable_cut_in_scenario or
+                    self.config.enable_cut_out_scenario
+                )
+                tm.auto_lane_change(vehicle, allow_lane_change)
+                tm.ignore_lights_percentage(vehicle, 100.0)
 
-                    # 设置目标速度
-                    percentage_diff = (
-                        (self.config.assumed_road_speed_limit_kmh - self.config.target_speed_kmh) /
-                        self.config.assumed_road_speed_limit_kmh
-                    ) * 100.0
-                    tm.vehicle_percentage_speed_difference(vehicle, percentage_diff)
-                    tm.distance_to_leading_vehicle(vehicle, self.config.tm_target_vehicle_distance)
+                # 设置目标速度（所有前车使用相同速度）
+                tm.vehicle_percentage_speed_difference(vehicle, percentage_diff)
+                tm.distance_to_leading_vehicle(vehicle, self.config.tm_target_vehicle_distance)
 
             print(f"   假设道路限速: {self.config.assumed_road_speed_limit_kmh:.1f} km/h")
             print(f"   目标速度: {self.config.target_speed_kmh:.1f} km/h")
+            print(f"   ✅ 已配置 {len(all_vehicles)} 个前车的速度为 {self.config.target_speed_kmh:.1f} km/h")
 
     def _init_ramp_controller(self) -> RampSpeedController:
         """初始化斜坡速度控制器"""
@@ -436,6 +440,15 @@ class CarlaSystemInitializer:
             )
             if cut_in_manager and cut_in_manager.cut_in_vehicle:
                 vehicles_data['other_vehicles'].append(cut_in_manager.cut_in_vehicle)
+
+                # 配置切入车辆速度（与其他前车保持一致）
+                percentage_diff = (
+                    (self.config.assumed_road_speed_limit_kmh - self.config.target_speed_kmh) /
+                    self.config.assumed_road_speed_limit_kmh
+                ) * 100.0
+                tm.vehicle_percentage_speed_difference(cut_in_manager.cut_in_vehicle, percentage_diff)
+                tm.distance_to_leading_vehicle(cut_in_manager.cut_in_vehicle, self.config.tm_target_vehicle_distance)
+                print(f"   ✅ 切入车辆速度已配置: {self.config.target_speed_kmh:.1f} km/h")
                 print("   ✅ 切入场景初始化完成")
 
         elif self.config.enable_cut_out_scenario:
