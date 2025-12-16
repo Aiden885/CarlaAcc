@@ -82,7 +82,9 @@ class IntegratedSimulinkManager:
             'prev_error': 0.0,
             'prev_velocity': 0.0,
             'prev_accel': 0.0,
-            'upgrade_cooldown': 0  # 升级冷却计数器
+            'upgrade_cooldown': 0,  # 升级冷却计数器
+            'prev_G2_s': 2.0,       # 记录上一帧的G2参数（用于突变检测）
+            'prev_error_abs': 0.0   # 记录上一帧的误差绝对值（用于突变检测）
         }
 
         # ============ ACC参数（Python端管理，传递给Simulink） ============
@@ -387,6 +389,55 @@ class IntegratedSimulinkManager:
 
         # === SPPVT阶段管理（Python侧维护）===
         current_error = input_data['control_error']
+        current_error_abs = abs(current_error)
+
+        # ============================================================
+        # 🆕 SPPVT阶段重置条件检测（在符号翻转检测之前）
+        # ============================================================
+        should_reset = False
+        reset_reason = ""
+
+        # 条件1: G2参数突变检测
+        current_G2_s = self.params['G2_s']
+        prev_G2_s = self.sppvt_state.get('prev_G2_s', current_G2_s)
+        G2_change = abs(current_G2_s - prev_G2_s)
+
+        G2_CHANGE_THRESHOLD = 0.3  # 时距变化阈值：0.3秒
+
+        if G2_change > G2_CHANGE_THRESHOLD:
+            should_reset = True
+            reset_reason = f"G2突变: {prev_G2_s:.1f}s → {current_G2_s:.1f}s (Δ{G2_change:.1f}s)"
+
+        # 条件2: 时距误差突变检测（仅在TIME模式下）
+        if not should_reset and input_data.get('control_mode_flag') == 1:  # TIME模式
+            prev_error_abs = self.sppvt_state.get('prev_error_abs', 0.0)
+
+            ERROR_JUMP_RATIO = 5.0  # 误差跳变倍数阈值
+
+            if prev_error_abs > 0.0:  # 避免除零
+                error_ratio = current_error_abs / prev_error_abs
+
+                if error_ratio > ERROR_JUMP_RATIO:
+                    should_reset = True
+                    reset_reason = f"误差突变: {prev_error_abs:.2f}s → {current_error_abs:.2f}s (×{error_ratio:.1f}倍)"
+
+        # 执行重置
+        if should_reset:
+            self.sppvt_state['stage'] = 1.0
+            self.sppvt_state['stage_offset'] = 0.0
+            self.sppvt_state['upgrade_count'] = 0.0
+            self.sppvt_state['upgrade_cooldown'] = 0
+
+            if self.debug:
+                print(f"\n🔄 [SPPVT重置] 帧#{self.call_count} | {reset_reason} | Stage→1")
+
+        # 更新历史记录
+        self.sppvt_state['prev_G2_s'] = current_G2_s
+        self.sppvt_state['prev_error_abs'] = current_error_abs
+
+        # ============================================================
+        # 原有的符号翻转检测逻辑
+        # ============================================================
         if abs(current_error) < 1e-6:
             current_sign = 0
         elif current_error > 0:
@@ -500,7 +551,9 @@ class IntegratedSimulinkManager:
             'prev_error': 0.0,
             'prev_velocity': 0.0,
             'prev_accel': 0.0,
-            'upgrade_cooldown': 0  # 升级冷却计数器
+            'upgrade_cooldown': 0,  # 升级冷却计数器
+            'prev_G2_s': self.params['G2_s'],     # 重置历史G2
+            'prev_error_abs': 0.0                  # 重置历史误差
         }
 
         self._last_control_enabled = False

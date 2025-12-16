@@ -56,9 +56,9 @@ class ACCConfig:
         self.cut_out_cut_back_distance_m = 50.0       # 切出车相对前车的后移距离（米）
 
         # 固定生成点 (Town04默认位置)
-        self.spawn_location = carla.Location(x=2511.432617, y=1281.097046, z=0.036094)
+        self.spawn_location = carla.Location(x=2275.941650, y=-1905.315552, z=-0.000444)
         self.spawn_z_offset = 0.1  # 生成高度偏移，避免掉落
-        self.ego_spawn_distance = 50.0  # 自车生成距离（米，目标车后方） 切入50.0
+        self.ego_spawn_distance = 100.0  # 自车生成距离（米，目标车后方） 切入50.0
 
         # ========== Traffic Manager配置 ==========
         self.tm_port = 8000
@@ -125,7 +125,7 @@ class ACCConfig:
         # 基于 SPPVT 输出范围 ±2.5 和 Audi e-tron 真实参数设计
         self.sppvt_accel_scale = 210.0   # 加速：SPPVT输出 → 发动机扭矩 (N·m)
 
-        self.sppvt_decel_scale = 2.0     # 减速：SPPVT输出 → 减速度 (m/s²)
+        self.sppvt_decel_scale = 1.0     # 减速：SPPVT输出 → 减速度 (m/s²)
                                           # 理论最大减速度：4.56 m/s² (从CARLA测得)
 
         # ========== 斜坡速度控制器配置 ==========

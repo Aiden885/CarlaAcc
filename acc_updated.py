@@ -576,7 +576,7 @@ class acc:
 def main():
     """主函数"""
     # 手动切换工况 "none" / "cut-in" / "cut-out"
-    SCENARIO_MODE = "none"  # None=按配置文件，"none"=普通，"cut-in"=切入，"cut-out"=切出
+    SCENARIO_MODE = "cut-in"  # None=按配置文件，"none"=普通，"cut-in"=切入，"cut-out"=切出
 
     # 启用结果保存画图器
     USE_RESULT_PLOTTER = False
