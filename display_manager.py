@@ -92,7 +92,7 @@ class DisplayManager:
         self.large_font = self._load_font(28, weight='semibold')
 
         self.show_help = False
-        self.show_info = True
+        self.show_info = False  # 默认关闭 HUD，按 I 键打开
         self.help_text = self._create_help_text()
 
         self.camera_manager = None

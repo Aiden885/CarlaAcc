@@ -34,7 +34,6 @@ class acc:
         初始化ACC系统
 
         Args:
-            use_result_plotter: True=使用结果保存画图器, False=使用实时测试画图器
             scenario_mode: 场景模式 ('none', 'cut-in', 'cut-out')
         """
         print("\n" + "=" * 80)
@@ -137,8 +136,14 @@ class acc:
                 self.config.enable_cut_in_scenario = False
 
     def _apply_plotter_mode(self, use_result_plotter):
-        """应用绘图器模式配置"""
+        """
+        应用绘图器模式配置
+
+        注意: 建议直接在 acc_config.py 中修改 use_result_plotter 参数
+              此方法保留 use_result_plotter 参数仅为兼容旧代码
+        """
         if use_result_plotter is not None:
+            print(f"⚠️  警告: use_result_plotter 参数已废弃，请在 acc_config.py 中配置")
             self.config.use_result_plotter = use_result_plotter
         self.use_result_plotter = self.config.use_result_plotter
 
@@ -578,11 +583,8 @@ def main():
     # 手动切换工况 "none" / "cut-in" / "cut-out"
     SCENARIO_MODE = "none"  # None=按配置文件，"none"=普通，"cut-in"=切入，"cut-out"=切出
 
-    # 启用结果保存画图器
-    USE_RESULT_PLOTTER = False
-
-    # 创建ACC实例
-    acc_actor = acc(use_result_plotter=USE_RESULT_PLOTTER, scenario_mode=SCENARIO_MODE)
+    # 创建ACC实例（画图模式在 acc_config.py 中配置）
+    acc_actor = acc(scenario_mode=SCENARIO_MODE)
 
     try:
         acc_actor.generate_target()

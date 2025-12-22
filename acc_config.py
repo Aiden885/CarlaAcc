@@ -136,12 +136,16 @@ class ACCConfig:
         }
 
         # ========== 绘图器配置 ==========
-        self.plotter_max_points = 5000        # 绘图器最大数据点数
-        self.plotter_update_interval = 100    # 绘图器更新间隔（ms）
-        self.use_result_plotter = True        # True=结果保存模式, False=实时测试模式（默认保存模式）
+        self.plotter_max_points = 4000        # 绘图器最大数据点数
+        self.plotter_update_interval = 200    # 绘图器更新间隔（ms）
+
+        # 画图模式切换（修改此处切换模式）
+        # True  = 结果保存模式 (RealtimeResultPlotter, Step模式, 自动保存图像)
+        # False = 实时测试模式 (RealtimeTimeGapPlotter, Time模式, 实时显示)
+        self.use_result_plotter = True
 
         # ========== 性能分析配置 ==========
-        self.perf_max_samples = 1000          # 性能统计最大样本数（防止内存无限增长）
+        self.perf_max_samples = 4000          # 性能统计最大样本数（防止内存无限增长）
         self.performance_report_interval = 10.0  # 性能报告输出间隔（秒）
 
         # ========== 手动控制配置 ==========
@@ -152,7 +156,7 @@ class ACCConfig:
         self.csv_output_file = 'speed_data_integrated.csv'
 
         # ========== ACC决策+SPPVT配置 ==========
-        self.acc_decision_debug = True        # 是否开启调试模式
+        self.acc_decision_debug = False        # 是否开启调试模式
         self.use_realtime_sppvt = False       # 是否使用实时SPPVT（False=使用完整Simulink模型）
 
     def get_acc_params(self):
