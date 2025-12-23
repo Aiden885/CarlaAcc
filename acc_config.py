@@ -94,7 +94,7 @@ class ACCConfig:
             'delta': 0.05,
             'eta': 0.2,
             'sppvt_rho': 0.2,
-            'upgrade_cooldown_frames': 2,  # 升级冷却周期（帧数），防止连续升级
+            'upgrade_cooldown_frames': 4,  # 升级冷却周期（帧数），防止连续升级
         }
         self.integrated_sppvt_rho = self.sppvt_params['sppvt_rho']
         self.sppvt_upgrade_cooldown = self.sppvt_params['upgrade_cooldown_frames']
