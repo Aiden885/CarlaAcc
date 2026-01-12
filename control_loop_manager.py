@@ -440,24 +440,26 @@ class ControlLoopManager:
 
     def _compute_longitudinal_control(self, unified_output: dict, perception_data: PerceptionData) -> Tuple[float, float]:
         """计算纵向控制（油门/刹车）"""
+        # SPPVT输出：扭矩（无量纲），需要缩放到实际发动机扭矩
         control_output = unified_output.get('sppvt_control_output', 0.0)
         control_mode_flag = perception_data.control_mode_flag
 
-        # 符号转换
+        # 符号转换（根据控制模式调整符号）
         if control_mode_flag == 1:  # TIME模式
-            sppvt_target_accel = -control_output
+            sppvt_torque_demand = -control_output
         elif control_mode_flag == 2:  # SPEED模式
-            sppvt_target_accel = control_output
+            sppvt_torque_demand = control_output
         else:
-            sppvt_target_accel = control_output
+            sppvt_torque_demand = control_output
 
-        # SPPVT输出缩放
-        if sppvt_target_accel >= 0:
-            # 加速
-            sppvt_engine_torque = sppvt_target_accel * self.config.sppvt_accel_scale
+        # SPPVT输出缩放（调试用的KP增益）
+        # 注意：sppvt_accel_scale/sppvt_decel_scale 是缩放增益，不是单位转换
+        if sppvt_torque_demand >= 0:
+            # 加速：缩放到发动机扭矩
+            sppvt_engine_torque = sppvt_torque_demand * self.config.sppvt_accel_scale
         else:
-            # 减速
-            sppvt_engine_torque = sppvt_target_accel * self.config.sppvt_decel_scale
+            # 减速：缩放到发动机扭矩
+            sppvt_engine_torque = sppvt_torque_demand * self.config.sppvt_decel_scale
 
         # 扭矩转油门/刹车
         if self.config.use_torque_converter:
@@ -466,7 +468,7 @@ class ControlLoopManager:
                 self.system_state.ego.speed_kmh
             )
             # 防止同时有油门和刹车
-            if sppvt_target_accel >= 0:
+            if sppvt_torque_demand >= 0:
                 brake = 0.0
         else:
             # 简化映射

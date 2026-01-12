@@ -189,84 +189,94 @@ class TorqueToThrottleConverter:
 
         return brake
 
-    def _brake_torque_to_brake_value(self, engine_brake_torque):
+    def _engine_torque_to_brake_value(self, engine_brake_torque):
         """
-        将发动机制动扭矩转换为刹车值（传统方法，已被deceleration_to_brake替代）
+        发动机级别的制动扭矩 → 刹车值
+
+        物理链路：
+        1. 发动机扭矩 × 传动比 = 车轮总制动扭矩
+        2. 车轮总扭矩 ÷ 轮数 = 单轮制动扭矩
+        3. 单轮扭矩 ÷ 最大制动扭矩 = 刹车值
+
+        符合CARLA底层公式：applied_torque = brake × max_brake_torque
 
         参数:
-        engine_brake_torque - 发动机制动扭矩 (N·m, 正值)
+            engine_brake_torque: 发动机级别的制动扭矩 (N·m, 正值)
 
         返回:
-        刹车值 (0-1)
+            brake_value: 刹车值 [0, 1]
         """
         # 1. 通过传动系统放大到车轮
-        # 车轮制动扭矩 = 发动机扭矩 × 传动比
         wheel_brake_torque_total = engine_brake_torque * self.total_gear_ratio
 
         # 2. 分配到各个驱动轮
-        # 假设平均分配
         per_wheel_brake_torque = wheel_brake_torque_total / self.num_drive_wheels
 
-        # 3. 归一化为刹车值 (0-1)
-        # brake_value = 需求扭矩 / 最大制动扭矩
+        # 3. 归一化为刹车值（符合CARLA公式）
         brake_value = per_wheel_brake_torque / self.max_brake_torque_per_wheel
 
-        # 4. 限制在合理范围
+        # 4. 限制在[0, 1]范围
         brake_value = min(1.0, max(0.0, brake_value))
+
+        # 5. 超限警告
+        if brake_value >= 0.99 and engine_brake_torque > 10.0:
+            # 计算等效减速度（用于警告显示）
+            total_brake_force = wheel_brake_torque_total / self.wheel_radius
+            equiv_decel = total_brake_force / self.vehicle_mass
+            print(f"⚠️ 制动需求接近极限！")
+            print(f"   需求扭矩: {engine_brake_torque:.1f} N·m (发动机级别)")
+            print(f"   等效减速度: {equiv_decel:.2f} m/s²")
+            print(f"   理论最大: {self.theoretical_max_decel:.2f} m/s²")
 
         return brake_value
 
     def engine_torque_to_throttle(self, desired_engine_torque, current_speed_kmh):
         """
-        主接口：统一处理加速/减速转换
-
-        🔄 新逻辑（基于CARLA真实参数）：
-        - 正值：发动机扭矩 (N·m) → 油门开度
-        - 负值：减速度 (m/s²) → 刹车开度
+        主接口：统一处理加速/减速转换（统一扭矩单位）
 
         加速模式（正值）：
-        1. 根据车速计算发动机RPM
-        2. 从扭矩曲线插值得到该RPM的最大扭矩
-        3. 油门 = 需求扭矩 / 最大扭矩
+            发动机扭矩 (N·m) → 油门开度 [0,1]
+            1. 根据车速计算发动机RPM
+            2. 从扭矩曲线插值得到该RPM的最大扭矩
+            3. 油门 = 需求扭矩 / 最大扭矩
 
         减速模式（负值）：
-        1. 减速度 → 制动力 (F = ma)
-        2. 制动力 → 制动扭矩 (T = F × r)
-        3. 刹车 = 制动扭矩 / 最大制动扭矩
+            发动机扭矩 (N·m) → 车轮制动扭矩 → 刹车开度 [0,1]
+            1. 发动机扭矩 × 传动比 = 车轮制动扭矩
+            2. 车轮扭矩 ÷ 轮数 = 单轮制动扭矩
+            3. 单轮扭矩 ÷ 最大制动扭矩 = 刹车值
 
         参数:
-            desired_engine_torque:
-                - 正值：发动机扭矩 (N·m)
-                - 负值：减速度 (m/s²)
+            desired_engine_torque: 发动机扭矩 (N·m)
+                - 正值：驱动扭矩
+                - 负值：制动扭矩
             current_speed_kmh: 当前车速 (km/h)
 
         返回:
             (throttle, brake): 油门值和刹车值 [0, 1]
         """
-        # === 1. 判断是加速还是减速 ===
         if desired_engine_torque >= 0:
-            # --- 加速模式：扭矩 → 油门 ---
-
-            # 2. 计算当前发动机RPM
+            # === 加速模式：扭矩 → 油门 ===
+            # 计算当前发动机RPM
             current_rpm = self._calculate_engine_rpm(current_speed_kmh)
 
-            # 3. 获取该RPM下的最大可用扭矩
+            # 获取该RPM下的最大可用扭矩
             max_available_torque = self._get_max_torque_at_rpm(current_rpm)
 
-            # 4. 计算油门值
+            # 计算油门值
             if max_available_torque > 0:
                 throttle = desired_engine_torque / max_available_torque
             else:
                 throttle = 0.0
 
-            # 5. 限制在[0, 1]范围
+            # 限制在[0, 1]范围
             throttle = min(1.0, max(0.0, throttle))
             brake = 0.0
 
         else:
-            # --- 减速模式：减速度 → 刹车 ---
+            # === 减速模式：扭矩 → 刹车 ===
             throttle = 0.0
-            brake = self.deceleration_to_brake(desired_engine_torque)  # 负值输入
+            brake = self._engine_torque_to_brake_value(abs(desired_engine_torque))
 
         return throttle, brake
 

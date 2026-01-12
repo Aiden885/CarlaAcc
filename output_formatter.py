@@ -69,20 +69,19 @@ class OutputFormatter:
             # 控制模式
             control_mode = env_data.get('control_mode_name', 'Unknown')
 
-            # control_output 和 accel (转换后)
-            control_output = env_data.get('control_output', 0.0)
-            target_accel = env_data.get('sppvt_target_accel', 0.0)
+            # SPPVT扭矩输出（从unified_output读取）
+            sppvt_torque_output = unified_output.get('sppvt_control_output', 0.0)
 
             # 根据控制模式确定 control_error 的单位
             control_mode_flag = env_data.get('control_mode_flag', 1)
             control_error_unit = "s" if control_mode_flag == 1 else "m/s"
 
-            print(f"  自车     前车      实际距离  期望距离  距离误差  模式      control_error  control_output  accel(转换后)")
+            print(f"  自车     前车      实际距离  期望距离  距离误差  模式      control_error  SPPVT扭矩输出")
             print(f"  {env_data.get('ego_speed_kmh', 0.0):.1f}km/h {target_speed_str:8s}  "
                   f"{env_data.get('vehicle_distance', 0.0):.2f}m   {env_data.get('desired_distance', 0.0):.2f}m   "
                   f"{distance_error_str:8s} {control_mode:8s}  "
                   f"{env_data.get('control_error', 0.0):+.3f}{control_error_unit:4s}  "
-                  f"{control_output:+.3f}         {target_accel:+.3f}")
+                  f"{sppvt_torque_output:+.3f}")
             print(f"  ")
 
             # Two-Mode计算说明

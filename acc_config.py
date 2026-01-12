@@ -121,12 +121,15 @@ class ACCConfig:
         # ========== 扭矩转换器配置 ==========
         self.use_torque_converter = True  # 是否使用物理模型转换器
 
-        # SPPVT 输出到物理量的缩放系数
-        # 基于 SPPVT 输出范围 ±2.5 和 Audi e-tron 真实参数设计
-        self.sppvt_accel_scale = 210.0   # 加速：SPPVT输出 → 发动机扭矩 (N·m)
-
-        self.sppvt_decel_scale = 1.0     # 减速：SPPVT输出 → 减速度 (m/s²)
-                                          # 理论最大减速度：4.56 m/s² (从CARLA测得)
+        # SPPVT 输出缩放系数（调试用的KP增益）
+        # 注意：SPPVT输出的是扭矩（无量纲），这些系数用于缩放到实际发动机扭矩
+        # 作用：方便在Python端调试控制增益，无需修改Simulink模型
+        self.sppvt_accel_scale = 210.0   # 加速缩放增益：SPPVT扭矩 → 发动机扭矩 (N·m)
+        self.sppvt_decel_scale = 210.0   # 减速缩放增益：SPPVT扭矩 → 发动机扭矩 (N·m)
+                                          # 调参建议：
+                                          # - 如果加速过快/慢，调整 sppvt_accel_scale
+                                          # - 如果减速过强/弱，调整 sppvt_decel_scale
+                                          # - 两者可以独立调节，实现不同的加减速特性
 
         # ========== 斜坡速度控制器配置 ==========
         self.ramp_controller_params = {

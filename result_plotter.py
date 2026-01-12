@@ -41,7 +41,7 @@ class RealtimeResultPlotter:
         self.ego_speeds = deque(maxlen=max_points)
         self.target_speeds = deque(maxlen=max_points)
         self.torques = deque(maxlen=max_points)
-        self.decels = deque(maxlen=max_points)
+        self.brake_torques = deque(maxlen=max_points)
 
         # ACC recording control
         self.acc_started = False  # Only start recording when ACC is enabled
@@ -69,7 +69,7 @@ class RealtimeResultPlotter:
     def add_data(self, desired_gap: float, actual_gap: float, timestamp: float,
                  ego_speed: float = 0.0, target_speed: float = 0.0,
                  control_enabled: bool = False,
-                 request_torque: float = 0.0, request_decel: float = 0.0) -> None:
+                 request_torque: float = 0.0, request_brake_torque: float = 0.0) -> None:
         """Push a new sample into the queue from the producer thread.
 
         Args:
@@ -79,8 +79,8 @@ class RealtimeResultPlotter:
             ego_speed: 自车速度 (km/h)
             target_speed: 前车速度 (km/h)
             control_enabled: ACC控制是否开启
-            request_torque: 请求发动机扭矩 (Nm, 正值)
-            request_decel: 请求减速度 (m/s², 正值)
+            request_torque: 请求发动机扭矩 (Nm, 正值，加速时)
+            request_brake_torque: 请求制动扭矩 (Nm, 正值，制动时)
         """
         # Only start recording after ACC is enabled
         if not self.acc_started:
@@ -92,12 +92,12 @@ class RealtimeResultPlotter:
 
         try:
             self.data_queue.put_nowait((desired_gap, actual_gap, ego_speed, target_speed, control_enabled,
-                                        request_torque, request_decel))
+                                        request_torque, request_brake_torque))
         except queue.Full:
             try:
                 self.data_queue.get_nowait()
                 self.data_queue.put_nowait((desired_gap, actual_gap, ego_speed, target_speed, control_enabled,
-                                            request_torque, request_decel))
+                                            request_torque, request_brake_torque))
             except queue.Empty:
                 pass
 
@@ -159,7 +159,7 @@ class RealtimeResultPlotter:
         ego_speeds = np.asarray(self.ego_speeds, dtype=float)
         target_speeds = np.asarray(self.target_speeds, dtype=float)
         torques = np.asarray(self.torques, dtype=float)
-        decels = np.asarray(self.decels, dtype=float)
+        brake_torques = np.asarray(self.brake_torques, dtype=float)
 
         # MATLAB经典配色
         color_desired = "#0072BD"  # MATLAB蓝色
@@ -235,13 +235,13 @@ class RealtimeResultPlotter:
         ax4.legend(loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000",
                   fontsize=10, framealpha=1.0)
 
-        # 子图5：请求减速度
-        ax5.plot(steps, decels, color="#d62728", linewidth=2.0,
-                label="Request Decel", marker='s', markersize=2, markevery=10)
+        # 子图5：请求制动扭矩
+        ax5.plot(steps, brake_torques, color="#d62728", linewidth=2.0,
+                label="Request Brake Torque", marker='s', markersize=2, markevery=10)
         ax5.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
         ax5.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
-        ax5.set_ylabel("Decel (m/s²)", color=text_color, fontsize=11, fontweight='bold')
-        ax5.set_title("Request Brake Deceleration", color=text_color, fontsize=13, fontweight="bold")
+        ax5.set_ylabel("Brake Torque (Nm)", color=text_color, fontsize=11, fontweight='bold')
+        ax5.set_title("Request Brake Torque", color=text_color, fontsize=13, fontweight="bold")
         ax5.legend(loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000",
                   fontsize=10, framealpha=1.0)
 
@@ -285,7 +285,7 @@ class RealtimeResultPlotter:
                 # Write header
                 writer.writerow(['Step', 'Desired Gap (s)', 'Actual Gap (s)',
                                  'Error (s)', 'Ego Speed (km/h)', 'Target Speed (km/h)',
-                                 'Req Torque (Nm)', 'Req Decel (m/s^2)'])
+                                 'Req Torque (Nm)', 'Req Brake Torque (Nm)'])
                 # Write data
                 for i in range(len(self.steps)):
                     writer.writerow([
@@ -296,7 +296,7 @@ class RealtimeResultPlotter:
                         self.ego_speeds[i],
                         self.target_speeds[i],
                         self.torques[i],
-                        self.decels[i]
+                        self.brake_torques[i]
                     ])
             print(f"✅ CSV数据已保存: {csv_filename}")
         except Exception as e:
@@ -338,14 +338,13 @@ class RealtimeResultPlotter:
         # Register window close event to save results
         self.fig.canvas.mpl_connect('close_event', self._on_window_close)
 
-        # 5个子图：时距跟踪、误差、速度、扭矩、减速度（增加间距避免标题和横轴重叠）
-        # 5个子图：时距跟踪、误差、速度、扭矩、减速度（增加间距避免标题和横轴重叠）
+        # 5个子图：时距跟踪、误差、速度、扭矩、制动扭矩（增加间距避免标题和横轴重叠）
         # 调整布局以增加垂直间距 (Gap ~0.07)
         self.ax1 = plt.axes([0.08, 0.80, 0.78, 0.16], facecolor=bg_color)  # 时距跟踪
         self.ax2 = plt.axes([0.08, 0.62, 0.78, 0.11], facecolor=bg_color)  # 误差
         self.ax3 = plt.axes([0.08, 0.44, 0.78, 0.11], facecolor=bg_color)  # 速度
-        self.ax4 = plt.axes([0.08, 0.26, 0.78, 0.11], facecolor=bg_color)  # 扭矩
-        self.ax5 = plt.axes([0.08, 0.08, 0.78, 0.11], facecolor=bg_color)  # 减速度
+        self.ax4 = plt.axes([0.08, 0.26, 0.78, 0.11], facecolor=bg_color)  # 加速扭矩
+        self.ax5 = plt.axes([0.08, 0.08, 0.78, 0.11], facecolor=bg_color)  # 制动扭矩
 
         self.axes = [self.ax1, self.ax2, self.ax3, self.ax4, self.ax5]
 
@@ -418,15 +417,15 @@ class RealtimeResultPlotter:
             loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
         )
 
-        # 子图5：请求减速度
-        self.line_decel, = self.ax5.plot(
-            [], [], color="#d62728", linewidth=2.0, label="Request Decel", marker='s', markersize=2, markevery=10
+        # 子图5：请求制动扭矩
+        self.line_brake_torque, = self.ax5.plot(
+            [], [], color="#d62728", linewidth=2.0, label="Request Brake Torque", marker='s', markersize=2, markevery=10
         )
         self.ax5.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
         self.ax5.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
-        self.ax5.set_ylabel("Decel (m/s²)", color=text_color, fontsize=11, fontweight='bold')
+        self.ax5.set_ylabel("Brake Torque (Nm)", color=text_color, fontsize=11, fontweight='bold')
         self.ax5.set_title(
-            "Request Brake Deceleration", color=text_color, fontsize=13, fontweight="bold"
+            "Request Brake Torque", color=text_color, fontsize=13, fontweight="bold"
         )
         self.ax5.legend(
             loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
@@ -464,11 +463,11 @@ class RealtimeResultPlotter:
             try:
                 item = self.data_queue.get_nowait()
                 if len(item) == 7:
-                    desired, actual, ego_speed, target_speed, control_enabled, req_torque, req_decel = item
+                    desired, actual, ego_speed, target_speed, control_enabled, req_torque, req_brake_torque = item
                 else:
                     # 兼容旧格式
                     desired, actual, ego_speed, target_speed, control_enabled = item
-                    req_torque, req_decel = 0.0, 0.0
+                    req_torque, req_brake_torque = 0.0, 0.0
             except queue.Empty:
                 break
 
@@ -480,7 +479,7 @@ class RealtimeResultPlotter:
             self.ego_speeds.append(ego_speed)
             self.target_speeds.append(target_speed)
             self.torques.append(req_torque)
-            self.decels.append(req_decel)
+            self.brake_torques.append(req_brake_torque)
 
             self.current_step += 1
             self.total_points += 1
@@ -498,7 +497,7 @@ class RealtimeResultPlotter:
 
         # 转换为numpy数组
         torques_array = np.asarray(self.torques, dtype=float)
-        decels_array = np.asarray(self.decels, dtype=float)
+        brake_torques_array = np.asarray(self.brake_torques, dtype=float)
 
         # 更新所有曲线数据
         self.line_desired.set_data(steps, desired)
@@ -507,7 +506,7 @@ class RealtimeResultPlotter:
         self.line_ego_speed.set_data(steps, ego_speeds)
         self.line_target_speed.set_data(steps, target_speeds)
         self.line_torque.set_data(steps, torques_array)
-        self.line_decel.set_data(steps, decels_array)
+        self.line_brake_torque.set_data(steps, brake_torques_array)
 
         # Set X-axis limits
         x_left, x_right = 0, 1
@@ -585,24 +584,24 @@ class RealtimeResultPlotter:
                     self.ax4.set_ylim(lower, upper)
                     self.ax4.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
 
-        # Set decel Y-axis limits (子图5)
-        if self.decels and steps.size:
-            decels_arr = np.asarray(self.decels, dtype=float)
-            if decels_arr.size:
-                d_min = float(np.nanmin(decels_arr))
-                d_max = float(np.nanmax(decels_arr))
-                if np.isfinite(d_min) and np.isfinite(d_max):
-                    if np.isclose(d_min, d_max):
-                        span = max(abs(d_min) * 0.1, 0.5)
+        # Set brake torque Y-axis limits (子图5)
+        if self.brake_torques and steps.size:
+            brake_torques_arr = np.asarray(self.brake_torques, dtype=float)
+            if brake_torques_arr.size:
+                bt_min = float(np.nanmin(brake_torques_arr))
+                bt_max = float(np.nanmax(brake_torques_arr))
+                if np.isfinite(bt_min) and np.isfinite(bt_max):
+                    if np.isclose(bt_min, bt_max):
+                        span = max(abs(bt_min) * 0.1, 10.0)
                     else:
-                        span = max((d_max - d_min) * 0.1, 0.5)
-                    lower = max(0, d_min - span)  # 减速度通常>=0
-                    upper = d_max + span
+                        span = max((bt_max - bt_min) * 0.1, 10.0)
+                    lower = max(0, bt_min - span)  # 制动扭矩通常>=0
+                    upper = bt_max + span
                     if np.isclose(lower, upper):
-                        upper = lower + 1.0
+                        upper = lower + 10.0
                     self.ax5.set_ylim(lower, upper)
                     self.ax5.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
 
         return (self.line_desired, self.line_actual, self.line_error,
                 self.line_ego_speed, self.line_target_speed,
-                self.line_torque, self.line_decel)
+                self.line_torque, self.line_brake_torque)

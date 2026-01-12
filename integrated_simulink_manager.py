@@ -507,12 +507,12 @@ class IntegratedSimulinkManager:
             'next_last_active_decision': next_last_decision,
 
             # SPPVT输出
-            'sppvt_control_output': sppvt_control_output,
-            'sppvt_velocity_output': sppvt_velocity_output,
-            'sppvt_acceleration_output': sppvt_acceleration_output,
-            'sppvt_jerk_output': sppvt_jerk_output,
-            'sppvt_stage_output': self.sppvt_state['stage'],
-            'sppvt_status_output': sppvt_should_upgrade,
+            'sppvt_control_output': sppvt_control_output,  # 扭矩输出（无量纲，需缩放）
+            'sppvt_velocity_output': sppvt_velocity_output,  # 误差一阶导数
+            'sppvt_acceleration_output': sppvt_acceleration_output,  # 误差二阶导数
+            'sppvt_jerk_output': sppvt_jerk_output,  # 抖动量
+            'sppvt_stage_output': self.sppvt_state['stage'],  # 当前阶段
+            'sppvt_status_output': sppvt_should_upgrade,  # 是否应升级
 
             # SPPVT状态（供调试）
             'new_stage_offset': self.sppvt_state['stage_offset'],
@@ -522,7 +522,7 @@ class IntegratedSimulinkManager:
             'new_control_error': current_error,
             'new_error_derivative': sppvt_velocity_output,
             'new_error_second_derivative': sppvt_acceleration_output,
-            'target_accel': sppvt_control_output,
+            'target_torque': sppvt_control_output,  # 目标扭矩（无量纲）
 
             # 调试信息
             'debug_message': 0,
