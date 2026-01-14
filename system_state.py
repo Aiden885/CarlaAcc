@@ -17,6 +17,20 @@ class VehicleState:
 
 
 @dataclass
+class IncrementalControlState:
+    """增量控制状态"""
+    Y_prev: float = 0.0           # Y(k-1): 上一时刻输出扭矩
+    e_i_prev: float = 0.0         # e_i(k-1): 上一时刻增强误差
+    is_initialized: bool = False  # 是否已初始化
+
+    def reset(self):
+        """复位状态"""
+        self.Y_prev = 0.0
+        self.e_i_prev = 0.0
+        self.is_initialized = False
+
+
+@dataclass
 class ACCState:
     """ACC系统状态"""
     system_enabled: bool = False  # ACC主开关
@@ -27,6 +41,8 @@ class ACCState:
     torque_arbitration_active: bool = False
     current_decision: str = "STANDBY"
     current_control_mode: str = "NONE"
+    incremental_control: IncrementalControlState = field(default_factory=IncrementalControlState)
+    incremental_torque_nm: float = 0.0
 
 
 @dataclass

@@ -444,6 +444,15 @@ class acc:
                 req_torque = 0.0
                 req_brake_torque = abs(sppvt_torque_demand * self.config.sppvt_decel_scale)
 
+            # 增量控制扭矩（Y_current）
+            inc_engine_torque = env_data.get("incremental_torque_nm", 0.0)
+            if inc_engine_torque >= 0:
+                inc_req_torque = inc_engine_torque
+                inc_req_brake_torque = 0.0
+            else:
+                inc_req_torque = 0.0
+                inc_req_brake_torque = abs(inc_engine_torque)
+
             # 从enhanced_output获取时距数据
             try:
                 from two_mode_controller import enhanced_two_mode_control
@@ -466,7 +475,9 @@ class acc:
                 system_state.target.speed_kmh,
                 unified_output.get("control_enabled", False),
                 req_torque,
-                req_brake_torque
+                req_brake_torque,
+                inc_req_torque,
+                inc_req_brake_torque
             )
 
     def _get_system_info(self, step_result, manual_input_state):

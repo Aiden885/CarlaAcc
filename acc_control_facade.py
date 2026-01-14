@@ -94,6 +94,10 @@ class ACCControlFacade:
         self.total_processing_time = 0.0
         self.last_processing_time = 0.0
 
+    def reset_sppvt_state(self, reason: str = ""):
+        """仅重置SPPVT状态（不影响Decision状态）"""
+        self.manager.reset_sppvt_state(reason=reason)
+
     # ================================================================
     # 兼容属性
     # ================================================================

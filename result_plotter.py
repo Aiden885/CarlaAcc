@@ -42,6 +42,8 @@ class RealtimeResultPlotter:
         self.target_speeds = deque(maxlen=max_points)
         self.torques = deque(maxlen=max_points)
         self.brake_torques = deque(maxlen=max_points)
+        self.inc_torques = deque(maxlen=max_points)
+        self.inc_brake_torques = deque(maxlen=max_points)
 
         # ACC recording control
         self.acc_started = False  # Only start recording when ACC is enabled
@@ -69,7 +71,8 @@ class RealtimeResultPlotter:
     def add_data(self, desired_gap: float, actual_gap: float, timestamp: float,
                  ego_speed: float = 0.0, target_speed: float = 0.0,
                  control_enabled: bool = False,
-                 request_torque: float = 0.0, request_brake_torque: float = 0.0) -> None:
+                 request_torque: float = 0.0, request_brake_torque: float = 0.0,
+                 incremental_torque: float = 0.0, incremental_brake_torque: float = 0.0) -> None:
         """Push a new sample into the queue from the producer thread.
 
         Args:
@@ -81,6 +84,8 @@ class RealtimeResultPlotter:
             control_enabled: ACC控制是否开启
             request_torque: 请求发动机扭矩 (Nm, 正值，加速时)
             request_brake_torque: 请求制动扭矩 (Nm, 正值，制动时)
+            incremental_torque: 增量控制扭矩 (Nm, 正值，加速时)
+            incremental_brake_torque: 增量控制制动扭矩 (Nm, 正值，制动时)
         """
         # Only start recording after ACC is enabled
         if not self.acc_started:
@@ -92,12 +97,14 @@ class RealtimeResultPlotter:
 
         try:
             self.data_queue.put_nowait((desired_gap, actual_gap, ego_speed, target_speed, control_enabled,
-                                        request_torque, request_brake_torque))
+                                        request_torque, request_brake_torque,
+                                        incremental_torque, incremental_brake_torque))
         except queue.Full:
             try:
                 self.data_queue.get_nowait()
                 self.data_queue.put_nowait((desired_gap, actual_gap, ego_speed, target_speed, control_enabled,
-                                            request_torque, request_brake_torque))
+                                            request_torque, request_brake_torque,
+                                            incremental_torque, incremental_brake_torque))
             except queue.Empty:
                 pass
 
@@ -160,6 +167,8 @@ class RealtimeResultPlotter:
         target_speeds = np.asarray(self.target_speeds, dtype=float)
         torques = np.asarray(self.torques, dtype=float)
         brake_torques = np.asarray(self.brake_torques, dtype=float)
+        inc_torques = np.asarray(self.inc_torques, dtype=float)
+        inc_brake_torques = np.asarray(self.inc_brake_torques, dtype=float)
 
         # MATLAB经典配色
         color_desired = "#0072BD"  # MATLAB蓝色
@@ -227,7 +236,9 @@ class RealtimeResultPlotter:
 
         # 子图4：请求扭矩
         ax4.plot(steps, torques, color="#1f77b4", linewidth=2.0,
-                label="Request Torque", marker='o', markersize=2, markevery=10)
+                label="SPPVT Torque", marker='o', markersize=2, markevery=10)
+        ax4.plot(steps, inc_torques, color="#2ca02c", linewidth=2.0, linestyle="--",
+                label="Incremental Torque", marker='x', markersize=2, markevery=10)
         ax4.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
         ax4.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         ax4.set_ylabel("Torque (Nm)", color=text_color, fontsize=11, fontweight='bold')
@@ -237,7 +248,9 @@ class RealtimeResultPlotter:
 
         # 子图5：请求制动扭矩
         ax5.plot(steps, brake_torques, color="#d62728", linewidth=2.0,
-                label="Request Brake Torque", marker='s', markersize=2, markevery=10)
+                label="SPPVT Brake Torque", marker='s', markersize=2, markevery=10)
+        ax5.plot(steps, inc_brake_torques, color="#9467bd", linewidth=2.0, linestyle="--",
+                label="Incremental Brake Torque", marker='x', markersize=2, markevery=10)
         ax5.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
         ax5.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         ax5.set_ylabel("Brake Torque (Nm)", color=text_color, fontsize=11, fontweight='bold')
@@ -285,7 +298,8 @@ class RealtimeResultPlotter:
                 # Write header
                 writer.writerow(['Step', 'Desired Gap (s)', 'Actual Gap (s)',
                                  'Error (s)', 'Ego Speed (km/h)', 'Target Speed (km/h)',
-                                 'Req Torque (Nm)', 'Req Brake Torque (Nm)'])
+                                 'SPPVT Torque (Nm)', 'SPPVT Brake Torque (Nm)',
+                                 'Incremental Torque (Nm)', 'Incremental Brake Torque (Nm)'])
                 # Write data
                 for i in range(len(self.steps)):
                     writer.writerow([
@@ -296,7 +310,9 @@ class RealtimeResultPlotter:
                         self.ego_speeds[i],
                         self.target_speeds[i],
                         self.torques[i],
-                        self.brake_torques[i]
+                        self.brake_torques[i],
+                        self.inc_torques[i],
+                        self.inc_brake_torques[i]
                     ])
             print(f"✅ CSV数据已保存: {csv_filename}")
         except Exception as e:
@@ -405,7 +421,11 @@ class RealtimeResultPlotter:
 
         # 子图4：请求扭矩
         self.line_torque, = self.ax4.plot(
-            [], [], color="#1f77b4", linewidth=2.0, label="Request Torque", marker='o', markersize=2, markevery=10
+            [], [], color="#1f77b4", linewidth=2.0, label="SPPVT Torque", marker='o', markersize=2, markevery=10
+        )
+        self.line_torque_inc, = self.ax4.plot(
+            [], [], color="#2ca02c", linewidth=2.0, linestyle="--",
+            label="Incremental Torque", marker='x', markersize=2, markevery=10
         )
         self.ax4.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
         self.ax4.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
@@ -419,7 +439,11 @@ class RealtimeResultPlotter:
 
         # 子图5：请求制动扭矩
         self.line_brake_torque, = self.ax5.plot(
-            [], [], color="#d62728", linewidth=2.0, label="Request Brake Torque", marker='s', markersize=2, markevery=10
+            [], [], color="#d62728", linewidth=2.0, label="SPPVT Brake Torque", marker='s', markersize=2, markevery=10
+        )
+        self.line_brake_torque_inc, = self.ax5.plot(
+            [], [], color="#9467bd", linewidth=2.0, linestyle="--",
+            label="Incremental Brake Torque", marker='x', markersize=2, markevery=10
         )
         self.ax5.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
         self.ax5.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
@@ -462,12 +486,16 @@ class RealtimeResultPlotter:
         while not self.data_queue.empty() and data_count < 50:
             try:
                 item = self.data_queue.get_nowait()
-                if len(item) == 7:
+                if len(item) == 9:
+                    desired, actual, ego_speed, target_speed, control_enabled, req_torque, req_brake_torque, inc_torque, inc_brake_torque = item
+                elif len(item) == 7:
                     desired, actual, ego_speed, target_speed, control_enabled, req_torque, req_brake_torque = item
+                    inc_torque, inc_brake_torque = 0.0, 0.0
                 else:
                     # 兼容旧格式
                     desired, actual, ego_speed, target_speed, control_enabled = item
                     req_torque, req_brake_torque = 0.0, 0.0
+                    inc_torque, inc_brake_torque = 0.0, 0.0
             except queue.Empty:
                 break
 
@@ -480,6 +508,8 @@ class RealtimeResultPlotter:
             self.target_speeds.append(target_speed)
             self.torques.append(req_torque)
             self.brake_torques.append(req_brake_torque)
+            self.inc_torques.append(inc_torque)
+            self.inc_brake_torques.append(inc_brake_torque)
 
             self.current_step += 1
             self.total_points += 1
@@ -498,6 +528,8 @@ class RealtimeResultPlotter:
         # 转换为numpy数组
         torques_array = np.asarray(self.torques, dtype=float)
         brake_torques_array = np.asarray(self.brake_torques, dtype=float)
+        inc_torques_array = np.asarray(self.inc_torques, dtype=float)
+        inc_brake_torques_array = np.asarray(self.inc_brake_torques, dtype=float)
 
         # 更新所有曲线数据
         self.line_desired.set_data(steps, desired)
@@ -507,6 +539,8 @@ class RealtimeResultPlotter:
         self.line_target_speed.set_data(steps, target_speeds)
         self.line_torque.set_data(steps, torques_array)
         self.line_brake_torque.set_data(steps, brake_torques_array)
+        self.line_torque_inc.set_data(steps, inc_torques_array)
+        self.line_brake_torque_inc.set_data(steps, inc_brake_torques_array)
 
         # Set X-axis limits
         x_left, x_right = 0, 1
@@ -567,11 +601,16 @@ class RealtimeResultPlotter:
                 self.ax3.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
 
         # Set torque Y-axis limits (子图4)
-        if self.torques and steps.size:
+        if (self.torques or self.inc_torques) and steps.size:
             torques_arr = np.asarray(self.torques, dtype=float)
-            if torques_arr.size:
-                t_min = float(np.nanmin(torques_arr))
-                t_max = float(np.nanmax(torques_arr))
+            inc_torques_arr = np.asarray(self.inc_torques, dtype=float)
+            if torques_arr.size or inc_torques_arr.size:
+                if torques_arr.size and inc_torques_arr.size:
+                    combined_torque = np.concatenate([torques_arr, inc_torques_arr])
+                else:
+                    combined_torque = torques_arr if torques_arr.size else inc_torques_arr
+                t_min = float(np.nanmin(combined_torque))
+                t_max = float(np.nanmax(combined_torque))
                 if np.isfinite(t_min) and np.isfinite(t_max):
                     if np.isclose(t_min, t_max):
                         span = max(abs(t_min) * 0.1, 10.0)
@@ -585,11 +624,16 @@ class RealtimeResultPlotter:
                     self.ax4.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
 
         # Set brake torque Y-axis limits (子图5)
-        if self.brake_torques and steps.size:
+        if (self.brake_torques or self.inc_brake_torques) and steps.size:
             brake_torques_arr = np.asarray(self.brake_torques, dtype=float)
-            if brake_torques_arr.size:
-                bt_min = float(np.nanmin(brake_torques_arr))
-                bt_max = float(np.nanmax(brake_torques_arr))
+            inc_brake_torques_arr = np.asarray(self.inc_brake_torques, dtype=float)
+            if brake_torques_arr.size or inc_brake_torques_arr.size:
+                if brake_torques_arr.size and inc_brake_torques_arr.size:
+                    combined_brake = np.concatenate([brake_torques_arr, inc_brake_torques_arr])
+                else:
+                    combined_brake = brake_torques_arr if brake_torques_arr.size else inc_brake_torques_arr
+                bt_min = float(np.nanmin(combined_brake))
+                bt_max = float(np.nanmax(combined_brake))
                 if np.isfinite(bt_min) and np.isfinite(bt_max):
                     if np.isclose(bt_min, bt_max):
                         span = max(abs(bt_min) * 0.1, 10.0)
@@ -604,4 +648,5 @@ class RealtimeResultPlotter:
 
         return (self.line_desired, self.line_actual, self.line_error,
                 self.line_ego_speed, self.line_target_speed,
-                self.line_torque, self.line_brake_torque)
+                self.line_torque, self.line_torque_inc,
+                self.line_brake_torque, self.line_brake_torque_inc)

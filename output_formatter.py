@@ -174,7 +174,7 @@ class OutputFormatter:
             'sppvt_control_output',       # 控制输出（SPPVT计算的目标加速度）
             'sppvt_velocity_output',      # 误差导数（速度）
             'sppvt_acceleration_output',  # 误差二阶导数（加速度）
-            'sppvt_jerk_output',          # 加加速度（Jerk）
+            'sppvt_enhanced_error',       # 增强误差 e_i(k)
             'sppvt_status_output',        # should_upgrade 标志
         ]
         for name in simulink_sppvt_fields:

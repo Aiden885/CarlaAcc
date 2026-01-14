@@ -58,7 +58,7 @@ class ACCConfig:
         # 固定生成点 (Town04默认位置)
         self.spawn_location = carla.Location(x=2275.941650, y=-1905.315552, z=-0.000444)
         self.spawn_z_offset = 0.1  # 生成高度偏移，避免掉落
-        self.ego_spawn_distance = 100.0  # 自车生成距离（米，目标车后方） 切入50.0
+        self.ego_spawn_distance = 50.0  # 自车生成距离（米，目标车后方） 切入50.0
 
         # ========== Traffic Manager配置 ==========
         self.tm_port = 8000
@@ -78,7 +78,7 @@ class ACCConfig:
 
         # ========== ACC系统参数 ==========
         self.acc_params = {
-            'V_target_kmh': 50.0,      # 默认巡航速度
+            'V_target_kmh': 150.0,      # 默认巡航速度
             'V_min_kmh': 20.0,         # 最小速度阈值
             'G2_s': 4.0,               # 时距参数
             'V_threshold_kmh': 50.0,   # 模式切换阈值
@@ -93,7 +93,7 @@ class ACCConfig:
             'max_decel': -4.56,    # 基于 CARLA Audi e-tron 真实测量的理论最大减速度
             'delta': 0.05,
             'eta': 0.2,
-            'sppvt_rho': 0.2,
+            'sppvt_rho': 0.4,
             'upgrade_cooldown_frames': 4,  # 升级冷却周期（帧数），防止连续升级
         }
         self.integrated_sppvt_rho = self.sppvt_params['sppvt_rho']
@@ -124,8 +124,8 @@ class ACCConfig:
         # SPPVT 输出缩放系数（调试用的KP增益）
         # 注意：SPPVT输出的是扭矩（无量纲），这些系数用于缩放到实际发动机扭矩
         # 作用：方便在Python端调试控制增益，无需修改Simulink模型
-        self.sppvt_accel_scale = 210.0   # 加速缩放增益：SPPVT扭矩 → 发动机扭矩 (N·m)
-        self.sppvt_decel_scale = 210.0   # 减速缩放增益：SPPVT扭矩 → 发动机扭矩 (N·m)
+        self.sppvt_accel_scale = 1010.0   # 加速缩放增益：SPPVT扭矩 → 发动机扭矩 (N·m)
+        self.sppvt_decel_scale = 1010.0   # 减速缩放增益：SPPVT扭矩 → 发动机扭矩 (N·m)
                                           # 调参建议：
                                           # - 如果加速过快/慢，调整 sppvt_accel_scale
                                           # - 如果减速过强/弱，调整 sppvt_decel_scale
@@ -145,14 +145,14 @@ class ACCConfig:
         # 画图模式切换（修改此处切换模式）
         # True  = 结果保存模式 (RealtimeResultPlotter, Step模式, 自动保存图像)
         # False = 实时测试模式 (RealtimeTimeGapPlotter, Time模式, 实时显示)
-        self.use_result_plotter = True
+        self.use_result_plotter = False
 
         # ========== 性能分析配置 ==========
         self.perf_max_samples = 4000          # 性能统计最大样本数（防止内存无限增长）
         self.performance_report_interval = 10.0  # 性能报告输出间隔（秒）
 
         # ========== 手动控制配置 ==========
-        self.manual_throttle_step = 0.1   # 油门累加步长（每帧）
+        self.manual_throttle_step = 0.02  # 油门累加步长（每帧）- 降低5倍，加速更慢
         self.manual_brake_step = 0.2      # 刹车累加步长（每帧）
 
         # ========== CSV记录配置 ==========

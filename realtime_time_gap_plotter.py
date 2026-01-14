@@ -38,6 +38,8 @@ class RealtimeTimeGapPlotter:
         self.target_speeds = deque(maxlen=max_points)  # 前车速度
         self.torques = deque(maxlen=max_points)  # 请求发动机扭矩（正值，Nm）
         self.brake_torques = deque(maxlen=max_points)  # 请求制动扭矩（正值，Nm）
+        self.inc_torques = deque(maxlen=max_points)  # 增量控制扭矩（正值，Nm）
+        self.inc_brake_torques = deque(maxlen=max_points)  # 增量控制制动扭矩（正值，Nm）
         self.control_enabled_states = deque(maxlen=max_points)  # ACC控制状态
 
         # 垂直线标记（用于标记control_enabled开启时刻）
@@ -65,7 +67,8 @@ class RealtimeTimeGapPlotter:
     def add_data(self, desired_gap: float, actual_gap: float, timestamp: float,
                  ego_speed: float = 0.0, target_speed: float = 0.0,
                  control_enabled: bool = False,
-                 request_torque: float = 0.0, request_brake_torque: float = 0.0) -> None:
+                 request_torque: float = 0.0, request_brake_torque: float = 0.0,
+                 incremental_torque: float = 0.0, incremental_brake_torque: float = 0.0) -> None:
         """Push a new sample into the queue from the producer thread.
 
         Args:
@@ -77,15 +80,19 @@ class RealtimeTimeGapPlotter:
             control_enabled: ACC控制是否开启
             request_torque: 请求发动机扭矩 (Nm, 正值，加速时)
             request_brake_torque: 请求制动扭矩 (Nm, 正值，制动时)
+            incremental_torque: 增量控制扭矩 (Nm, 正值，加速时)
+            incremental_brake_torque: 增量控制制动扭矩 (Nm, 正值，制动时)
         """
         try:
             self.data_queue.put_nowait((desired_gap, actual_gap, timestamp, ego_speed,
-                                        target_speed, control_enabled, request_torque, request_brake_torque))
+                                        target_speed, control_enabled, request_torque, request_brake_torque,
+                                        incremental_torque, incremental_brake_torque))
         except queue.Full:
             try:
                 self.data_queue.get_nowait()
                 self.data_queue.put_nowait((desired_gap, actual_gap, timestamp, ego_speed,
-                                            target_speed, control_enabled, request_torque, request_brake_torque))
+                                            target_speed, control_enabled, request_torque, request_brake_torque,
+                                            incremental_torque, incremental_brake_torque))
             except queue.Empty:
                 pass
 
@@ -201,7 +208,11 @@ class RealtimeTimeGapPlotter:
 
         # 子图4：请求扭矩
         self.line_torque, = self.ax4.plot(
-            [], [], color="#1f77b4", linewidth=2.0, label="Request Torque", marker='o', markersize=2, markevery=10
+            [], [], color="#1f77b4", linewidth=2.0, label="SPPVT Torque", marker='o', markersize=2, markevery=10
+        )
+        self.line_torque_inc, = self.ax4.plot(
+            [], [], color="#2ca02c", linewidth=2.0, linestyle="--",
+            label="Incremental Torque", marker='x', markersize=2, markevery=10
         )
         self.ax4.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
         self.ax4.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
@@ -215,7 +226,11 @@ class RealtimeTimeGapPlotter:
 
         # 子图5：请求制动扭矩
         self.line_brake_torque, = self.ax5.plot(
-            [], [], color="#d62728", linewidth=2.0, label="Request Brake Torque", marker='s', markersize=2, markevery=10
+            [], [], color="#d62728", linewidth=2.0, label="SPPVT Brake Torque", marker='s', markersize=2, markevery=10
+        )
+        self.line_brake_torque_inc, = self.ax5.plot(
+            [], [], color="#9467bd", linewidth=2.0, linestyle="--",
+            label="Incremental Brake Torque", marker='x', markersize=2, markevery=10
         )
         self.ax5.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
         self.ax5.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
@@ -307,21 +322,27 @@ class RealtimeTimeGapPlotter:
             try:
                 data_item = self.data_queue.get_nowait()
                 # 兼容新旧数据格式
-                if len(data_item) == 8:
+                if len(data_item) == 10:
+                    desired, actual, timestamp, ego_speed, target_speed, control_enabled, req_torque, req_brake_torque, inc_torque, inc_brake_torque = data_item
+                elif len(data_item) == 8:
                     desired, actual, timestamp, ego_speed, target_speed, control_enabled, req_torque, req_brake_torque = data_item
+                    inc_torque, inc_brake_torque = 0.0, 0.0
                 elif len(data_item) == 6:
                     desired, actual, timestamp, ego_speed, target_speed, control_enabled = data_item
                     req_torque, req_brake_torque = 0.0, 0.0
+                    inc_torque, inc_brake_torque = 0.0, 0.0
                 elif len(data_item) == 5:
                     desired, actual, timestamp, ego_speed, target_speed = data_item
                     control_enabled = False
                     req_torque, req_brake_torque = 0.0, 0.0
+                    inc_torque, inc_brake_torque = 0.0, 0.0
                 else:
                     # 旧格式，只有3个值
                     desired, actual, timestamp = data_item
                     ego_speed, target_speed = 0.0, 0.0
                     control_enabled = False
                     req_torque, req_brake_torque = 0.0, 0.0
+                    inc_torque, inc_brake_torque = 0.0, 0.0
             except queue.Empty:
                 break
 
@@ -333,6 +354,8 @@ class RealtimeTimeGapPlotter:
             self.target_speeds.append(target_speed)
             self.torques.append(req_torque)
             self.brake_torques.append(req_brake_torque)
+            self.inc_torques.append(inc_torque)
+            self.inc_brake_torques.append(inc_brake_torque)
             self.control_enabled_states.append(control_enabled)
 
             self.total_points += 1
@@ -349,6 +372,8 @@ class RealtimeTimeGapPlotter:
         target_speeds = np.asarray(self.target_speeds, dtype=float)
         torques = np.asarray(self.torques, dtype=float)
         brake_torques = np.asarray(self.brake_torques, dtype=float)
+        inc_torques = np.asarray(self.inc_torques, dtype=float)
+        inc_brake_torques = np.asarray(self.inc_brake_torques, dtype=float)
         control_states = np.asarray(self.control_enabled_states, dtype=bool)
 
         self.line_desired.set_data(ts, desired)
@@ -358,6 +383,8 @@ class RealtimeTimeGapPlotter:
         self.line_target_speed.set_data(ts, target_speeds)
         self.line_torque.set_data(ts, torques)
         self.line_brake_torque.set_data(ts, brake_torques)
+        self.line_torque_inc.set_data(ts, inc_torques)
+        self.line_brake_torque_inc.set_data(ts, inc_brake_torques)
 
         # 检测control_enabled从False变True的时刻，画垂直虚线
         if len(control_states) > 1:
@@ -479,13 +506,18 @@ class RealtimeTimeGapPlotter:
                     self.ax3.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
 
         # Set torque Y-axis limits using ONLY visible data (子图4)
-        if torques.size and ts.size:
+        if (torques.size or inc_torques.size) and ts.size:
             visible_mask = (ts >= x_left) & (ts <= x_right)
             if np.any(visible_mask):
                 vis_torque = torques[visible_mask]
-                if vis_torque.size:
-                    t_min = float(np.nanmin(vis_torque))
-                    t_max = float(np.nanmax(vis_torque))
+                vis_inc_torque = inc_torques[visible_mask]
+                if vis_torque.size or vis_inc_torque.size:
+                    if vis_torque.size and vis_inc_torque.size:
+                        combined_torque = np.concatenate([vis_torque, vis_inc_torque])
+                    else:
+                        combined_torque = vis_torque if vis_torque.size else vis_inc_torque
+                    t_min = float(np.nanmin(combined_torque))
+                    t_max = float(np.nanmax(combined_torque))
                     if np.isfinite(t_min) and np.isfinite(t_max):
                         if np.isclose(t_min, t_max):
                             span = max(abs(t_min) * 0.1, 10.0)
@@ -499,13 +531,18 @@ class RealtimeTimeGapPlotter:
                         self.ax4.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
 
         # Set brake torque Y-axis limits using ONLY visible data (子图5)
-        if brake_torques.size and ts.size:
+        if (brake_torques.size or inc_brake_torques.size) and ts.size:
             visible_mask = (ts >= x_left) & (ts <= x_right)
             if np.any(visible_mask):
                 vis_brake_torque = brake_torques[visible_mask]
-                if vis_brake_torque.size:
-                    bt_min = float(np.nanmin(vis_brake_torque))
-                    bt_max = float(np.nanmax(vis_brake_torque))
+                vis_inc_brake = inc_brake_torques[visible_mask]
+                if vis_brake_torque.size or vis_inc_brake.size:
+                    if vis_brake_torque.size and vis_inc_brake.size:
+                        combined_brake = np.concatenate([vis_brake_torque, vis_inc_brake])
+                    else:
+                        combined_brake = vis_brake_torque if vis_brake_torque.size else vis_inc_brake
+                    bt_min = float(np.nanmin(combined_brake))
+                    bt_max = float(np.nanmax(combined_brake))
                     if np.isfinite(bt_min) and np.isfinite(bt_max):
                         if np.isclose(bt_min, bt_max):
                             span = max(abs(bt_min) * 0.1, 10.0)
@@ -520,4 +557,5 @@ class RealtimeTimeGapPlotter:
 
         return (self.line_desired, self.line_actual, self.line_error,
                 self.line_ego_speed, self.line_target_speed,
-                self.line_torque, self.line_brake_torque)
+                self.line_torque, self.line_torque_inc,
+                self.line_brake_torque, self.line_brake_torque_inc)

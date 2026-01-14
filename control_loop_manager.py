@@ -93,6 +93,8 @@ class ControlLoopManager:
         # 更新仿真时间
         self.system_state.sim_elapsed_s += self.config.fixed_delta_seconds
         self.system_state.frame_count += 1
+        prev_has_target = self.system_state.perception.has_target
+        prev_control_mode_flag = self.system_state.perception.control_mode_flag
 
         # 1. 更新场景（切入/切出）
         self._update_scenarios(self.system_state.sim_elapsed_s)
@@ -102,6 +104,7 @@ class ControlLoopManager:
 
         # 3. 感知环境
         perception_data = self._perceive_environment()
+        self._handle_target_or_mode_switch(prev_has_target, prev_control_mode_flag, perception_data)
         self.system_state.perception = perception_data
 
         # 4. 更新车辆状态
@@ -264,6 +267,30 @@ class ControlLoopManager:
             control_mode_flag=enhanced_output['control_mode_flag'],
             control_mode_name=control_mode_name
         )
+
+    def _handle_target_or_mode_switch(
+        self,
+        prev_has_target: bool,
+        prev_control_mode_flag: int,
+        perception_data: PerceptionData
+    ):
+        """目标丢失或模式切换时，重置SPPVT和增量控制状态"""
+        lost_target = prev_has_target and not perception_data.has_target
+        time_to_speed = prev_control_mode_flag == 1 and perception_data.control_mode_flag == 2
+
+        if not (lost_target or time_to_speed):
+            return
+
+        reasons = []
+        if lost_target:
+            reasons.append("lost_target")
+        if time_to_speed:
+            reasons.append("time_to_speed")
+        reason_str = ",".join(reasons)
+
+        print(f"[控制重置] 触发重置: {reason_str}")
+        self._reset_incremental_control()
+        self.acc_controller.reset_sppvt_state(reason=reason_str)
 
     def _update_vehicle_states(self):
         """更新车辆状态"""
@@ -438,46 +465,83 @@ class ControlLoopManager:
 
         return steer_output
 
+    def _estimate_current_torque(self) -> float:
+        """估算当前扭矩（用于增量控制初始化）"""
+        current_throttle = self.system_state.ego.throttle
+        current_brake = self.system_state.ego.brake
+
+        if current_throttle > 0:
+            # 估算加速扭矩
+            return current_throttle * 749.0
+        elif current_brake > 0:
+            # 估算刹车扭矩（负值）
+            return -current_brake * 100.0
+        else:
+            return 0.0
+
+    def _reset_incremental_control(self):
+        """复位增量控制状态"""
+        self.system_state.acc.incremental_control.reset()
+        self.system_state.acc.incremental_torque_nm = 0.0
+
     def _compute_longitudinal_control(self, unified_output: dict, perception_data: PerceptionData) -> Tuple[float, float]:
         """计算纵向控制（油门/刹车）"""
-        # SPPVT输出：扭矩（无量纲），需要缩放到实际发动机扭矩
-        control_output = unified_output.get('sppvt_control_output', 0.0)
+        # 获取增强误差 e_i(k)
+        e_i_current = unified_output.get('sppvt_enhanced_error', 0.0)
         control_mode_flag = perception_data.control_mode_flag
 
-        # 符号转换（根据控制模式调整符号）
-        if control_mode_flag == 1:  # TIME模式
-            sppvt_torque_demand = -control_output
-        elif control_mode_flag == 2:  # SPEED模式
-            sppvt_torque_demand = control_output
-        else:
-            sppvt_torque_demand = control_output
+        # TIME模式下误差符号需要反转：正误差代表过近，应输出制动
+        if control_mode_flag == 1:
+            e_i_current = -e_i_current
 
-        # SPPVT输出缩放（调试用的KP增益）
-        # 注意：sppvt_accel_scale/sppvt_decel_scale 是缩放增益，不是单位转换
-        if sppvt_torque_demand >= 0:
-            # 加速：缩放到发动机扭矩
-            sppvt_engine_torque = sppvt_torque_demand * self.config.sppvt_accel_scale
+        # 增量控制
+        inc_state = self.system_state.acc.incremental_control
+        e_i_prev = inc_state.e_i_prev
+
+        if not inc_state.is_initialized:
+            # 初始化：Y(0) = Y_act(0)
+            Y_current = self._estimate_current_torque()
+            e_i_prev = e_i_current
+            inc_state.Y_prev = Y_current
+            inc_state.e_i_prev = e_i_current
+            inc_state.is_initialized = True
+            delta_e = 0.0
+            delta_Y = 0.0
         else:
-            # 减速：缩放到发动机扭矩
-            sppvt_engine_torque = sppvt_torque_demand * self.config.sppvt_decel_scale
+            # 迭代：Y(k) = Y(k-1) + K_p * [e_i(k) - e_i(k-1)]
+            delta_e = e_i_current - inc_state.e_i_prev
+            delta_Y = self.config.sppvt_accel_scale * delta_e
+            Y_current = inc_state.Y_prev + delta_Y
+
+            # 更新状态
+            inc_state.Y_prev = Y_current
+            inc_state.e_i_prev = e_i_current
+
+        # 每帧输出增量控制调试信息
+        print(f"[增量控制] Frame={self.system_state.frame_count}, "
+              f"e_i(k)={e_i_current:.3f}, e_i(k-1)={e_i_prev:.3f}, "
+              f"Δe={delta_e:.3f}, ΔY={delta_Y:.2f}Nm, Y={Y_current:.2f}Nm")
+
+        # 保存当前扭矩估计，供绘图对比使用
+        self.system_state.acc.incremental_torque_nm = Y_current
 
         # 扭矩转油门/刹车
         if self.config.use_torque_converter:
             throttle, brake = self.resources.torque_converter.engine_torque_to_throttle(
-                sppvt_engine_torque,
+                Y_current,
                 self.system_state.ego.speed_kmh
             )
             # 防止同时有油门和刹车
-            if sppvt_torque_demand >= 0:
+            if Y_current >= 0:
                 brake = 0.0
         else:
             # 简化映射
-            if sppvt_engine_torque > 0:
-                throttle = min(sppvt_engine_torque / 749.0, 1.0)
+            if Y_current > 0:
+                throttle = min(Y_current / 749.0, 1.0)
                 brake = 0.0
             else:
                 throttle = 0.0
-                brake = min(abs(sppvt_engine_torque) / 100.0, 1.0)
+                brake = min(abs(Y_current) / 100.0, 1.0)
 
         return throttle, brake
 
@@ -511,7 +575,8 @@ class ControlLoopManager:
             'lane_offset': perception_data.lane_offset,
             'control_error': perception_data.control_error,
             'control_mode_flag': perception_data.control_mode_flag,
-            'control_mode_name': perception_data.control_mode_name
+            'control_mode_name': perception_data.control_mode_name,
+            'incremental_torque_nm': self.system_state.acc.incremental_torque_nm
         }
 
     def get_acc_params(self) -> dict:
@@ -523,6 +588,7 @@ class ControlLoopManager:
         self.system_state.acc.system_enabled = enabled
         if not enabled:
             self.acc_controller.reset()
+            self._reset_incremental_control()
 
     def trigger_ramp_speed(self):
         """触发前车斜坡速度"""
