@@ -129,6 +129,7 @@ class acc:
         # ========== 11. 运行状态 ==========
         self.running = True
         self.start_time = None
+        self._cleanup_done = False
 
         print("\n" + "=" * 80)
         print("[完成] ACC系统初始化完成")
@@ -237,6 +238,8 @@ class acc:
                 t0 = time.time()
                 self._handle_display_events()
                 perf_times["1_events"].append(time.time() - t0)
+                if not self.running:
+                    break
 
                 # 2. 更新手动输入
                 t0 = time.time()
@@ -336,6 +339,10 @@ class acc:
 
         if event_type == "quit":
             self.running = False
+
+        elif event_type == "force_quit":
+            self.running = False
+            print("[操作] 请求清理并退出")
 
         elif event_type == "acc_toggle":
             current_state = self.control_loop_manager.system_state.acc.system_enabled
@@ -561,6 +568,9 @@ class acc:
 
     def destroy(self):
         """清理资源（使用ResourceManager）"""
+        if self._cleanup_done:
+            return
+        self._cleanup_done = True
         self.resource_manager.cleanup_all()
 
     # === 向后兼容的接口方法 ===

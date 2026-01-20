@@ -56,6 +56,10 @@ class InputManager:
         if key_code == K_ESCAPE:
             return {'type': 'quit'}
 
+        # BACKSPACE: 强制清理并退出
+        elif key_code == K_BACKSPACE:
+            return {'type': 'force_quit'}
+
         # 空格: ACC主开关（带去抖动）
         elif key_code == K_SPACE:
             current_time = time.time()

@@ -155,6 +155,7 @@ class DisplayManager:
             "",
             "System:",
             "  ESC : Quit",
+            "  BACKSPACE : Cleanup & Quit",
         ]
 
     def init_camera_manager(self, parent_actor):

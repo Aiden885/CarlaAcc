@@ -2,18 +2,16 @@
 资源管理器
 统一管理所有需要清理的资源，确保程序退出时资源正确释放
 """
-from abc import ABC, abstractmethod
-from typing import List, Callable
+from typing import List, Callable, Protocol
 import carla
 
 
-class Cleanable(ABC):
-    """可清理资源的抽象接口"""
+class Cleanable(Protocol):
+    """可清理资源的结构化接口（只要有cleanup方法即可）"""
 
-    @abstractmethod
-    def cleanup(self):
+    def cleanup(self) -> None:
         """清理资源"""
-        pass
+        ...
 
 
 class ResourceManager:

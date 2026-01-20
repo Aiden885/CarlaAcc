@@ -36,8 +36,6 @@ class RealtimeTimeGapPlotter:
         self.errors = deque(maxlen=max_points)
         self.ego_speeds = deque(maxlen=max_points)  # 自车速度
         self.target_speeds = deque(maxlen=max_points)  # 前车速度
-        self.torques = deque(maxlen=max_points)  # 请求发动机扭矩（正值，Nm）
-        self.brake_torques = deque(maxlen=max_points)  # 请求制动扭矩（正值，Nm）
         self.inc_torques = deque(maxlen=max_points)  # 增量控制扭矩（正值，Nm）
         self.inc_brake_torques = deque(maxlen=max_points)  # 增量控制制动扭矩（正值，Nm）
         self.control_enabled_states = deque(maxlen=max_points)  # ACC控制状态
@@ -78,8 +76,8 @@ class RealtimeTimeGapPlotter:
             ego_speed: 自车速度 (km/h)
             target_speed: 前车速度 (km/h)
             control_enabled: ACC控制是否开启
-            request_torque: 请求发动机扭矩 (Nm, 正值，加速时)
-            request_brake_torque: 请求制动扭矩 (Nm, 正值，制动时)
+            request_torque: 请求发动机扭矩 (Nm, 正值，加速时，当前不再保存)
+            request_brake_torque: 请求制动扭矩 (Nm, 正值，制动时，当前不再保存)
             incremental_torque: 增量控制扭矩 (Nm, 正值，加速时)
             incremental_brake_torque: 增量控制制动扭矩 (Nm, 正值，制动时)
         """
@@ -206,37 +204,31 @@ class RealtimeTimeGapPlotter:
             loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
         )
 
-        # 子图4：请求扭矩
-        self.line_torque, = self.ax4.plot(
-            [], [], color="#1f77b4", linewidth=2.0, label="SPPVT Torque", marker='o', markersize=2, markevery=10
-        )
+        # 子图4：增量扭矩
         self.line_torque_inc, = self.ax4.plot(
             [], [], color="#2ca02c", linewidth=2.0, linestyle="--",
-            label="Incremental Torque", marker='x', markersize=2, markevery=10
+            label="Inc Torque", marker='x', markersize=2, markevery=10
         )
         self.ax4.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
         self.ax4.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         self.ax4.set_ylabel("Torque (Nm)", color=text_color, fontsize=11, fontweight='bold')
         self.ax4.set_title(
-            "Request Engine Torque", color=text_color, fontsize=13, fontweight="bold"
+            "Incremental Engine Torque", color=text_color, fontsize=13, fontweight="bold"
         )
         self.ax4.legend(
             loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
         )
 
-        # 子图5：请求制动扭矩
-        self.line_brake_torque, = self.ax5.plot(
-            [], [], color="#d62728", linewidth=2.0, label="SPPVT Brake Torque", marker='s', markersize=2, markevery=10
-        )
+        # 子图5：增量制动扭矩
         self.line_brake_torque_inc, = self.ax5.plot(
             [], [], color="#9467bd", linewidth=2.0, linestyle="--",
-            label="Incremental Brake Torque", marker='x', markersize=2, markevery=10
+            label="Inc Brake Torque", marker='x', markersize=2, markevery=10
         )
         self.ax5.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
         self.ax5.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         self.ax5.set_ylabel("Brake Torque (Nm)", color=text_color, fontsize=11, fontweight='bold')
         self.ax5.set_title(
-            "Request Brake Torque", color=text_color, fontsize=13, fontweight="bold"
+            "Incremental Brake Torque", color=text_color, fontsize=13, fontweight="bold"
         )
         self.ax5.legend(
             loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
@@ -352,8 +344,6 @@ class RealtimeTimeGapPlotter:
             self.errors.append(actual - desired)
             self.ego_speeds.append(ego_speed)
             self.target_speeds.append(target_speed)
-            self.torques.append(req_torque)
-            self.brake_torques.append(req_brake_torque)
             self.inc_torques.append(inc_torque)
             self.inc_brake_torques.append(inc_brake_torque)
             self.control_enabled_states.append(control_enabled)
@@ -370,8 +360,6 @@ class RealtimeTimeGapPlotter:
         errors = np.asarray(self.errors, dtype=float)
         ego_speeds = np.asarray(self.ego_speeds, dtype=float)
         target_speeds = np.asarray(self.target_speeds, dtype=float)
-        torques = np.asarray(self.torques, dtype=float)
-        brake_torques = np.asarray(self.brake_torques, dtype=float)
         inc_torques = np.asarray(self.inc_torques, dtype=float)
         inc_brake_torques = np.asarray(self.inc_brake_torques, dtype=float)
         control_states = np.asarray(self.control_enabled_states, dtype=bool)
@@ -381,8 +369,6 @@ class RealtimeTimeGapPlotter:
         self.line_error.set_data(ts, errors)
         self.line_ego_speed.set_data(ts, ego_speeds)
         self.line_target_speed.set_data(ts, target_speeds)
-        self.line_torque.set_data(ts, torques)
-        self.line_brake_torque.set_data(ts, brake_torques)
         self.line_torque_inc.set_data(ts, inc_torques)
         self.line_brake_torque_inc.set_data(ts, inc_brake_torques)
 
@@ -506,18 +492,13 @@ class RealtimeTimeGapPlotter:
                     self.ax3.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
 
         # Set torque Y-axis limits using ONLY visible data (子图4)
-        if (torques.size or inc_torques.size) and ts.size:
+        if inc_torques.size and ts.size:
             visible_mask = (ts >= x_left) & (ts <= x_right)
             if np.any(visible_mask):
-                vis_torque = torques[visible_mask]
                 vis_inc_torque = inc_torques[visible_mask]
-                if vis_torque.size or vis_inc_torque.size:
-                    if vis_torque.size and vis_inc_torque.size:
-                        combined_torque = np.concatenate([vis_torque, vis_inc_torque])
-                    else:
-                        combined_torque = vis_torque if vis_torque.size else vis_inc_torque
-                    t_min = float(np.nanmin(combined_torque))
-                    t_max = float(np.nanmax(combined_torque))
+                if vis_inc_torque.size:
+                    t_min = float(np.nanmin(vis_inc_torque))
+                    t_max = float(np.nanmax(vis_inc_torque))
                     if np.isfinite(t_min) and np.isfinite(t_max):
                         if np.isclose(t_min, t_max):
                             span = max(abs(t_min) * 0.1, 10.0)
@@ -531,18 +512,13 @@ class RealtimeTimeGapPlotter:
                         self.ax4.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
 
         # Set brake torque Y-axis limits using ONLY visible data (子图5)
-        if (brake_torques.size or inc_brake_torques.size) and ts.size:
+        if inc_brake_torques.size and ts.size:
             visible_mask = (ts >= x_left) & (ts <= x_right)
             if np.any(visible_mask):
-                vis_brake_torque = brake_torques[visible_mask]
                 vis_inc_brake = inc_brake_torques[visible_mask]
-                if vis_brake_torque.size or vis_inc_brake.size:
-                    if vis_brake_torque.size and vis_inc_brake.size:
-                        combined_brake = np.concatenate([vis_brake_torque, vis_inc_brake])
-                    else:
-                        combined_brake = vis_brake_torque if vis_brake_torque.size else vis_inc_brake
-                    bt_min = float(np.nanmin(combined_brake))
-                    bt_max = float(np.nanmax(combined_brake))
+                if vis_inc_brake.size:
+                    bt_min = float(np.nanmin(vis_inc_brake))
+                    bt_max = float(np.nanmax(vis_inc_brake))
                     if np.isfinite(bt_min) and np.isfinite(bt_max):
                         if np.isclose(bt_min, bt_max):
                             span = max(abs(bt_min) * 0.1, 10.0)
@@ -557,5 +533,4 @@ class RealtimeTimeGapPlotter:
 
         return (self.line_desired, self.line_actual, self.line_error,
                 self.line_ego_speed, self.line_target_speed,
-                self.line_torque, self.line_torque_inc,
-                self.line_brake_torque, self.line_brake_torque_inc)
+                self.line_torque_inc, self.line_brake_torque_inc)

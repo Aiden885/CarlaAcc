@@ -124,8 +124,8 @@ class ACCConfig:
         # SPPVT 输出缩放系数（调试用的KP增益）
         # 注意：SPPVT输出的是扭矩（无量纲），这些系数用于缩放到实际发动机扭矩
         # 作用：方便在Python端调试控制增益，无需修改Simulink模型
-        self.sppvt_accel_scale = 1010.0   # 加速缩放增益：SPPVT扭矩 → 发动机扭矩 (N·m)
-        self.sppvt_decel_scale = 1010.0   # 减速缩放增益：SPPVT扭矩 → 发动机扭矩 (N·m)
+        self.sppvt_accel_scale = 510.0   # 加速缩放增益：SPPVT扭矩 → 发动机扭矩 (N·m)
+        self.sppvt_decel_scale = 510.0   # 减速缩放增益：SPPVT扭矩 → 发动机扭矩 (N·m)
                                           # 调参建议：
                                           # - 如果加速过快/慢，调整 sppvt_accel_scale
                                           # - 如果减速过强/弱，调整 sppvt_decel_scale
