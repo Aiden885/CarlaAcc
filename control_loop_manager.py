@@ -22,6 +22,7 @@ from two_mode_controller import (
     set_two_mode_parameters
 )
 from vehicle_utils import VehicleUtils
+from longitudinal_constraint_limiter import LongitudinalConstraintLimiter
 
 
 class ControlLoopManager:
@@ -79,6 +80,12 @@ class ControlLoopManager:
 
         # 前车速度控制状态
         self.last_speed_limit = None
+
+        # 纵向约束限幅器
+        self.longitudinal_limiter = LongitudinalConstraintLimiter(
+            config=self.config,
+            torque_converter=self.resources.torque_converter
+        )
 
     def run_single_step(self, manual_input_state) -> StepResult:
         """
@@ -483,6 +490,7 @@ class ControlLoopManager:
         """复位增量控制状态"""
         self.system_state.acc.incremental_control.reset()
         self.system_state.acc.incremental_torque_nm = 0.0
+        self.longitudinal_limiter.reset()
 
     def _compute_longitudinal_control(self, unified_output: dict, perception_data: PerceptionData) -> Tuple[float, float]:
         """计算纵向控制（油门/刹车）"""
@@ -500,10 +508,8 @@ class ControlLoopManager:
 
         if not inc_state.is_initialized:
             # 初始化：Y(0) = Y_act(0)
-            Y_current = self._estimate_current_torque()
+            raw_torque = self._estimate_current_torque()
             e_i_prev = e_i_current
-            inc_state.Y_prev = Y_current
-            inc_state.e_i_prev = e_i_current
             inc_state.is_initialized = True
             delta_e = 0.0
             delta_Y = 0.0
@@ -511,11 +517,30 @@ class ControlLoopManager:
             # 迭代：Y(k) = Y(k-1) + K_p * [e_i(k) - e_i(k-1)]
             delta_e = e_i_current - inc_state.e_i_prev
             delta_Y = self.config.sppvt_accel_scale * delta_e
-            Y_current = inc_state.Y_prev + delta_Y
+            raw_torque = inc_state.Y_prev + delta_Y
 
-            # 更新状态
-            inc_state.Y_prev = Y_current
-            inc_state.e_i_prev = e_i_current
+        # 纵向约束限幅（优先使用CARLA实测加速度）
+        accel_longitudinal = None
+        try:
+            accel_vec = self.resources.ego_vehicle.get_acceleration()
+            forward_vec = self.resources.ego_vehicle.get_transform().get_forward_vector()
+            accel_longitudinal = (
+                accel_vec.x * forward_vec.x +
+                accel_vec.y * forward_vec.y +
+                accel_vec.z * forward_vec.z
+            )
+        except Exception:
+            accel_longitudinal = None
+
+        Y_current = self.longitudinal_limiter.limit(
+            raw_torque,
+            self.system_state.ego.speed_ms,
+            accel_longitudinal
+        )
+
+        # 更新状态
+        inc_state.Y_prev = Y_current
+        inc_state.e_i_prev = e_i_current
 
         # 每帧输出增量控制调试信息
         print(f"[增量控制] Frame={self.system_state.frame_count}, "
@@ -589,6 +614,8 @@ class ControlLoopManager:
         if not enabled:
             self.acc_controller.reset()
             self._reset_incremental_control()
+        else:
+            self.longitudinal_limiter.reset()
 
     def trigger_ramp_speed(self):
         """触发前车斜坡速度"""

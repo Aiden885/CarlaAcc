@@ -124,12 +124,30 @@ class ACCConfig:
         # SPPVT 输出缩放系数（调试用的KP增益）
         # 注意：SPPVT输出的是扭矩（无量纲），这些系数用于缩放到实际发动机扭矩
         # 作用：方便在Python端调试控制增益，无需修改Simulink模型
-        self.sppvt_accel_scale = 510.0   # 加速缩放增益：SPPVT扭矩 → 发动机扭矩 (N·m)
-        self.sppvt_decel_scale = 510.0   # 减速缩放增益：SPPVT扭矩 → 发动机扭矩 (N·m)
+        self.sppvt_accel_scale = 210.0   # 加速缩放增益：SPPVT扭矩 → 发动机扭矩 (N·m)
+        self.sppvt_decel_scale = 210.0   # 减速缩放增益：SPPVT扭矩 → 发动机扭矩 (N·m)
                                           # 调参建议：
                                           # - 如果加速过快/慢，调整 sppvt_accel_scale
                                           # - 如果减速过强/弱，调整 sppvt_decel_scale
                                           # - 两者可以独立调节，实现不同的加减速特性
+
+        # ========== 纵向约束（国标平均限值） ==========
+        self.enable_longitudinal_constraints = True
+        self.longitudinal_a_max_ms2 = 2.0
+        self.longitudinal_accel_avg_max_ms2 = 2.0
+        self.longitudinal_accel_avg_window_s = 2.0
+        self.longitudinal_accel_soft_alpha = 0.2
+        self.longitudinal_decel_avg_max_ms2 = 3.0
+        self.longitudinal_decel_avg_window_s = 2.0
+        self.longitudinal_decel_jerk_avg_max_ms3 = 2.5
+        self.longitudinal_decel_jerk_avg_window_s = 1.0
+        self.rolling_resistance_coeff = 0.012
+        self.aero_cdA = 0.74
+        self.air_density_kg_m3 = 1.225
+        # 经验值：传动效率（电驱普遍 0.9~0.95），<1 会提高同等加速度下的所需扭矩
+        self.driveline_efficiency = 0.9
+        # 经验值：等效质量系数（考虑车轮/传动惯量等），>1 会提高同等加速度下的所需扭矩
+        self.longitudinal_effective_mass_factor = 1.08
 
         # ========== 斜坡速度控制器配置 ==========
         self.ramp_controller_params = {

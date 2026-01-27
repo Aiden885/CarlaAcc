@@ -1,0 +1,22 @@
+LKS_tcp11_sfun.o
+c3_LKS_tcp11.o
+LKS_tcp11_sfun_registry.o
+half_type.o
+"/home/aiden/snap/code/app/matlab/bin/glnxa64/libmwasynciocoder.so"
+
+"-L/home/aiden/snap/code/app/matlab/bin/glnxa64" "-lmwsf_runtime"
+"-L/home/aiden/snap/code/app/matlab/bin/glnxa64" "-lfixedpoint"
+"-L/home/aiden/snap/code/app/matlab/bin/glnxa64" "-lut"
+"-L/home/aiden/snap/code/app/matlab/bin/glnxa64" "-lemlrt"
+"-L/home/aiden/snap/code/app/matlab/bin/glnxa64" "-lmwstringutil"
+"-L/home/aiden/snap/code/app/matlab/bin/glnxa64" "-lmwmathutil"
+"-L/home/aiden/snap/code/app/matlab/bin/glnxa64" "-lmwblas"
+"-L/home/aiden/snap/code/app/matlab/bin/glnxa64" "-lmwsl_log_load_blocks"
+"-L/home/aiden/snap/code/app/matlab/bin/glnxa64" "-lmwsimulink"
+"-L/home/aiden/snap/code/app/matlab/bin/glnxa64" "-lmwsl_sfcn_cov_bridge"
+"-L/home/aiden/snap/code/app/matlab/bin/glnxa64" "-lcovrt"
+"-L/home/aiden/snap/code/app/matlab/bin/glnxa64" "-lmwlapack"
+"-L/home/aiden/snap/code/app/matlab/bin/glnxa64" "-lmwsl_simtarget_core"
+"-L/home/aiden/snap/code/app/matlab/bin/glnxa64" "-lmwsl_simtarget_instrumentation"
+"-L/home/aiden/snap/code/app/matlab/bin/glnxa64" "-lmwslexec_simlog"
+"-L/home/aiden/snap/code/app/matlab/bin/glnxa64" "-lmwslccrt"
