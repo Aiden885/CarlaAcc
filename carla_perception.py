@@ -9,7 +9,7 @@ import math
 
 
 class CarlaPerception:
-    """使用CARLA API的感知模块（精简版）"""
+    """使用CARLA API的感知模块"""
 
     def __init__(self, world, ego_vehicle, target_vehicle):
         """

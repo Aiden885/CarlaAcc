@@ -56,9 +56,9 @@ class ACCConfig:
         self.cut_out_cut_back_distance_m = 50.0       # 切出车相对前车的后移距离（米）
 
         # 固定生成点 (Town04默认位置)
-        self.spawn_location = carla.Location(x=2275.941650, y=-1905.315552, z=-0.000444)
+        self.spawn_location = carla.Location(x=-937.299377, y=-6110.980957, z=0.5)
         self.spawn_z_offset = 0.1  # 生成高度偏移，避免掉落
-        self.ego_spawn_distance = 50.0  # 自车生成距离（米，目标车后方） 切入50.0
+        self.ego_spawn_distance = 30.0  # 自车生成距离（米，目标车后方） 切入50.0
 
         # ========== Traffic Manager配置 ==========
         self.tm_port = 8000
@@ -67,7 +67,7 @@ class ACCConfig:
 
         # 前车速度控制
         self.assumed_road_speed_limit_kmh = 30.0  # 假设道路限速
-        self.target_speed_kmh = 80.0  # 前车初始目标速度
+        self.target_speed_kmh = 70.0  # 前车初始目标速度
         self.use_constant_velocity = True  # 使用恒速模式（不受路口影响）
 
         # ========== 集成UDP配置 ==========
@@ -163,7 +163,7 @@ class ACCConfig:
         # 画图模式切换（修改此处切换模式）
         # True  = 结果保存模式 (RealtimeResultPlotter, Step模式, 自动保存图像)
         # False = 实时测试模式 (RealtimeTimeGapPlotter, Time模式, 实时显示)
-        self.use_result_plotter = False
+        self.use_result_plotter = True
 
         # ========== 性能分析配置 ==========
         self.perf_max_samples = 4000          # 性能统计最大样本数（防止内存无限增长）
