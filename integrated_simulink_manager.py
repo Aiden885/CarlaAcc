@@ -87,7 +87,6 @@ class IntegratedSimulinkManager:
 
         # ============ reset_flag 检测状态 ============
         self._prev_G2_s = self.params['G2_s']  # 上一帧G2（用于突变检测）
-        self._prev_error_abs = 0.0              # 上一帧误差绝对值（用于突变检测）
         self._reset_pending = False             # 待发送的重置标志（边沿检测触发后设置）
 
         # ============ Y0 计算物理参数 ============
@@ -130,7 +129,7 @@ class IntegratedSimulinkManager:
         self.udp_client = SimulinkUDPClient(
             send_port=self.config.integrated_udp_send_port,
             recv_port=self.config.integrated_udp_recv_port,
-            num_inputs=7,   # Decision 4个 + control_error_signed, Y0, reset_flag
+            num_inputs=11,  # Decision 4 + 原始感知 5 (speed,dist,G2,Vtarget,mode) + Y0 + reset_flag
             num_outputs=6,  # Decision 5个 + control_output
             timeout=self.config.integrated_udp_timeout,
             debug=debug,
@@ -141,7 +140,7 @@ class IntegratedSimulinkManager:
         if self.debug:
             print("✅ 统一Simulink管理器已初始化（新架构）")
             print(f"   UDP: 发送→{self.config.integrated_udp_send_port}(源端口{self.config.integrated_udp_local_send_port}), 接收←{self.config.integrated_udp_recv_port}")
-            print(f"   输入: 7个double (Decision 4 + error/Y0/reset)")
+            print(f"   输入: 11个double (Decision 4 + 原始感知 5 + Y0 + reset)")
             print(f"   输出: 6个double (Decision 5 + control_output)")
         if self._trace_enabled:
             self._init_trace()
@@ -155,8 +154,14 @@ class IntegratedSimulinkManager:
             float(1 if self.decision_state['has_history'] else 0),  # 0.0
             float(self.decision_state['last_active_decision']), # 8.0 (R8待命)
 
-            # SPPVT输入 (5-7)
-            0.0,  # control_error_signed
+            # 原始感知输入 (5-9)
+            0.0,     # ego_speed_ms
+            9999.0,  # vehicle_distance (无目标)
+            float(self.params['G2_s']),              # G2_s
+            float(self.params['V_target_kmh'] / 3.6),  # V_target_ms
+            2.0,     # control_mode_flag (SPEED 模式)
+
+            # 控制参数 (10-11)
             0.0,  # Y0 (初始扭矩)
             1.0   # reset_flag = 1 (初始化时复位)
         ]
@@ -192,27 +197,25 @@ class IntegratedSimulinkManager:
 
         return Y0
 
-    def _calculate_reset_flag(self, control_enabled: bool, current_error: float) -> bool:
+    def _calculate_reset_flag(self, control_enabled: bool) -> bool:
         """
         计算 reset_flag
 
         触发条件：
         1. control_enabled 从 True 变为 False（边沿检测，通过 _reset_pending 标志实现）
         2. G2 参数突变（变化超过阈值）
-        3. 时距误差突变（TIME模式下）
 
         注意：条件1 的边沿检测在 _process_simulink_outputs 中完成，
-             这里只检查 _reset_pending 标志
+             这里只检查 _reset_pending 标志。
+             原条件3（误差突变）已移除，因为误差现在由 Simulink 内部计算。
 
         Args:
             control_enabled: 上一帧的 control_enabled（来自 _last_control_enabled）
-            current_error: 当前帧的控制误差
 
         Returns:
             是否需要复位 SPPVT 状态
         """
         # 条件1: control_enabled 从 True 变为 False（边沿检测）
-        # 注意：边沿检测在 _process_simulink_outputs 中完成，设置 _reset_pending
         if self._reset_pending:
             if self.debug:
                 print(f"🔄 [reset_flag] 控制失效边沿触发重置")
@@ -228,17 +231,6 @@ class IntegratedSimulinkManager:
             if self.debug:
                 print(f"🔄 [reset_flag] G2突变: {self._prev_G2_s:.1f}s → {current_G2_s:.1f}s")
             return True
-
-        # 条件3: 误差突变
-        current_error_abs = abs(current_error)
-        ERROR_JUMP_RATIO = 5.0  # 误差跳变倍数阈值
-
-        if self._prev_error_abs > 0.01:  # 避免除零和小误差噪声
-            error_ratio = current_error_abs / self._prev_error_abs
-            if error_ratio > ERROR_JUMP_RATIO:
-                if self.debug:
-                    print(f"🔄 [reset_flag] 误差突变: {self._prev_error_abs:.2f} → {current_error_abs:.2f} (×{error_ratio:.1f})")
-                return True
 
         return False
 
@@ -403,25 +395,27 @@ class IntegratedSimulinkManager:
 
         新接口：
         1-4: Decision 输入 (current_state, command_type, has_history, last_active_decision)
-        5: control_error_signed（Python已做符号约定）
-        6: Y0（维持当前速度所需扭矩）
-        7: reset_flag（是否需要复位SPPVT状态）
-        """
-        # 获取控制误差（TIME模式下需要反号：正误差代表过近，应输出制动）
-        control_error_signed = input_data['control_error']
-        if int(input_data.get('control_mode_flag', 1)) == 1:
-            control_error_signed = -control_error_signed
+        5-9: 原始感知输入 (ego_speed_ms, vehicle_distance, G2_s, V_target_ms, control_mode_flag)
+        10:  Y0（维持当前速度所需扭矩，Python计算）
+        11:  reset_flag（是否需要复位SPPVT状态，Python计算）
 
-        # 计算 Y0（基于当前车速）
+        误差计算已迁移到 Simulink 内部的 Error_Calculation 子系统。
+        """
+        # 获取原始感知数据
         speed_ms = input_data.get('ego_speed_ms', input_data.get('ego_speed_kmh', 0.0) / 3.6)
+        vehicle_distance = input_data.get('vehicle_distance', 9999.0)
+        G2_s = float(self.params['G2_s'])
+        V_target_ms = float(self.params['V_target_kmh'] / 3.6)
+        control_mode_flag = float(input_data.get('control_mode_flag', 2))
+
+        # 计算 Y0（基于当前车速，保留在 Python 端）
         Y0 = self._calculate_Y0(speed_ms)
 
-        # 计算 reset_flag
-        reset_flag = self._calculate_reset_flag(self._last_control_enabled, control_error_signed)
+        # 计算 reset_flag（保留在 Python 端）
+        reset_flag = self._calculate_reset_flag(self._last_control_enabled)
 
         # 更新历史记录（用于下一帧的reset_flag计算）
         self._prev_G2_s = self.params['G2_s']
-        self._prev_error_abs = abs(control_error_signed)
 
         # Save for trace (actual values sent to Simulink)
         self._last_trace_inputs = {
@@ -429,7 +423,11 @@ class IntegratedSimulinkManager:
             'command_type': float(input_data['command_type']),
             'has_history': float(1 if self.decision_state['has_history'] else 0),
             'last_active_decision': float(self.decision_state['last_active_decision']),
-            'control_error_signed': control_error_signed,
+            'ego_speed_ms': speed_ms,
+            'vehicle_distance': vehicle_distance,
+            'G2_s': G2_s,
+            'V_target_ms': V_target_ms,
+            'control_mode_flag': control_mode_flag,
             'Y0': Y0,
             'reset_flag': float(1 if reset_flag else 0),
         }
@@ -441,8 +439,14 @@ class IntegratedSimulinkManager:
             float(1 if self.decision_state['has_history'] else 0),
             float(self.decision_state['last_active_decision']),
 
-            # SPPVT输入 (5-7)
-            control_error_signed,
+            # 原始感知输入 (5-9)，误差由 Simulink Error_Calculation 子系统计算
+            speed_ms,
+            vehicle_distance,
+            G2_s,
+            V_target_ms,
+            control_mode_flag,
+
+            # 控制参数 (10-11)
             Y0,
             float(1 if reset_flag else 0)
         ]
@@ -582,7 +586,6 @@ class IntegratedSimulinkManager:
 
         # reset_flag 检测状态
         self._prev_G2_s = self.params['G2_s']
-        self._prev_error_abs = 0.0
         self._reset_pending = False
 
         self._last_control_enabled = False
@@ -605,7 +608,6 @@ class IntegratedSimulinkManager:
         """
         # 重置 reset_flag 检测状态
         self._prev_G2_s = self.params['G2_s']
-        self._prev_error_abs = 0.0
 
         # 强制下一帧发送 reset_flag=1（通过设置 _reset_pending 标志）
         self._reset_pending = True
@@ -651,10 +653,13 @@ class IntegratedSimulinkManager:
                     'command_type_in',
                     'has_history_in',
                     'last_active_decision_in',
-                    'control_error_signed_in',
+                    'ego_speed_ms_in',
+                    'vehicle_distance_in',
+                    'G2_s_in',
+                    'V_target_ms_in',
+                    'control_mode_flag_in',
                     'Y0_in',
                     'reset_flag_in',
-                    'control_mode_flag',
                     'next_state_out',
                     'decision_out',
                     'control_enabled_out',
@@ -677,9 +682,7 @@ class IntegratedSimulinkManager:
             self._last_cycle_ts = now
 
             frame_id = input_data.get('frame_id', input_data.get('frame_count', -1))
-            control_error_signed = self._last_trace_inputs.get('control_error_signed', 0.0)
-            Y0 = self._last_trace_inputs.get('Y0', 0.0)
-            reset_flag = self._last_trace_inputs.get('reset_flag', 0.0)
+            ti = self._last_trace_inputs
 
             row = [
                 f"{now:.6f}",
@@ -689,14 +692,17 @@ class IntegratedSimulinkManager:
                 f"{cycle_dt_ms:.3f}",
                 f"{self._last_udp_ms:.3f}",
                 int(bool(input_data.get('acc_system_enabled', False))),
-                self._last_trace_inputs.get('current_state', self.decision_state['current_state']),
-                self._last_trace_inputs.get('command_type', input_data.get('command_type', 0)),
-                self._last_trace_inputs.get('has_history', 0),
-                self._last_trace_inputs.get('last_active_decision', self.decision_state['last_active_decision']),
-                f"{control_error_signed:.6f}",
-                f"{Y0:.6f}",
-                reset_flag,
-                input_data.get('control_mode_flag', 1),
+                ti.get('current_state', self.decision_state['current_state']),
+                ti.get('command_type', input_data.get('command_type', 0)),
+                ti.get('has_history', 0),
+                ti.get('last_active_decision', self.decision_state['last_active_decision']),
+                f"{ti.get('ego_speed_ms', 0.0):.6f}",
+                f"{ti.get('vehicle_distance', 9999.0):.6f}",
+                f"{ti.get('G2_s', 0.0):.6f}",
+                f"{ti.get('V_target_ms', 0.0):.6f}",
+                ti.get('control_mode_flag', 1),
+                f"{ti.get('Y0', 0.0):.6f}",
+                ti.get('reset_flag', 0.0),
                 output_data.get('current_state', -1),
                 output_data.get('current_decision', -1),
                 int(bool(output_data.get('control_enabled', False))),

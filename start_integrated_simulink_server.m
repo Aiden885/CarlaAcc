@@ -1,5 +1,14 @@
 %% 启动统一Simulink模型服务器
 % 用于acc_integrated_model.slx的UDP通信
+%
+% UDP输入 (11个double):
+%   [current_state, command_type, has_history, last_active_decision,
+%    ego_speed_ms, vehicle_distance, G2_s, V_target_ms, control_mode_flag,
+%    Y0, reset_flag]
+%
+% UDP输出 (6个double):
+%   [next_state, decision, control_enabled, next_has_history,
+%    next_last_decision, control_output]
 
 fprintf('=== 启动统一Simulink模型服务器 ===\n\n');
 
@@ -84,6 +93,9 @@ try
         fprintf('   UDP Receive:\n');
         fprintf('      - LocalPort: %s (Python发送目标)\n', local_port);
         fprintf('      - DataSize: %s\n', data_size);
+        if ~strcmp(data_size, '[11 1]')
+            fprintf('   ⚠️  DataSize 应为 [11 1] (11个double输入)，当前为 %s\n', data_size);
+        end
     end
     % UDP Send
     udp_send = [model_name '/UDP Send'];
@@ -101,12 +113,12 @@ try
 
     fprintf('=== Simulink服务器就绪 ===\n');
     fprintf('\n');
-    fprintf('📡 UDP服务器监听中...\n');
-    fprintf('   Python发送 → 端口27000 (源端口9090)\n');
-    fprintf('   Python接收 ← 端口27001\n');
+    fprintf('UDP服务器监听中...\n');
+    fprintf('   Python发送 → 端口27000 (11个double)\n');
+    fprintf('   Python接收 ← 端口27001 (6个double)\n');
     fprintf('\n');
-    fprintf('💡 现在可以运行Python测试脚本:\n');
-    fprintf('   python test_integrated_manager.py\n');
+    fprintf('现在可以运行Python测试脚本:\n');
+    fprintf('   python test_integrated_model_decision.py\n');
     fprintf('\n');
     fprintf('⚠️ 停止服务器: 在MATLAB命令窗口输入\n');
     fprintf('   set_param(''%s'', ''SimulationCommand'', ''stop'')\n', model_name);

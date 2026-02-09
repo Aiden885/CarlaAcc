@@ -336,6 +336,7 @@ class ControlLoopManager:
         unified_input = {
             'ego_speed_kmh': sanitize(self.system_state.ego.speed_kmh),
             'ego_speed_ms': sanitize(self.system_state.ego.speed_ms),
+            'vehicle_distance': sanitize(perception_data.vehicle_distance, 9999.0),
             'frame_id': self.system_state.frame_count,
             'acc_system_enabled': self.system_state.acc.system_enabled,
             'command_type': command_type,
