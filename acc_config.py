@@ -74,7 +74,7 @@ class ACCConfig:
         self.integrated_udp_send_port = 27000       # Python → Simulink UDP Receive
         self.integrated_udp_recv_port = 27001       # Python ← Simulink UDP Send
         self.integrated_udp_local_send_port = 9090  # Python 源端口
-        self.integrated_udp_timeout = 2.0           # UDP超时（秒）
+        self.integrated_udp_timeout = 0.5           # UDP超时（秒）- 从2.0改为0.5
 
         # ========== ACC系统参数 ==========
         self.acc_params = {
@@ -175,6 +175,11 @@ class ACCConfig:
         # ========== ACC决策+SPPVT配置 ==========
         self.acc_decision_debug = False        # 是否开启调试模式
         self.use_realtime_sppvt = False       # 是否使用实时SPPVT（False=使用完整Simulink模型）
+
+        # ========== Simulink IO Trace ==========
+        self.enable_simulink_trace = True
+        self.simulink_trace_path = 'simulink_io_trace.csv'
+        self.simulink_trace_flush_every = 50
 
     def get_acc_params(self):
         """获取ACC参数副本（避免外部直接修改）"""

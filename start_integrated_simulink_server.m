@@ -10,8 +10,50 @@ try
     load_system(model_name);
     fprintf('   ✅ 模型已加载\n\n');
 
-    % 2. 配置仿真参数
-    fprintf('2. 配置仿真参数...\n');
+    % 2. 加载Decision LUT数据到模型工作区
+    fprintf('2. 加载Decision LUT数据...\n');
+    data_file = 'decision_lookup_data.mat';
+    if exist(data_file, 'file')
+        lut_data = load(data_file);
+        mdlWks = get_param(model_name, 'ModelWorkspace');
+        fn = fieldnames(lut_data);
+        for i = 1:numel(fn)
+            mdlWks.assignin(fn{i}, lut_data.(fn{i}));
+        end
+        fprintf('   ✅ 已加载 %s 到模型工作区\n\n', data_file);
+    else
+        fprintf('   ⚠️  未找到 %s，Decision LUT可能不一致\n\n', data_file);
+    end
+
+    % 3. 强制LUT使用工作区变量（避免模型内置旧表）
+    fprintf('3. 校验并绑定Decision LUT参数...\n');
+    decision_path = [model_name '/Decision'];
+    lut_defs = {
+        'LUT_next_state',     'next_state_table';
+        'LUT_decision',       'decision_table';
+        'LUT_control_enabled','control_enabled_table';
+        'LUT_side_effect',    'side_effect_table';
+    };
+    for i = 1:size(lut_defs, 1)
+        blk = [decision_path '/' lut_defs{i,1}];
+        if ~isempty(find_system(model_name, 'SearchDepth', 2, 'Name', lut_defs{i,1}))
+            try
+                set_param(blk, 'Table', lut_defs{i,2});
+                set_param(blk, 'BreakpointsForDimension1', 'state_bp');
+                set_param(blk, 'BreakpointsForDimension2', 'command_bp');
+                % 避免插值导致状态抖动
+                set_param(blk, 'InterpMethod', 'Nearest');
+                set_param(blk, 'ExtrapMethod', 'Clip');
+                fprintf('   ✅ %s 绑定到 %s\n', lut_defs{i,1}, lut_defs{i,2});
+            catch ME
+                fprintf('   ⚠️  %s 参数绑定失败: %s\n', lut_defs{i,1}, ME.message);
+            end
+        end
+    end
+    fprintf('\n');
+
+    % 4. 配置仿真参数
+    fprintf('4. 配置仿真参数...\n');
 
     % 确保是Fixed-step模式
     set_param(model_name, 'SolverType', 'Fixed-step');
@@ -31,8 +73,8 @@ try
     fprintf('      - StopTime: inf (持续运行)\n');
     fprintf('      - 数据记录: OFF\n\n');
 
-    % 3. 检查UDP配置
-    fprintf('3. 检查UDP配置...\n');
+    % 5. 检查UDP配置
+    fprintf('5. 检查UDP配置...\n');
 
     % UDP Receive
     udp_recv = [model_name '/UDP Receive'];
@@ -43,7 +85,6 @@ try
         fprintf('      - LocalPort: %s (Python发送目标)\n', local_port);
         fprintf('      - DataSize: %s\n', data_size);
     end
-
     % UDP Send
     udp_send = [model_name '/UDP Send'];
     if ~isempty(find_system(model_name, 'Name', 'UDP Send'))
@@ -53,8 +94,8 @@ try
     end
     fprintf('   ✅ UDP配置正常\n\n');
 
-    % 4. 启动仿真
-    fprintf('4. 启动仿真...\n');
+    % 6. 启动仿真
+    fprintf('6. 启动仿真...\n');
     set_param(model_name, 'SimulationCommand', 'start');
     fprintf('   ✅ 仿真已启动\n\n');
 

@@ -1,5 +1,7 @@
 function create_decision_sppvt_bus()
 %CREATE_DECISION_SPPVT_BUS 创建ACC决策+SPPVT一体化总线定义 (状态外化精简版本)
+% DEPRECATED / 已废弃: 当前集成UDP接口不再使用本文件生成的总线。
+% 保留仅供参考，请勿修改或作为后续分析依据。
 
 %
 %   此函数创建以下总线：

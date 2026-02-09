@@ -3,14 +3,17 @@
 替代原来的双UDP架构（acc_decision_simulink_manager + sppvt_manager_simulink）
 使用单一UDP接口与acc_integrated_model.slx通信
 
-设计理念：
-- Python维护所有状态（Decision状态、SPPVT状态）
-- Simulink只做纯函数式计算（每帧输入→计算→输出）
-- 避免因果环：使用上一帧的control_enabled来控制当前帧的SPPVT输入
+设计理念（更新版 - 基于 SIMULINK_SPPVT_UPDATE_PLAN.md）：
+- Python 计算 control_error_signed, Y0, reset_flag
+- Simulink 维护 SPPVT 状态（stage, stage_offset, cooldown, error_sign）
+- 控制方程：Y(k) = Kp * (error + stage_offset) + Y0
+- control_output 直接输出 N·m，Python 不再做缩放
 """
 from __future__ import annotations
 
+import os
 import time
+import csv
 import numpy as np
 from typing import Dict, Any, Optional
 
@@ -22,9 +25,9 @@ class IntegratedSimulinkManager:
     """
     统一的Simulink集成管理器
 
-    与acc_integrated_model.slx通信：
-    - 输入：9个double (Decision 4个 + SPPVT 5个)
-    - 输出：10个double (Decision 5个 + SPPVT 5个)
+    与acc_integrated_model.slx通信（新接口）：
+    - 输入：7个double (Decision 4个 + control_error_signed, Y0, reset_flag)
+    - 输出：6个double (Decision 5个 + control_output)
 
     UDP配置：
     - Python发送 → 27000 (Simulink接收), 源端口: 9090
@@ -63,28 +66,12 @@ class IntegratedSimulinkManager:
         self.debug = debug
         self.config = config or ACCConfig()
         self.max_target_speed_kmh = max_target_speed_kmh if max_target_speed_kmh is not None else self.config.max_target_speed_kmh
-        self.sppvt_rho = getattr(self.config, 'integrated_sppvt_rho', 0.1)  # stage offset累积系数
-        self.upgrade_cooldown_frames = getattr(self.config, 'sppvt_upgrade_cooldown', 2)  # 升级冷却周期
 
         # ============ Decision状态（Python端维护） ============
         self.decision_state = {
             'current_state': self.STATES['ADAPTIVE_NO_HISTORY_STANDBY'],
             'has_history': False,
             'last_active_decision': self.DECISIONS['SYSTEM_STANDBY']
-        }
-
-        # ============ SPPVT状态（Python端维护） ============
-        self.sppvt_state = {
-            'stage_offset': 0.0,
-            'stage': 1.0,
-            'error_sign': 0.0,
-            'upgrade_count': 0.0,
-            'prev_error': 0.0,
-            'prev_velocity': 0.0,
-            'prev_accel': 0.0,
-            'upgrade_cooldown': 0,  # 升级冷却计数器
-            'prev_G2_s': 2.0,       # 记录上一帧的G2参数（用于突变检测）
-            'prev_error_abs': 0.0   # 记录上一帧的误差绝对值（用于突变检测）
         }
 
         # ============ ACC参数（Python端管理，传递给Simulink） ============
@@ -95,31 +82,69 @@ class IntegratedSimulinkManager:
         }
 
         # ============ 控制状态 ============
-        self._last_control_enabled = False  # 上一帧的control_enabled（用于当前帧SPPVT）
+        self._last_control_enabled = False  # 上一帧的control_enabled（用于reset_flag计算）
         self.torque_arbitration_active = False
+
+        # ============ reset_flag 检测状态 ============
+        self._prev_G2_s = self.params['G2_s']  # 上一帧G2（用于突变检测）
+        self._prev_error_abs = 0.0              # 上一帧误差绝对值（用于突变检测）
+        self._reset_pending = False             # 待发送的重置标志（边沿检测触发后设置）
+
+        # ============ Y0 计算物理参数 ============
+        # 从 acc_config.py 和 torque_to_throttle_converter.py 获取
+        self._vehicle_mass = 2370.0  # kg (CARLA Audi e-tron)
+        self._wheel_radius = 0.37    # m
+        self._gear_ratio = 9.204     # 总传动比
+        self._rolling_resistance_coeff = getattr(self.config, 'rolling_resistance_coeff', 0.012)
+        self._aero_cdA = getattr(self.config, 'aero_cdA', 0.74)
+        self._air_density = getattr(self.config, 'air_density_kg_m3', 1.225)
+        self._gravity = 9.81  # m/s²
 
         # ============ 性能统计 ============
         self.call_count = 0
         self.total_processing_time = 0.0
         self.last_processing_time = 0.0
+        self._last_cycle_ts = None
+        self._last_udp_ms = 0.0
+
+        # ============ IO Trace (optional) ============
+        env_trace = bool(int(os.environ.get('ACC_SIMULINK_TRACE', '0')))
+        self._trace_enabled = bool(getattr(self.config, 'enable_simulink_trace', False)) or env_trace
+        self._trace_path = os.environ.get(
+            'ACC_SIMULINK_TRACE_PATH',
+            getattr(self.config, 'simulink_trace_path', 'simulink_io_trace.csv')
+        )
+        self._trace_flush_every = int(os.environ.get(
+            'ACC_SIMULINK_TRACE_FLUSH',
+            getattr(self.config, 'simulink_trace_flush_every', 50)
+        ))
+        self._trace_count = 0
+        self._trace_file = None
+        self._trace_writer = None
+        self._last_trace_inputs = {}
+        self._instance_id = id(self)
 
         # ============ 创建UDP客户端 ============
+        # 注意：send_initial_packet=False 是关键！
+        # 如果设为 True，初始包的响应不会被消费，导致后续所有响应错位一帧，引发状态振荡
         self.udp_client = SimulinkUDPClient(
             send_port=self.config.integrated_udp_send_port,
             recv_port=self.config.integrated_udp_recv_port,
-            num_inputs=9,   # Decision 4个 + SPPVT 5个
-            num_outputs=10, # Decision 5个 + SPPVT 5个
+            num_inputs=7,   # Decision 4个 + control_error_signed, Y0, reset_flag
+            num_outputs=6,  # Decision 5个 + control_output
             timeout=self.config.integrated_udp_timeout,
             debug=debug,
-            local_send_port=self.config.integrated_udp_local_send_port,  # 绑定固定源端口
-            send_initial_packet=True,
-            initial_values=self._get_initial_inputs()
+            local_send_port=self.config.integrated_udp_local_send_port,
+            send_initial_packet=False,  # 修复振荡问题：不发送初始包
         )
 
         if self.debug:
-            print("✅ 统一Simulink管理器已初始化")
+            print("✅ 统一Simulink管理器已初始化（新架构）")
             print(f"   UDP: 发送→{self.config.integrated_udp_send_port}(源端口{self.config.integrated_udp_local_send_port}), 接收←{self.config.integrated_udp_recv_port}")
-            print(f"   输入: 9个double, 输出: 10个double")
+            print(f"   输入: 7个double (Decision 4 + error/Y0/reset)")
+            print(f"   输出: 6个double (Decision 5 + control_output)")
+        if self._trace_enabled:
+            self._init_trace()
 
     def _get_initial_inputs(self) -> list:
         """获取初始输入值（用于首次UDP握手）"""
@@ -130,13 +155,92 @@ class IntegratedSimulinkManager:
             float(1 if self.decision_state['has_history'] else 0),  # 0.0
             float(self.decision_state['last_active_decision']), # 8.0 (R8待命)
 
-            # SPPVT输入 (5-9)
-            0.0,  # error_value
-            0.0,  # stage_offset
-            0.0,  # prev_error
-            0.0,  # prev_velocity
-            0.0   # prev_accel
+            # SPPVT输入 (5-7)
+            0.0,  # control_error_signed
+            0.0,  # Y0 (初始扭矩)
+            1.0   # reset_flag = 1 (初始化时复位)
         ]
+
+    def _calculate_Y0(self, speed_ms: float) -> float:
+        """
+        计算维持当前速度所需的基础扭矩 Y0
+
+        基于阻力平衡：
+        - 滚动阻力: F_roll = μ * m * g
+        - 空气阻力: F_aero = 0.5 * ρ * CdA * v²
+        - 总阻力: F_total = F_roll + F_aero
+        - 发动机扭矩: Y0 = F_total * wheel_radius / gear_ratio
+
+        Args:
+            speed_ms: 当前车速 (m/s)
+
+        Returns:
+            维持速度所需的发动机扭矩 (N·m)
+        """
+        # 滚动阻力
+        F_roll = self._rolling_resistance_coeff * self._vehicle_mass * self._gravity
+
+        # 空气阻力
+        F_aero = 0.5 * self._air_density * self._aero_cdA * (speed_ms ** 2)
+
+        # 总阻力
+        F_total = F_roll + F_aero
+
+        # 转换为发动机扭矩
+        # 车轮扭矩 = F * r，发动机扭矩 = 车轮扭矩 / 传动比
+        Y0 = F_total * self._wheel_radius / self._gear_ratio
+
+        return Y0
+
+    def _calculate_reset_flag(self, control_enabled: bool, current_error: float) -> bool:
+        """
+        计算 reset_flag
+
+        触发条件：
+        1. control_enabled 从 True 变为 False（边沿检测，通过 _reset_pending 标志实现）
+        2. G2 参数突变（变化超过阈值）
+        3. 时距误差突变（TIME模式下）
+
+        注意：条件1 的边沿检测在 _process_simulink_outputs 中完成，
+             这里只检查 _reset_pending 标志
+
+        Args:
+            control_enabled: 上一帧的 control_enabled（来自 _last_control_enabled）
+            current_error: 当前帧的控制误差
+
+        Returns:
+            是否需要复位 SPPVT 状态
+        """
+        # 条件1: control_enabled 从 True 变为 False（边沿检测）
+        # 注意：边沿检测在 _process_simulink_outputs 中完成，设置 _reset_pending
+        if self._reset_pending:
+            if self.debug:
+                print(f"🔄 [reset_flag] 控制失效边沿触发重置")
+            self._reset_pending = False  # 清除标志，只触发一次
+            return True
+
+        # 条件2: G2 参数突变
+        current_G2_s = self.params['G2_s']
+        G2_change = abs(current_G2_s - self._prev_G2_s)
+        G2_CHANGE_THRESHOLD = 0.3  # 时距变化阈值：0.3秒
+
+        if G2_change > G2_CHANGE_THRESHOLD:
+            if self.debug:
+                print(f"🔄 [reset_flag] G2突变: {self._prev_G2_s:.1f}s → {current_G2_s:.1f}s")
+            return True
+
+        # 条件3: 误差突变
+        current_error_abs = abs(current_error)
+        ERROR_JUMP_RATIO = 5.0  # 误差跳变倍数阈值
+
+        if self._prev_error_abs > 0.01:  # 避免除零和小误差噪声
+            error_ratio = current_error_abs / self._prev_error_abs
+            if error_ratio > ERROR_JUMP_RATIO:
+                if self.debug:
+                    print(f"🔄 [reset_flag] 误差突变: {self._prev_error_abs:.2f} → {current_error_abs:.2f} (×{error_ratio:.1f})")
+                return True
+
+        return False
 
     # ================================================================
     # 公共API：与ACCControlFacade接口兼容
@@ -295,14 +399,40 @@ class IntegratedSimulinkManager:
 
     def _prepare_simulink_inputs(self, input_data: Dict[str, Any]) -> list:
         """
-        准备Simulink输入（9个double）
+        准备Simulink输入（7个double）
 
-        注意：始终传递真实的control_error给SPPVT
-        原因：增量控制需要持续接收enhanced_error来跟踪误差变化
-        即使control_enabled=False（待命状态），也需要正确的enhanced_error值
+        新接口：
+        1-4: Decision 输入 (current_state, command_type, has_history, last_active_decision)
+        5: control_error_signed（Python已做符号约定）
+        6: Y0（维持当前速度所需扭矩）
+        7: reset_flag（是否需要复位SPPVT状态）
         """
-        # 始终传递真实的error_value（增量控制需要）
-        error_value = input_data['control_error']
+        # 获取控制误差（TIME模式下需要反号：正误差代表过近，应输出制动）
+        control_error_signed = input_data['control_error']
+        if int(input_data.get('control_mode_flag', 1)) == 1:
+            control_error_signed = -control_error_signed
+
+        # 计算 Y0（基于当前车速）
+        speed_ms = input_data.get('ego_speed_ms', input_data.get('ego_speed_kmh', 0.0) / 3.6)
+        Y0 = self._calculate_Y0(speed_ms)
+
+        # 计算 reset_flag
+        reset_flag = self._calculate_reset_flag(self._last_control_enabled, control_error_signed)
+
+        # 更新历史记录（用于下一帧的reset_flag计算）
+        self._prev_G2_s = self.params['G2_s']
+        self._prev_error_abs = abs(control_error_signed)
+
+        # Save for trace (actual values sent to Simulink)
+        self._last_trace_inputs = {
+            'current_state': float(self.decision_state['current_state']),
+            'command_type': float(input_data['command_type']),
+            'has_history': float(1 if self.decision_state['has_history'] else 0),
+            'last_active_decision': float(self.decision_state['last_active_decision']),
+            'control_error_signed': control_error_signed,
+            'Y0': Y0,
+            'reset_flag': float(1 if reset_flag else 0),
+        }
 
         inputs = [
             # Decision输入 (1-4)
@@ -311,12 +441,10 @@ class IntegratedSimulinkManager:
             float(1 if self.decision_state['has_history'] else 0),
             float(self.decision_state['last_active_decision']),
 
-            # SPPVT输入 (5-9)
-            error_value,
-            self.sppvt_state['stage_offset'],
-            self.sppvt_state['prev_error'],
-            self.sppvt_state['prev_velocity'],
-            self.sppvt_state['prev_accel']
+            # SPPVT输入 (5-7)
+            control_error_signed,
+            Y0,
+            float(1 if reset_flag else 0)
         ]
 
         return inputs
@@ -326,16 +454,16 @@ class IntegratedSimulinkManager:
         调用Simulink模型（单次UDP通信）
 
         Returns:
-            10个double的输出
+            6个double的输出 (Decision 5个 + control_output)
         """
         start_time = time.time()
 
         try:
-            # 双调用策略：解决Simulink UDP延迟问题
-            self.udp_client.call(inputs)  # 预热调用，丢弃结果
-            outputs = self.udp_client.call(inputs)  # 实际调用
+            # 单次调用（移除了导致缓冲区错位的双调用策略）
+            outputs = self.udp_client.call(inputs)
 
             elapsed_ms = (time.time() - start_time) * 1000.0
+            self._last_udp_ms = elapsed_ms
 
             if self.debug and self.call_count % 20 == 0:
                 print(f"✅ Simulink UDP: {elapsed_ms:.1f}ms")
@@ -346,22 +474,30 @@ class IntegratedSimulinkManager:
             if self.debug:
                 print(f"❌ Simulink UDP失败: {e}")
 
-            # 返回安全的默认输出
+            # 返回安全的默认输出（6个值）
             return [
                 float(self.decision_state['current_state']),  # next_state
                 float(self.DECISIONS['SYSTEM_STANDBY']),      # decision
                 0.0,  # control_enabled
                 float(1 if self.decision_state['has_history'] else 0),  # next_has_history
                 float(self.decision_state['last_active_decision']),     # next_last_decision
-                0.0, 0.0, 0.0, 0.0, 0.0  # SPPVT输出全零
+                0.0   # control_output (N·m)
             ]
 
     def _process_simulink_outputs(self, outputs: list, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         解析Simulink输出并更新Python端状态
 
+        新架构（6个输出）：
+        1. next_state
+        2. decision
+        3. control_enabled
+        4. next_has_history
+        5. next_last_decision
+        6. control_output (N·m，直接使用，无需缩放)
+
         Args:
-            outputs: Simulink的10个输出
+            outputs: Simulink的6个输出
             input_data: 原始输入数据（用于构建完整输出）
 
         Returns:
@@ -374,132 +510,30 @@ class IntegratedSimulinkManager:
         next_has_history = bool(int(round(outputs[3])))
         next_last_decision = int(round(outputs[4]))
 
-        # 解析SPPVT输出 (6-10)
-        sppvt_control_output = outputs[5]
-        sppvt_velocity_output = outputs[6]
-        sppvt_acceleration_output = outputs[7]
-        sppvt_enhanced_error = outputs[8]  # e_i(k) = error_value + stage_offset
-        sppvt_should_upgrade = outputs[9]
+        # 解析SPPVT输出 (6) - 现在只有一个：control_output (N·m)
+        control_output_nm = outputs[5]
 
         # 更新Decision状态
         self.decision_state['current_state'] = next_state
         self.decision_state['has_history'] = next_has_history
         self.decision_state['last_active_decision'] = next_last_decision
 
-        # === SPPVT阶段管理（Python侧维护）===
-        current_error = input_data['control_error']
-        current_error_abs = abs(current_error)
+        # 边沿检测：control_enabled 从 True 变为 False 时，设置 _reset_pending
+        if self._last_control_enabled and not control_enabled:
+            self._reset_pending = True
+            if self.debug:
+                print(f"🔄 [边沿检测] control_enabled 下降沿: True → False, 设置 _reset_pending")
 
-        if not control_enabled:
-            if (self.sppvt_state['stage_offset'] != 0.0 or
-                    self.sppvt_state['stage'] != 1.0 or
-                    self.sppvt_state['upgrade_count'] != 0.0 or
-                    self.sppvt_state['error_sign'] != 0.0 or
-                    self.sppvt_state['upgrade_cooldown'] != 0):
-                self.reset_sppvt_state(reason="control_disabled")
-        else:
-            # ============================================================
-            # 🆕 SPPVT阶段重置条件检测（在符号翻转检测之前）
-            # ============================================================
-            should_reset = False
-            reset_reason = ""
-
-            # 条件1: G2参数突变检测
-            current_G2_s = self.params['G2_s']
-            prev_G2_s = self.sppvt_state.get('prev_G2_s', current_G2_s)
-            G2_change = abs(current_G2_s - prev_G2_s)
-
-            G2_CHANGE_THRESHOLD = 0.3  # 时距变化阈值：0.3秒
-
-            if G2_change > G2_CHANGE_THRESHOLD:
-                should_reset = True
-                reset_reason = f"G2突变: {prev_G2_s:.1f}s → {current_G2_s:.1f}s (Δ{G2_change:.1f}s)"
-
-            # 条件2: 时距误差突变检测（仅在TIME模式下）
-            if not should_reset and input_data.get('control_mode_flag') == 1:  # TIME模式
-                prev_error_abs = self.sppvt_state.get('prev_error_abs', 0.0)
-
-                ERROR_JUMP_RATIO = 5.0  # 误差跳变倍数阈值
-
-                if prev_error_abs > 0.0:  # 避免除零
-                    error_ratio = current_error_abs / prev_error_abs
-
-                    if error_ratio > ERROR_JUMP_RATIO:
-                        should_reset = True
-                        reset_reason = f"误差突变: {prev_error_abs:.2f}s → {current_error_abs:.2f}s (×{error_ratio:.1f}倍)"
-
-            # 执行重置
-            if should_reset:
-                self.sppvt_state['stage'] = 1.0
-                self.sppvt_state['stage_offset'] = 0.0
-                self.sppvt_state['upgrade_count'] = 0.0
-                self.sppvt_state['upgrade_cooldown'] = 0
-
-                if self.debug:
-                    print(f"\n🔄 [SPPVT重置] 帧#{self.call_count} | {reset_reason} | Stage→1")
-
-            # 更新历史记录
-            self.sppvt_state['prev_G2_s'] = current_G2_s
-            self.sppvt_state['prev_error_abs'] = current_error_abs
-
-            # ============================================================
-            # 原有的符号翻转检测逻辑
-            # ============================================================
-            if abs(current_error) < 1e-6:
-                current_sign = 0
-            elif current_error > 0:
-                current_sign = 1
-            else:
-                current_sign = -1
-
-            prev_sign = int(self.sppvt_state['error_sign'])
-            sign_changed = (prev_sign != 0 and current_sign != 0 and prev_sign != current_sign)
-
-            if sign_changed:
-                # 符号翻转：重置阶段累计
-                self.sppvt_state['stage'] = 1.0
-                self.sppvt_state['stage_offset'] = 0.0
-                self.sppvt_state['upgrade_count'] = 0.0
-                self.sppvt_state['upgrade_cooldown'] = 0  # 重置冷却
-            elif sppvt_should_upgrade > 0.5 and self.sppvt_state['upgrade_cooldown'] == 0:
-                # 升级触发（仅在冷却结束后）：阶段+1并累加offset
-                old_stage = int(self.sppvt_state['stage'])
-                self.sppvt_state['stage'] += 1.0
-                self.sppvt_state['upgrade_count'] += 1.0
-                offset_delta = self.sppvt_rho * abs(current_error)
-                if current_error > 0:
-                    self.sppvt_state['stage_offset'] += offset_delta
-                else:
-                    self.sppvt_state['stage_offset'] -= offset_delta
-                # 增大限制范围，避免饱和
-                self.sppvt_state['stage_offset'] = max(-500.0, min(500.0, self.sppvt_state['stage_offset']))
-
-                # 设置冷却期
-                self.sppvt_state['upgrade_cooldown'] = self.upgrade_cooldown_frames
-
-                # 调试输出
-                if self.debug:
-                    print(f"\n🔼 [SPPVT升级] 帧#{self.call_count} | Stage {old_stage} → {int(self.sppvt_state['stage'])} | "
-                          f"冷却:{self.upgrade_cooldown_frames}帧")
-
-            # 每帧减少冷却计数器
-            if self.sppvt_state['upgrade_cooldown'] > 0:
-                self.sppvt_state['upgrade_cooldown'] -= 1
-
-            # 更新误差符号历史
-            if current_sign != 0:
-                self.sppvt_state['error_sign'] = float(current_sign)
-
-            # 更新SPPVT输入状态（使用当前帧的输出作为下一帧的输入）
-            self.sppvt_state['prev_error'] = current_error
-            self.sppvt_state['prev_velocity'] = sppvt_velocity_output
-            self.sppvt_state['prev_accel'] = sppvt_acceleration_output
-
-        # 更新control_enabled（供下一帧使用）
+        # 更新control_enabled（供下一帧边沿检测使用）
         self._last_control_enabled = control_enabled
 
         # 更新扭矩仲裁标志
         self.torque_arbitration_active = (current_decision == self.DECISIONS['TORQUE_ARBITRATION'])
+
+        # 当前帧输入信息（用于输出和调试）
+        current_error = input_data['control_error']
+        speed_ms = input_data.get('ego_speed_ms', input_data.get('ego_speed_kmh', 0.0) / 3.6)
+        Y0 = self._calculate_Y0(speed_ms)
 
         # 构建输出字典（与ACCControlFacade格式兼容）
         integrated_output = {
@@ -514,28 +548,23 @@ class IntegratedSimulinkManager:
             'next_has_history': next_has_history,
             'next_last_active_decision': next_last_decision,
 
-            # SPPVT输出
-            'sppvt_control_output': sppvt_control_output,  # 扭矩输出（无量纲，需缩放）
-            'sppvt_velocity_output': sppvt_velocity_output,  # 误差一阶导数
-            'sppvt_acceleration_output': sppvt_acceleration_output,  # 误差二阶导数
-            'sppvt_enhanced_error': sppvt_enhanced_error,  # 增强误差 e_i(k)
-            'sppvt_stage_output': self.sppvt_state['stage'],  # 当前阶段
-            'sppvt_status_output': sppvt_should_upgrade,  # 是否应升级
+            # SPPVT输出（简化版）
+            'control_output': control_output_nm,  # 直接扭矩输出 (N·m)
+            'Y0': Y0,  # 基础扭矩（供调试）
 
-            # SPPVT状态（供调试）
-            'new_stage_offset': self.sppvt_state['stage_offset'],
-            'new_stage': self.sppvt_state['stage'],
-            'new_error_sign': self.sppvt_state['error_sign'],
-            'new_upgrade_count': self.sppvt_state['upgrade_count'],
+            # 兼容旧接口（部分字段保留，值可能为0）
+            'sppvt_control_output': control_output_nm,  # 兼容旧字段名
+            'target_torque': control_output_nm,         # 兼容旧字段名
             'new_control_error': current_error,
-            'new_error_derivative': sppvt_velocity_output,
-            'new_error_second_derivative': sppvt_acceleration_output,
-            'target_torque': sppvt_control_output,  # 目标扭矩（无量纲）
 
             # 调试信息
             'debug_message': 0,
             'simulation_time_ms': self.last_processing_time * 1000,
         }
+
+        # Trace IO
+        if self._trace_enabled:
+            self._trace_io(input_data, integrated_output)
 
         return integrated_output
 
@@ -551,46 +580,38 @@ class IntegratedSimulinkManager:
             'last_active_decision': self.DECISIONS['SYSTEM_STANDBY']
         }
 
-        self.sppvt_state = {
-            'stage_offset': 0.0,
-            'stage': 1.0,
-            'error_sign': 0.0,
-            'upgrade_count': 0.0,
-            'prev_error': 0.0,
-            'prev_velocity': 0.0,
-            'prev_accel': 0.0,
-            'upgrade_cooldown': 0,  # 升级冷却计数器
-            'prev_G2_s': self.params['G2_s'],     # 重置历史G2
-            'prev_error_abs': 0.0                  # 重置历史误差
-        }
+        # reset_flag 检测状态
+        self._prev_G2_s = self.params['G2_s']
+        self._prev_error_abs = 0.0
+        self._reset_pending = False
 
         self._last_control_enabled = False
         self.torque_arbitration_active = False
         self.call_count = 0
         self.total_processing_time = 0.0
         self.last_processing_time = 0.0
+        self._last_cycle_ts = None
 
         if self.debug:
-            print("🔄 统一管理器已重置")
+            print("🔄 统一管理器已重置（新架构）")
 
     def reset_sppvt_state(self, reason: str = ""):
-        """仅重置SPPVT相关状态（保留Decision状态）"""
-        self.sppvt_state = {
-            'stage_offset': 0.0,
-            'stage': 1.0,
-            'error_sign': 0.0,
-            'upgrade_count': 0.0,
-            'prev_error': 0.0,
-            'prev_velocity': 0.0,
-            'prev_accel': 0.0,
-            'upgrade_cooldown': 0,
-            'prev_G2_s': self.params['G2_s'],
-            'prev_error_abs': 0.0
-        }
-        self._last_control_enabled = False
+        """
+        重置SPPVT相关状态
+
+        新架构下，SPPVT 状态由 Simulink 维护。
+        这个方法现在只重置 Python 端的 reset_flag 检测状态，
+        并在下一帧通过 reset_flag=1 通知 Simulink 重置。
+        """
+        # 重置 reset_flag 检测状态
+        self._prev_G2_s = self.params['G2_s']
+        self._prev_error_abs = 0.0
+
+        # 强制下一帧发送 reset_flag=1（通过设置 _reset_pending 标志）
+        self._reset_pending = True
 
         if self.debug:
-            msg = f"🔄 SPPVT状态已重置"
+            msg = f"🔄 SPPVT重置请求（将通过reset_flag通知Simulink）"
             if reason:
                 msg += f" | {reason}"
             print(msg)
@@ -599,11 +620,98 @@ class IntegratedSimulinkManager:
         """清理资源"""
         try:
             self.udp_client.cleanup()
+            if self._trace_file:
+                self._trace_file.flush()
+                self._trace_file.close()
             if self.debug:
                 print("✅ 统一管理器已清理")
         except Exception as e:
             if self.debug:
                 print(f"⚠️ 清理失败: {e}")
+
+    # ================================================================
+    # IO Trace helpers
+    # ================================================================
+
+    def _init_trace(self):
+        try:
+            is_new = not os.path.exists(self._trace_path)
+            self._trace_file = open(self._trace_path, 'a', newline='')
+            self._trace_writer = csv.writer(self._trace_file)
+            if is_new:
+                self._trace_writer.writerow([
+                    'ts_wall',
+                    'pid',
+                    'instance_id',
+                    'frame_id',
+                    'cycle_dt_ms',
+                    'udp_ms',
+                    'acc_system_enabled',
+                    'current_state_in',
+                    'command_type_in',
+                    'has_history_in',
+                    'last_active_decision_in',
+                    'control_error_signed_in',
+                    'Y0_in',
+                    'reset_flag_in',
+                    'control_mode_flag',
+                    'next_state_out',
+                    'decision_out',
+                    'control_enabled_out',
+                    'next_has_history_out',
+                    'next_last_decision_out',
+                    'control_output_out'
+                ])
+        except Exception as e:
+            if self.debug:
+                print(f"⚠️ Trace init failed: {e}")
+            self._trace_enabled = False
+
+    def _trace_io(self, input_data: Dict[str, Any], output_data: Dict[str, Any]):
+        try:
+            now = time.time()
+            if self._last_cycle_ts is None:
+                cycle_dt_ms = 0.0
+            else:
+                cycle_dt_ms = (now - self._last_cycle_ts) * 1000.0
+            self._last_cycle_ts = now
+
+            frame_id = input_data.get('frame_id', input_data.get('frame_count', -1))
+            control_error_signed = self._last_trace_inputs.get('control_error_signed', 0.0)
+            Y0 = self._last_trace_inputs.get('Y0', 0.0)
+            reset_flag = self._last_trace_inputs.get('reset_flag', 0.0)
+
+            row = [
+                f"{now:.6f}",
+                os.getpid(),
+                self._instance_id,
+                frame_id,
+                f"{cycle_dt_ms:.3f}",
+                f"{self._last_udp_ms:.3f}",
+                int(bool(input_data.get('acc_system_enabled', False))),
+                self._last_trace_inputs.get('current_state', self.decision_state['current_state']),
+                self._last_trace_inputs.get('command_type', input_data.get('command_type', 0)),
+                self._last_trace_inputs.get('has_history', 0),
+                self._last_trace_inputs.get('last_active_decision', self.decision_state['last_active_decision']),
+                f"{control_error_signed:.6f}",
+                f"{Y0:.6f}",
+                reset_flag,
+                input_data.get('control_mode_flag', 1),
+                output_data.get('current_state', -1),
+                output_data.get('current_decision', -1),
+                int(bool(output_data.get('control_enabled', False))),
+                int(bool(output_data.get('next_has_history', False))),
+                output_data.get('next_last_active_decision', -1),
+                f"{output_data.get('control_output', 0.0):.6f}",
+            ]
+            self._trace_writer.writerow(row)
+            self._trace_count += 1
+            if self._trace_count % self._trace_flush_every == 0:
+                self._trace_file.flush()
+        except Exception as e:
+            if self.debug:
+                print(f"⚠️ Trace write failed: {e}")
+            self._trace_enabled = False
 
     # ================================================================
     # 兼容属性：供acc_updated.py的显示代码使用

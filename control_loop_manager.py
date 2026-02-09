@@ -22,7 +22,6 @@ from two_mode_controller import (
     set_two_mode_parameters
 )
 from vehicle_utils import VehicleUtils
-from longitudinal_constraint_limiter import LongitudinalConstraintLimiter
 
 
 class ControlLoopManager:
@@ -80,12 +79,6 @@ class ControlLoopManager:
 
         # 前车速度控制状态
         self.last_speed_limit = None
-
-        # 纵向约束限幅器
-        self.longitudinal_limiter = LongitudinalConstraintLimiter(
-            config=self.config,
-            torque_converter=self.resources.torque_converter
-        )
 
     def run_single_step(self, manual_input_state) -> StepResult:
         """
@@ -281,7 +274,7 @@ class ControlLoopManager:
         prev_control_mode_flag: int,
         perception_data: PerceptionData
     ):
-        """目标丢失或模式切换时，重置SPPVT和增量控制状态"""
+        """目标丢失或模式切换时，请求重置SPPVT状态"""
         lost_target = prev_has_target and not perception_data.has_target
         time_to_speed = prev_control_mode_flag == 1 and perception_data.control_mode_flag == 2
 
@@ -296,7 +289,7 @@ class ControlLoopManager:
         reason_str = ",".join(reasons)
 
         print(f"[控制重置] 触发重置: {reason_str}")
-        self._reset_incremental_control()
+        # 请求 Simulink 重置 SPPVT 状态（通过 reset_flag）
         self.acc_controller.reset_sppvt_state(reason=reason_str)
 
     def _update_vehicle_states(self):
@@ -343,6 +336,8 @@ class ControlLoopManager:
         unified_input = {
             'ego_speed_kmh': sanitize(self.system_state.ego.speed_kmh),
             'ego_speed_ms': sanitize(self.system_state.ego.speed_ms),
+            'frame_id': self.system_state.frame_count,
+            'acc_system_enabled': self.system_state.acc.system_enabled,
             'command_type': command_type,
             'command_active': bool(command_type),
             'manual_throttle_active': manual_input_state.has_throttle_input(),
@@ -435,12 +430,8 @@ class ControlLoopManager:
             throttle = 0.0
             brake = manual_input_state.brake
 
-        # 获取控制模式
-        sppvt_stage = unified_output.get('sppvt_stage_output', 0)
-        if sppvt_stage >= 1:
-            mode = f"UNIFIED_SPPVT_Stage{int(sppvt_stage)}"
-        else:
-            mode = "UNIFIED_SPPVT_Unknown"
+        # 控制模式标识
+        mode = "DIRECT_SPPVT"
 
         control_output.throttle = throttle
         control_output.brake = brake
@@ -472,101 +463,47 @@ class ControlLoopManager:
 
         return steer_output
 
-    def _estimate_current_torque(self) -> float:
-        """估算当前扭矩（用于增量控制初始化）"""
-        current_throttle = self.system_state.ego.throttle
-        current_brake = self.system_state.ego.brake
-
-        if current_throttle > 0:
-            # 估算加速扭矩
-            return current_throttle * 749.0
-        elif current_brake > 0:
-            # 估算刹车扭矩（负值）
-            return -current_brake * 100.0
-        else:
-            return 0.0
-
-    def _reset_incremental_control(self):
-        """复位增量控制状态"""
-        self.system_state.acc.incremental_control.reset()
+    def _reset_control_state(self):
+        """复位控制状态（新架构下仅重置绘图用的扭矩记录）"""
         self.system_state.acc.incremental_torque_nm = 0.0
-        self.longitudinal_limiter.reset()
 
     def _compute_longitudinal_control(self, unified_output: dict, perception_data: PerceptionData) -> Tuple[float, float]:
-        """计算纵向控制（油门/刹车）"""
-        # 获取增强误差 e_i(k)
-        e_i_current = unified_output.get('sppvt_enhanced_error', 0.0)
-        control_mode_flag = perception_data.control_mode_flag
+        """
+        计算纵向控制（油门/刹车）
 
-        # TIME模式下误差符号需要反转：正误差代表过近，应输出制动
-        if control_mode_flag == 1:
-            e_i_current = -e_i_current
+        新架构：直接使用 Simulink 输出的 control_output (N·m)
+        控制方程已在 Simulink 中完成：Y(k) = Kp * (error + stage_offset) + Y0
+        """
+        # 直接获取 Simulink 输出的扭矩 (N·m)
+        control_torque_nm = unified_output.get('control_output', 0.0)
 
-        # 增量控制
-        inc_state = self.system_state.acc.incremental_control
-        e_i_prev = inc_state.e_i_prev
+        # 调试输出
+        Y0 = unified_output.get('Y0', 0.0)
+        control_error = unified_output.get('new_control_error', 0.0)
+        print(f"[直接控制] Frame={self.system_state.frame_count}, "
+              f"error={control_error:.3f}, Y0={Y0:.2f}Nm, "
+              f"control_output={control_torque_nm:.2f}Nm")
 
-        if not inc_state.is_initialized:
-            # 初始化：Y(0) = Y_act(0)
-            raw_torque = self._estimate_current_torque()
-            e_i_prev = e_i_current
-            inc_state.is_initialized = True
-            delta_e = 0.0
-            delta_Y = 0.0
-        else:
-            # 迭代：Y(k) = Y(k-1) + K_p * [e_i(k) - e_i(k-1)]
-            delta_e = e_i_current - inc_state.e_i_prev
-            delta_Y = self.config.sppvt_accel_scale * delta_e
-            raw_torque = inc_state.Y_prev + delta_Y
-
-        # 纵向约束限幅（优先使用CARLA实测加速度）
-        accel_longitudinal = None
-        try:
-            accel_vec = self.resources.ego_vehicle.get_acceleration()
-            forward_vec = self.resources.ego_vehicle.get_transform().get_forward_vector()
-            accel_longitudinal = (
-                accel_vec.x * forward_vec.x +
-                accel_vec.y * forward_vec.y +
-                accel_vec.z * forward_vec.z
-            )
-        except Exception:
-            accel_longitudinal = None
-
-        Y_current = self.longitudinal_limiter.limit(
-            raw_torque,
-            self.system_state.ego.speed_ms,
-            accel_longitudinal
-        )
-
-        # 更新状态
-        inc_state.Y_prev = Y_current
-        inc_state.e_i_prev = e_i_current
-
-        # 每帧输出增量控制调试信息
-        print(f"[增量控制] Frame={self.system_state.frame_count}, "
-              f"e_i(k)={e_i_current:.3f}, e_i(k-1)={e_i_prev:.3f}, "
-              f"Δe={delta_e:.3f}, ΔY={delta_Y:.2f}Nm, Y={Y_current:.2f}Nm")
-
-        # 保存当前扭矩估计，供绘图对比使用
-        self.system_state.acc.incremental_torque_nm = Y_current
+        # 保存当前扭矩，供绘图使用
+        self.system_state.acc.incremental_torque_nm = control_torque_nm
 
         # 扭矩转油门/刹车
         if self.config.use_torque_converter:
             throttle, brake = self.resources.torque_converter.engine_torque_to_throttle(
-                Y_current,
+                control_torque_nm,
                 self.system_state.ego.speed_kmh
             )
             # 防止同时有油门和刹车
-            if Y_current >= 0:
+            if control_torque_nm >= 0:
                 brake = 0.0
         else:
             # 简化映射
-            if Y_current > 0:
-                throttle = min(Y_current / 749.0, 1.0)
+            if control_torque_nm > 0:
+                throttle = min(control_torque_nm / 749.0, 1.0)
                 brake = 0.0
             else:
                 throttle = 0.0
-                brake = min(abs(Y_current) / 100.0, 1.0)
+                brake = min(abs(control_torque_nm) / 100.0, 1.0)
 
         return throttle, brake
 
@@ -613,9 +550,7 @@ class ControlLoopManager:
         self.system_state.acc.system_enabled = enabled
         if not enabled:
             self.acc_controller.reset()
-            self._reset_incremental_control()
-        else:
-            self.longitudinal_limiter.reset()
+            self._reset_control_state()
 
     def trigger_ramp_speed(self):
         """触发前车斜坡速度"""
