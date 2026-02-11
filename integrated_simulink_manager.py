@@ -4,7 +4,8 @@
 使用单一UDP接口与acc_integrated_model.slx通信
 
 设计理念（更新版 - 基于 SIMULINK_SPPVT_UPDATE_PLAN.md）：
-- Python 计算 control_error_signed, Y0, reset_flag
+- Python 传入 steady_state_torque（维持当前速度所需的稳态扭矩）和 reset_flag
+- Simulink Y0_Latch 在启控瞬间锁存 steady_state_torque 作为 Y0
 - Simulink 维护 SPPVT 状态（stage, stage_offset, cooldown, error_sign）
 - 控制方程：Y(k) = Kp * (error + stage_offset) + Y0
 - control_output 直接输出 N·m，Python 不再做缩放
@@ -26,7 +27,7 @@ class IntegratedSimulinkManager:
     统一的Simulink集成管理器
 
     与acc_integrated_model.slx通信（新接口）：
-    - 输入：7个double (Decision 4个 + control_error_signed, Y0, reset_flag)
+    - 输入：10个double (Decision 4 + 原始感知 4 + steady_state_torque + reset_flag)
     - 输出：6个double (Decision 5个 + control_output)
 
     UDP配置：
@@ -89,8 +90,7 @@ class IntegratedSimulinkManager:
         self._prev_G2_s = self.params['G2_s']  # 上一帧G2（用于突变检测）
         self._reset_pending = False             # 待发送的重置标志（边沿检测触发后设置）
 
-        # ============ Y0 计算物理参数 ============
-        # 从 acc_config.py 和 torque_to_throttle_converter.py 获取
+        # ============ 稳态扭矩计算物理参数 ============
         self._vehicle_mass = 2370.0  # kg (CARLA Audi e-tron)
         self._wheel_radius = 0.37    # m
         self._gear_ratio = 9.204     # 总传动比
@@ -129,7 +129,7 @@ class IntegratedSimulinkManager:
         self.udp_client = SimulinkUDPClient(
             send_port=self.config.integrated_udp_send_port,
             recv_port=self.config.integrated_udp_recv_port,
-            num_inputs=11,  # Decision 4 + 原始感知 5 (speed,dist,G2,Vtarget,mode) + Y0 + reset_flag
+            num_inputs=10,  # Decision 4 + 原始感知 4 (speed,dist,G2,Vtarget) + steady_state_torque + reset_flag
             num_outputs=6,  # Decision 5个 + control_output
             timeout=self.config.integrated_udp_timeout,
             debug=debug,
@@ -140,7 +140,7 @@ class IntegratedSimulinkManager:
         if self.debug:
             print("✅ 统一Simulink管理器已初始化（新架构）")
             print(f"   UDP: 发送→{self.config.integrated_udp_send_port}(源端口{self.config.integrated_udp_local_send_port}), 接收←{self.config.integrated_udp_recv_port}")
-            print(f"   输入: 11个double (Decision 4 + 原始感知 5 + Y0 + reset)")
+            print(f"   输入: 10个double (Decision 4 + 原始感知 4 + steady_state_torque + reset)")
             print(f"   输出: 6个double (Decision 5 + control_output)")
         if self._trace_enabled:
             self._init_trace()
@@ -154,48 +154,31 @@ class IntegratedSimulinkManager:
             float(1 if self.decision_state['has_history'] else 0),  # 0.0
             float(self.decision_state['last_active_decision']), # 8.0 (R8待命)
 
-            # 原始感知输入 (5-9)
+            # 原始感知输入 (5-8)
             0.0,     # ego_speed_ms
             9999.0,  # vehicle_distance (无目标)
-            float(self.params['G2_s']),              # G2_s
-            float(self.params['V_target_kmh'] / 3.6),  # V_target_ms
-            2.0,     # control_mode_flag (SPEED 模式)
+            float(self.params['G2_s']),  # G2_s
+            0.0,     # target_speed_ms (前车速度，仅显示用)
 
-            # 控制参数 (10-11)
-            0.0,  # Y0 (初始扭矩)
+            # 控制参数 (9-10)
+            0.0,  # steady_state_torque (稳态扭矩，速度为0时为0)
             1.0   # reset_flag = 1 (初始化时复位)
         ]
 
-    def _calculate_Y0(self, speed_ms: float) -> float:
+    def _calculate_steady_state_torque(self, speed_ms: float) -> float:
         """
-        计算维持当前速度所需的基础扭矩 Y0
+        计算维持当前速度所需的稳态扭矩（阻力平衡）
 
-        基于阻力平衡：
-        - 滚动阻力: F_roll = μ * m * g
-        - 空气阻力: F_aero = 0.5 * ρ * CdA * v²
-        - 总阻力: F_total = F_roll + F_aero
-        - 发动机扭矩: Y0 = F_total * wheel_radius / gear_ratio
-
-        Args:
-            speed_ms: 当前车速 (m/s)
+        Y0_Latch 会在启控瞬间锁存此值作为 Y0，
+        使得 error=0 时输出恰好维持当前速度。
 
         Returns:
             维持速度所需的发动机扭矩 (N·m)
         """
-        # 滚动阻力
         F_roll = self._rolling_resistance_coeff * self._vehicle_mass * self._gravity
-
-        # 空气阻力
         F_aero = 0.5 * self._air_density * self._aero_cdA * (speed_ms ** 2)
-
-        # 总阻力
         F_total = F_roll + F_aero
-
-        # 转换为发动机扭矩
-        # 车轮扭矩 = F * r，发动机扭矩 = 车轮扭矩 / 传动比
-        Y0 = F_total * self._wheel_radius / self._gear_ratio
-
-        return Y0
+        return F_total * self._wheel_radius / self._gear_ratio
 
     def _calculate_reset_flag(self, control_enabled: bool) -> bool:
         """
@@ -395,21 +378,22 @@ class IntegratedSimulinkManager:
 
         新接口：
         1-4: Decision 输入 (current_state, command_type, has_history, last_active_decision)
-        5-9: 原始感知输入 (ego_speed_ms, vehicle_distance, G2_s, V_target_ms, control_mode_flag)
-        10:  Y0（维持当前速度所需扭矩，Python计算）
-        11:  reset_flag（是否需要复位SPPVT状态，Python计算）
+        5-8: 原始感知输入 (ego_speed_ms, vehicle_distance, G2_s, target_speed_ms)
+        9:   steady_state_torque（维持当前速度所需的稳态扭矩，Python根据阻力公式计算）
+             Simulink 端 Y0_Latch 子系统在启控瞬间锁存此值作为 Y0
+        10:  reset_flag（是否需要复位SPPVT状态，Python计算）
 
-        误差计算已迁移到 Simulink 内部的 Error_Calculation 子系统。
+        误差计算已迁移到 Simulink 内部的 Error_Calculation 子系统（固定时距模式）。
+        target_speed_ms 为前车速度，不参与计算，仅在 Simulink 中做显示用。
         """
         # 获取原始感知数据
         speed_ms = input_data.get('ego_speed_ms', input_data.get('ego_speed_kmh', 0.0) / 3.6)
         vehicle_distance = input_data.get('vehicle_distance', 9999.0)
         G2_s = float(self.params['G2_s'])
-        V_target_ms = float(self.params['V_target_kmh'] / 3.6)
-        control_mode_flag = float(input_data.get('control_mode_flag', 2))
+        target_speed_ms = float(input_data.get('target_speed_ms', 0.0))
 
-        # 计算 Y0（基于当前车速，保留在 Python 端）
-        Y0 = self._calculate_Y0(speed_ms)
+        # 稳态扭矩（维持当前速度所需的发动机扭矩，Simulink Y0_Latch 在启控时锁存为 Y0）
+        current_engine_torque = self._calculate_steady_state_torque(speed_ms)
 
         # 计算 reset_flag（保留在 Python 端）
         reset_flag = self._calculate_reset_flag(self._last_control_enabled)
@@ -426,9 +410,8 @@ class IntegratedSimulinkManager:
             'ego_speed_ms': speed_ms,
             'vehicle_distance': vehicle_distance,
             'G2_s': G2_s,
-            'V_target_ms': V_target_ms,
-            'control_mode_flag': control_mode_flag,
-            'Y0': Y0,
+            'target_speed_ms': target_speed_ms,
+            'current_engine_torque': current_engine_torque,
             'reset_flag': float(1 if reset_flag else 0),
         }
 
@@ -439,15 +422,14 @@ class IntegratedSimulinkManager:
             float(1 if self.decision_state['has_history'] else 0),
             float(self.decision_state['last_active_decision']),
 
-            # 原始感知输入 (5-9)，误差由 Simulink Error_Calculation 子系统计算
+            # 原始感知输入 (5-8)，误差由 Simulink Error_Calculation 子系统计算（固定时距模式）
             speed_ms,
             vehicle_distance,
             G2_s,
-            V_target_ms,
-            control_mode_flag,
+            target_speed_ms,  # 前车速度，仅 Simulink 显示用
 
-            # 控制参数 (10-11)
-            Y0,
+            # 控制参数 (9-10)
+            current_engine_torque,  # 稳态扭矩，Simulink Y0_Latch 启控时锁存为 Y0
             float(1 if reset_flag else 0)
         ]
 
@@ -537,7 +519,7 @@ class IntegratedSimulinkManager:
         # 当前帧输入信息（用于输出和调试）
         current_error = input_data['control_error']
         speed_ms = input_data.get('ego_speed_ms', input_data.get('ego_speed_kmh', 0.0) / 3.6)
-        Y0 = self._calculate_Y0(speed_ms)
+        steady_state_torque = self._last_trace_inputs.get('current_engine_torque', 0.0)
 
         # 构建输出字典（与ACCControlFacade格式兼容）
         integrated_output = {
@@ -554,7 +536,7 @@ class IntegratedSimulinkManager:
 
             # SPPVT输出（简化版）
             'control_output': control_output_nm,  # 直接扭矩输出 (N·m)
-            'Y0': Y0,  # 基础扭矩（供调试）
+            'steady_state_torque': steady_state_torque,  # 稳态扭矩（供调试）
 
             # 兼容旧接口（部分字段保留，值可能为0）
             'sppvt_control_output': control_output_nm,  # 兼容旧字段名
@@ -656,9 +638,8 @@ class IntegratedSimulinkManager:
                     'ego_speed_ms_in',
                     'vehicle_distance_in',
                     'G2_s_in',
-                    'V_target_ms_in',
-                    'control_mode_flag_in',
-                    'Y0_in',
+                    'target_speed_ms_in',
+                    'current_engine_torque_in',
                     'reset_flag_in',
                     'next_state_out',
                     'decision_out',
@@ -699,9 +680,8 @@ class IntegratedSimulinkManager:
                 f"{ti.get('ego_speed_ms', 0.0):.6f}",
                 f"{ti.get('vehicle_distance', 9999.0):.6f}",
                 f"{ti.get('G2_s', 0.0):.6f}",
-                f"{ti.get('V_target_ms', 0.0):.6f}",
-                ti.get('control_mode_flag', 1),
-                f"{ti.get('Y0', 0.0):.6f}",
+                f"{ti.get('target_speed_ms', 0.0):.6f}",
+                f"{ti.get('current_engine_torque', 0.0):.6f}",
                 ti.get('reset_flag', 0.0),
                 output_data.get('current_state', -1),
                 output_data.get('current_decision', -1),

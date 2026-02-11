@@ -344,6 +344,7 @@ class ControlLoopManager:
             'manual_throttle_active': manual_input_state.has_throttle_input(),
             'control_error': sanitize(perception_data.control_error),
             'control_mode_flag': perception_data.control_mode_flag,
+            'target_speed_ms': sanitize(self.system_state.target.speed_ms),
             'V_target_kmh': sanitize(self.acc_params['V_target_kmh'], 50.0),
             'V_min_kmh': sanitize(self.acc_params['V_min_kmh'], 30.0),
             'G2_s': sanitize(self.acc_params['G2_s'], 2.0),
@@ -479,10 +480,10 @@ class ControlLoopManager:
         control_torque_nm = unified_output.get('control_output', 0.0)
 
         # 调试输出
-        Y0 = unified_output.get('Y0', 0.0)
+        steady_state_torque = unified_output.get('steady_state_torque', 0.0)
         control_error = unified_output.get('new_control_error', 0.0)
         print(f"[直接控制] Frame={self.system_state.frame_count}, "
-              f"error={control_error:.3f}, Y0={Y0:.2f}Nm, "
+              f"error={control_error:.3f}, steady_torque={steady_state_torque:.2f}Nm, "
               f"control_output={control_torque_nm:.2f}Nm")
 
         # 保存当前扭矩，供绘图使用

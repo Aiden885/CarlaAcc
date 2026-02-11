@@ -280,6 +280,23 @@ class TorqueToThrottleConverter:
 
         return throttle, brake
 
+    def throttle_to_engine_torque(self, throttle: float, current_speed_kmh: float) -> float:
+        """
+        油门开度 → 发动机扭矩（engine_torque_to_throttle 的反向计算）
+
+        engine_torque = throttle * max_torque_at_current_rpm
+
+        参数:
+            throttle: 油门开度 [0, 1]
+            current_speed_kmh: 当前车速 (km/h)
+
+        返回:
+            发动机扭矩 (N·m)
+        """
+        current_rpm = self._calculate_engine_rpm(current_speed_kmh)
+        max_available_torque = self._get_max_torque_at_rpm(current_rpm)
+        return throttle * max_available_torque
+
     def get_conversion_info(self, desired_engine_torque, current_speed_kmh):
         """
         获取转换过程的详细信息（用于调试）

@@ -484,7 +484,8 @@ class acc:
                 req_torque,
                 req_brake_torque,
                 inc_req_torque,
-                inc_req_brake_torque
+                inc_req_brake_torque,
+                env_data.get("vehicle_distance", 0.0)
             )
 
     def _get_system_info(self, step_result, manual_input_state):

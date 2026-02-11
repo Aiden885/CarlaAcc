@@ -42,6 +42,7 @@ class RealtimeResultPlotter:
         self.target_speeds = deque(maxlen=max_points)
         self.inc_torques = deque(maxlen=max_points)
         self.inc_brake_torques = deque(maxlen=max_points)
+        self.vehicle_distances = deque(maxlen=max_points)
 
         # ACC recording control
         self.acc_started = False  # Only start recording when ACC is enabled
@@ -70,7 +71,8 @@ class RealtimeResultPlotter:
                  ego_speed: float = 0.0, target_speed: float = 0.0,
                  control_enabled: bool = False,
                  request_torque: float = 0.0, request_brake_torque: float = 0.0,
-                 incremental_torque: float = 0.0, incremental_brake_torque: float = 0.0) -> None:
+                 incremental_torque: float = 0.0, incremental_brake_torque: float = 0.0,
+                 vehicle_distance: float = 0.0) -> None:
         """Push a new sample into the queue from the producer thread.
 
         Args:
@@ -84,6 +86,7 @@ class RealtimeResultPlotter:
             request_brake_torque: 请求制动扭矩 (Nm, 正值，制动时，当前不再保存)
             incremental_torque: 增量控制扭矩 (Nm, 正值，加速时)
             incremental_brake_torque: 增量控制制动扭矩 (Nm, 正值，制动时)
+            vehicle_distance: 两车距离 (m)
         """
         # Only start recording after ACC is enabled
         if not self.acc_started:
@@ -96,13 +99,13 @@ class RealtimeResultPlotter:
         try:
             self.data_queue.put_nowait((desired_gap, actual_gap, ego_speed, target_speed, control_enabled,
                                         request_torque, request_brake_torque,
-                                        incremental_torque, incremental_brake_torque))
+                                        incremental_torque, incremental_brake_torque, vehicle_distance))
         except queue.Full:
             try:
                 self.data_queue.get_nowait()
                 self.data_queue.put_nowait((desired_gap, actual_gap, ego_speed, target_speed, control_enabled,
                                             request_torque, request_brake_torque,
-                                            incremental_torque, incremental_brake_torque))
+                                            incremental_torque, incremental_brake_torque, vehicle_distance))
             except queue.Empty:
                 pass
 
@@ -165,6 +168,7 @@ class RealtimeResultPlotter:
         target_speeds = np.asarray(self.target_speeds, dtype=float)
         inc_torques = np.asarray(self.inc_torques, dtype=float)
         inc_brake_torques = np.asarray(self.inc_brake_torques, dtype=float)
+        vehicle_distances = np.asarray(self.vehicle_distances, dtype=float)
 
         # MATLAB经典配色
         color_desired = "#0072BD"  # MATLAB蓝色
@@ -178,17 +182,18 @@ class RealtimeResultPlotter:
         text_color = "#000000"
 
         # 创建新的figure用于保存（使用Agg后端，不显示）
-        fig = plt.figure(figsize=(14, 12), facecolor=bg_color)
+        fig = plt.figure(figsize=(14, 14), facecolor=bg_color)
 
         # 使用subplot创建子图，便于自动布局
-        ax1 = fig.add_subplot(5, 1, 1, facecolor=bg_color)
-        ax2 = fig.add_subplot(5, 1, 2, facecolor=bg_color)
-        ax3 = fig.add_subplot(5, 1, 3, facecolor=bg_color)
-        ax4 = fig.add_subplot(5, 1, 4, facecolor=bg_color)
-        ax5 = fig.add_subplot(5, 1, 5, facecolor=bg_color)
+        ax1 = fig.add_subplot(6, 1, 1, facecolor=bg_color)
+        ax2 = fig.add_subplot(6, 1, 2, facecolor=bg_color)
+        ax3 = fig.add_subplot(6, 1, 3, facecolor=bg_color)
+        ax4 = fig.add_subplot(6, 1, 4, facecolor=bg_color)
+        ax5 = fig.add_subplot(6, 1, 5, facecolor=bg_color)
+        ax6 = fig.add_subplot(6, 1, 6, facecolor=bg_color)
 
         # 配置所有子图的样式
-        for ax in [ax1, ax2, ax3, ax4, ax5]:
+        for ax in [ax1, ax2, ax3, ax4, ax5, ax6]:
             ax.set_facecolor(bg_color)
             ax.grid(True, color=grid_color, linestyle="-", linewidth=0.7, alpha=0.8)
             ax.tick_params(colors=text_color, labelsize=10)
@@ -201,7 +206,6 @@ class RealtimeResultPlotter:
                 label="Desired Time Gap", marker='o', markersize=2, markevery=10)
         ax1.plot(steps, actual, color=color_actual, linewidth=2.0,
                 label="Actual Time Gap", marker='s', markersize=2, markevery=10)
-        ax1.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         ax1.set_ylabel("Time Gap (s)", color=text_color, fontsize=11, fontweight='bold')
         ax1.set_title("Time Gap Tracking", color=text_color, fontsize=13, fontweight="bold")
         ax1.legend(loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000",
@@ -212,7 +216,6 @@ class RealtimeResultPlotter:
                 label="Time Gap Error", marker='d', markersize=2, markevery=10)
         # 添加零位参考线（虚线）
         ax2.axhline(y=0, color='#808080', linestyle='--', linewidth=1.5, alpha=0.8, label="Zero Reference")
-        ax2.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         ax2.set_ylabel("Error (s)", color=text_color, fontsize=11, fontweight='bold')
         ax2.set_title("Time Gap Error (Actual - Desired)", color=text_color,
                      fontsize=13, fontweight="bold")
@@ -224,7 +227,6 @@ class RealtimeResultPlotter:
                 label="Ego Speed", marker='v', markersize=2, markevery=10)
         ax3.plot(steps, target_speeds, color=color_target, linewidth=2.0,
                 label="Target Speed", marker='^', markersize=2, markevery=10)
-        ax3.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         ax3.set_ylabel("Speed (km/h)", color=text_color, fontsize=11, fontweight='bold')
         ax3.set_title("Vehicle Speeds", color=text_color, fontsize=13, fontweight="bold")
         ax3.legend(loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000",
@@ -234,7 +236,6 @@ class RealtimeResultPlotter:
         ax4.plot(steps, inc_torques, color="#2ca02c", linewidth=2.0, linestyle="--",
                 label="Inc Torque", marker='x', markersize=2, markevery=10)
         ax4.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
-        ax4.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         ax4.set_ylabel("Torque (Nm)", color=text_color, fontsize=11, fontweight='bold')
         ax4.set_title("Incremental Engine Torque", color=text_color, fontsize=13, fontweight="bold")
         ax4.legend(loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000",
@@ -244,10 +245,18 @@ class RealtimeResultPlotter:
         ax5.plot(steps, inc_brake_torques, color="#9467bd", linewidth=2.0, linestyle="--",
                 label="Inc Brake Torque", marker='x', markersize=2, markevery=10)
         ax5.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
-        ax5.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         ax5.set_ylabel("Brake Torque (Nm)", color=text_color, fontsize=11, fontweight='bold')
         ax5.set_title("Incremental Brake Torque", color=text_color, fontsize=13, fontweight="bold")
         ax5.legend(loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000",
+                  fontsize=10, framealpha=1.0)
+
+        # 子图6：两车距离
+        ax6.plot(steps, vehicle_distances, color="#17becf", linewidth=2.0,
+                label="Vehicle Distance", marker='o', markersize=2, markevery=10)
+        ax6.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
+        ax6.set_ylabel("Distance (m)", color=text_color, fontsize=11, fontweight='bold')
+        ax6.set_title("Vehicle Distance", color=text_color, fontsize=13, fontweight="bold")
+        ax6.legend(loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000",
                   fontsize=10, framealpha=1.0)
 
         # 自动调整布局
@@ -290,7 +299,8 @@ class RealtimeResultPlotter:
                 # Write header
                 writer.writerow(['Step', 'Desired Gap (s)', 'Actual Gap (s)',
                                  'Error (s)', 'Ego Speed (km/h)', 'Target Speed (km/h)',
-                                 'Incremental Torque (Nm)', 'Incremental Brake Torque (Nm)'])
+                                 'Incremental Torque (Nm)', 'Incremental Brake Torque (Nm)',
+                                 'Vehicle Distance (m)'])
                 # Write data
                 for i in range(len(self.steps)):
                     writer.writerow([
@@ -301,7 +311,8 @@ class RealtimeResultPlotter:
                         self.ego_speeds[i],
                         self.target_speeds[i],
                         self.inc_torques[i],
-                        self.inc_brake_torques[i]
+                        self.inc_brake_torques[i],
+                        self.vehicle_distances[i]
                     ])
             print(f"✅ CSV数据已保存: {csv_filename}")
         except Exception as e:
@@ -335,7 +346,7 @@ class RealtimeResultPlotter:
         self.color_ego = "#7E2F8E"      # MATLAB紫色 - 自车
         self.color_target = "#77AC30"   # MATLAB绿色 - 前车
 
-        self.fig = plt.figure(figsize=(14, 12), facecolor=bg_color)
+        self.fig = plt.figure(figsize=(14, 14), facecolor=bg_color)
         self.fig.canvas.manager.set_window_title(
             "ACC Results - Step Mode"
         )
@@ -343,15 +354,20 @@ class RealtimeResultPlotter:
         # Register window close event to save results
         self.fig.canvas.mpl_connect('close_event', self._on_window_close)
 
-        # 5个子图：时距跟踪、误差、速度、扭矩、制动扭矩（增加间距避免标题和横轴重叠）
-        # 调整布局以增加垂直间距 (Gap ~0.07)
-        self.ax1 = plt.axes([0.08, 0.80, 0.78, 0.16], facecolor=bg_color)  # 时距跟踪
-        self.ax2 = plt.axes([0.08, 0.62, 0.78, 0.11], facecolor=bg_color)  # 误差
-        self.ax3 = plt.axes([0.08, 0.44, 0.78, 0.11], facecolor=bg_color)  # 速度
-        self.ax4 = plt.axes([0.08, 0.26, 0.78, 0.11], facecolor=bg_color)  # 加速扭矩
-        self.ax5 = plt.axes([0.08, 0.08, 0.78, 0.11], facecolor=bg_color)  # 制动扭矩
+        # 6个子图：时距跟踪、误差、速度、扭矩、制动扭矩、两车距离
+        h = 0.11    # 每个子图高度
+        g = 0.04    # 子图间距
+        b = 0.04    # 底部起始
+        w = 0.78    # 子图宽度
+        l = 0.08    # 左边距
+        self.ax1 = plt.axes([l, b + 5*(h+g), w, h], facecolor=bg_color)  # 时距跟踪
+        self.ax2 = plt.axes([l, b + 4*(h+g), w, h], facecolor=bg_color)  # 误差
+        self.ax3 = plt.axes([l, b + 3*(h+g), w, h], facecolor=bg_color)  # 速度
+        self.ax4 = plt.axes([l, b + 2*(h+g), w, h], facecolor=bg_color)  # 加速扭矩
+        self.ax5 = plt.axes([l, b + 1*(h+g), w, h], facecolor=bg_color)  # 制动扭矩
+        self.ax6 = plt.axes([l, b + 0*(h+g), w, h], facecolor=bg_color)  # 两车距离
 
-        self.axes = [self.ax1, self.ax2, self.ax3, self.ax4, self.ax5]
+        self.axes = [self.ax1, self.ax2, self.ax3, self.ax4, self.ax5, self.ax6]
 
         for ax in self.axes:
             ax.set_facecolor(bg_color)
@@ -368,7 +384,6 @@ class RealtimeResultPlotter:
         self.line_actual, = self.ax1.plot(
             [], [], color=self.color_actual, linewidth=2.0, label="Actual Time Gap", marker='s', markersize=2, markevery=10
         )
-        self.ax1.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         self.ax1.set_ylabel("Time Gap (s)", color=text_color, fontsize=11, fontweight='bold')
         self.ax1.set_title(
             "Time Gap Tracking", color=text_color, fontsize=13, fontweight="bold"
@@ -383,7 +398,6 @@ class RealtimeResultPlotter:
         )
         # 添加零位参考线（虚线）
         self.ax2.axhline(y=0, color='#808080', linestyle='--', linewidth=1.5, alpha=0.8, label="Zero Reference")
-        self.ax2.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         self.ax2.set_ylabel("Error (s)", color=text_color, fontsize=11, fontweight='bold')
         self.ax2.set_title(
             "Time Gap Error (Actual - Desired)", color=text_color, fontsize=13, fontweight="bold"
@@ -399,7 +413,6 @@ class RealtimeResultPlotter:
         self.line_target_speed, = self.ax3.plot(
             [], [], color=self.color_target, linewidth=2.0, label="Target Speed", marker='^', markersize=2, markevery=10
         )
-        self.ax3.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         self.ax3.set_ylabel("Speed (km/h)", color=text_color, fontsize=11, fontweight='bold')
         self.ax3.set_title(
             "Vehicle Speeds", color=text_color, fontsize=13, fontweight="bold"
@@ -414,7 +427,6 @@ class RealtimeResultPlotter:
             label="Inc Torque", marker='x', markersize=2, markevery=10
         )
         self.ax4.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
-        self.ax4.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         self.ax4.set_ylabel("Torque (Nm)", color=text_color, fontsize=11, fontweight='bold')
         self.ax4.set_title(
             "Incremental Engine Torque", color=text_color, fontsize=13, fontweight="bold"
@@ -429,12 +441,24 @@ class RealtimeResultPlotter:
             label="Inc Brake Torque", marker='x', markersize=2, markevery=10
         )
         self.ax5.axhline(y=0, color="#000000", linestyle="--", linewidth=1.5, alpha=0.7)
-        self.ax5.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
         self.ax5.set_ylabel("Brake Torque (Nm)", color=text_color, fontsize=11, fontweight='bold')
         self.ax5.set_title(
             "Incremental Brake Torque", color=text_color, fontsize=13, fontweight="bold"
         )
         self.ax5.legend(
+            loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
+        )
+
+        # 子图6：两车距离
+        self.line_distance, = self.ax6.plot(
+            [], [], color="#17becf", linewidth=2.0, label="Vehicle Distance", marker='o', markersize=2, markevery=10
+        )
+        self.ax6.set_xlabel("Step", color=text_color, fontsize=11, fontweight='bold')
+        self.ax6.set_ylabel("Distance (m)", color=text_color, fontsize=11, fontweight='bold')
+        self.ax6.set_title(
+            "Vehicle Distance", color=text_color, fontsize=13, fontweight="bold"
+        )
+        self.ax6.legend(
             loc="upper left", bbox_to_anchor=(1.01, 1), facecolor=bg_color, edgecolor="#000000", fontsize=10, framealpha=1.0
         )
 
@@ -469,8 +493,11 @@ class RealtimeResultPlotter:
         while not self.data_queue.empty() and data_count < 50:
             try:
                 item = self.data_queue.get_nowait()
-                if len(item) == 9:
+                if len(item) == 10:
+                    desired, actual, ego_speed, target_speed, control_enabled, req_torque, req_brake_torque, inc_torque, inc_brake_torque, vehicle_distance = item
+                elif len(item) == 9:
                     desired, actual, ego_speed, target_speed, control_enabled, req_torque, req_brake_torque, inc_torque, inc_brake_torque = item
+                    vehicle_distance = 0.0
                 elif len(item) == 7:
                     desired, actual, ego_speed, target_speed, control_enabled, req_torque, req_brake_torque = item
                     inc_torque, inc_brake_torque = 0.0, 0.0
@@ -479,6 +506,7 @@ class RealtimeResultPlotter:
                     desired, actual, ego_speed, target_speed, control_enabled = item
                     req_torque, req_brake_torque = 0.0, 0.0
                     inc_torque, inc_brake_torque = 0.0, 0.0
+                    vehicle_distance = 0.0
             except queue.Empty:
                 break
 
@@ -491,6 +519,7 @@ class RealtimeResultPlotter:
             self.target_speeds.append(target_speed)
             self.inc_torques.append(inc_torque)
             self.inc_brake_torques.append(inc_brake_torque)
+            self.vehicle_distances.append(vehicle_distance)
 
             self.current_step += 1
             self.total_points += 1
@@ -509,6 +538,7 @@ class RealtimeResultPlotter:
         # 转换为numpy数组
         inc_torques_array = np.asarray(self.inc_torques, dtype=float)
         inc_brake_torques_array = np.asarray(self.inc_brake_torques, dtype=float)
+        vehicle_distances_array = np.asarray(self.vehicle_distances, dtype=float)
 
         # 更新所有曲线数据
         self.line_desired.set_data(steps, desired)
@@ -518,6 +548,7 @@ class RealtimeResultPlotter:
         self.line_target_speed.set_data(steps, target_speeds)
         self.line_torque_inc.set_data(steps, inc_torques_array)
         self.line_brake_torque_inc.set_data(steps, inc_brake_torques_array)
+        self.line_distance.set_data(steps, vehicle_distances_array)
 
         # Set X-axis limits
         x_left, x_right = 0, 1
@@ -530,7 +561,7 @@ class RealtimeResultPlotter:
                 padding = (x_right - x_left) * 0.02
                 x_right += padding
 
-            for axis in (self.ax1, self.ax2, self.ax3, self.ax4, self.ax5):
+            for axis in (self.ax1, self.ax2, self.ax3, self.ax4, self.ax5, self.ax6):
                 axis.set_xlim(x_left, x_right)
 
         # Set Y-axis limits for time gap
@@ -609,6 +640,23 @@ class RealtimeResultPlotter:
                 self.ax5.set_ylim(lower, upper)
                 self.ax5.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
 
+        # Set distance Y-axis limits (子图6)
+        if vehicle_distances_array.size and steps.size:
+            d_min = float(np.nanmin(vehicle_distances_array))
+            d_max = float(np.nanmax(vehicle_distances_array))
+            if np.isfinite(d_min) and np.isfinite(d_max):
+                if np.isclose(d_min, d_max):
+                    span = max(abs(d_min) * 0.1, 5.0)
+                else:
+                    span = max((d_max - d_min) * 0.1, 5.0)
+                lower = max(0, d_min - span)
+                upper = d_max + span
+                if np.isclose(lower, upper):
+                    upper = lower + 10.0
+                self.ax6.set_ylim(lower, upper)
+                self.ax6.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
+
         return (self.line_desired, self.line_actual, self.line_error,
                 self.line_ego_speed, self.line_target_speed,
-                self.line_torque_inc, self.line_brake_torque_inc)
+                self.line_torque_inc, self.line_brake_torque_inc,
+                self.line_distance)

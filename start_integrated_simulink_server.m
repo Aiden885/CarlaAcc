@@ -1,10 +1,10 @@
 %% 启动统一Simulink模型服务器
 % 用于acc_integrated_model.slx的UDP通信
 %
-% UDP输入 (11个double):
+% UDP输入 (10个double):
 %   [current_state, command_type, has_history, last_active_decision,
-%    ego_speed_ms, vehicle_distance, G2_s, V_target_ms, control_mode_flag,
-%    Y0, reset_flag]
+%    ego_speed_ms, vehicle_distance, G2_s, target_speed_ms,
+%    steady_state_torque, reset_flag]
 %
 % UDP输出 (6个double):
 %   [next_state, decision, control_enabled, next_has_history,
@@ -93,8 +93,8 @@ try
         fprintf('   UDP Receive:\n');
         fprintf('      - LocalPort: %s (Python发送目标)\n', local_port);
         fprintf('      - DataSize: %s\n', data_size);
-        if ~strcmp(data_size, '[11 1]')
-            fprintf('   ⚠️  DataSize 应为 [11 1] (11个double输入)，当前为 %s\n', data_size);
+        if ~strcmp(data_size, '[10 1]')
+            fprintf('   ⚠️  DataSize 应为 [10 1] (10个double输入)，当前为 %s\n', data_size);
         end
     end
     % UDP Send
@@ -114,7 +114,7 @@ try
     fprintf('=== Simulink服务器就绪 ===\n');
     fprintf('\n');
     fprintf('UDP服务器监听中...\n');
-    fprintf('   Python发送 → 端口27000 (11个double)\n');
+    fprintf('   Python发送 → 端口27000 (10个double)\n');
     fprintf('   Python接收 ← 端口27001 (6个double)\n');
     fprintf('\n');
     fprintf('现在可以运行Python测试脚本:\n');
