@@ -288,9 +288,11 @@ class ControlLoopManager:
             reasons.append("time_to_speed")
         reason_str = ",".join(reasons)
 
-        print(f"[控制重置] 触发重置: {reason_str}")
-        # 请求 Simulink 重置 SPPVT 状态（通过 reset_flag）
-        self.acc_controller.reset_sppvt_state(reason=reason_str)
+        print(f"[控制重置] 检测到切换事件: {reason_str}")
+        # 注意: reset_flag 现由 Simulink 内部的 Reset_Flag_Detector 处理
+        # (control_enabled 下降沿 + G2 突变)
+        # 以下 Python 端触发已移除，未来如需恢复可取消注释:
+        # self.acc_controller.reset_sppvt_state(reason=reason_str)
 
     def _update_vehicle_states(self):
         """更新车辆状态"""
@@ -348,6 +350,7 @@ class ControlLoopManager:
             'V_target_kmh': sanitize(self.acc_params['V_target_kmh'], 50.0),
             'V_min_kmh': sanitize(self.acc_params['V_min_kmh'], 30.0),
             'G2_s': sanitize(self.acc_params['G2_s'], 2.0),
+            'current_engine_torque_nm': self._get_current_engine_torque(),
             'timestamp': time.time(),
         }
 
@@ -415,18 +418,14 @@ class ControlLoopManager:
         # 横向控制
         steer = self._compute_lateral_control(perception_data, manual_input_state)
 
-        # 纵向控制
+        # 纵向控制 (Simulink final_output 已包含 R7 扭矩仲裁)
         throttle, brake = self._compute_longitudinal_control(unified_output, perception_data)
 
-        # 扭矩仲裁
-        torque_arbitration = unified_output.get('torque_arbitration_active', False)
+        # 驾驶员油门/刹车覆盖
+        # 扭矩仲裁(R7)已由 Simulink 内部的 Torque_Arbitration 子系统完成
         if manual_input_state.has_throttle_input():
-            if torque_arbitration:
-                throttle = max(throttle, manual_input_state.throttle)
-                brake = 0.0
-            else:
-                throttle = manual_input_state.throttle
-                brake = 0.0
+            throttle = manual_input_state.throttle
+            brake = 0.0
 
         if manual_input_state.has_brake_input():
             throttle = 0.0
@@ -439,7 +438,6 @@ class ControlLoopManager:
         control_output.brake = brake
         control_output.steer = steer
         control_output.mode = mode
-        control_output.torque_arbitration = torque_arbitration
         control_output.sppvt_throttle = throttle
         control_output.driver_throttle = manual_input_state.throttle
 
@@ -465,6 +463,19 @@ class ControlLoopManager:
 
         return steer_output
 
+    def _get_current_engine_torque(self) -> float:
+        """获取当前发动机扭矩 (N·m)，基于当前油门和车速"""
+        try:
+            current_control = self.resources.ego_vehicle.get_control()
+            current_throttle = current_control.throttle
+            current_speed_kmh = self.system_state.ego.speed_kmh
+            engine_torque = self.resources.torque_converter.throttle_to_engine_torque(
+                current_throttle, current_speed_kmh
+            )
+            return engine_torque
+        except Exception:
+            return 0.0
+
     def _reset_control_state(self):
         """复位控制状态（新架构下仅重置绘图用的扭矩记录）"""
         self.system_state.acc.incremental_torque_nm = 0.0
@@ -480,11 +491,9 @@ class ControlLoopManager:
         control_torque_nm = unified_output.get('control_output', 0.0)
 
         # 调试输出
-        steady_state_torque = unified_output.get('steady_state_torque', 0.0)
         control_error = unified_output.get('new_control_error', 0.0)
         print(f"[直接控制] Frame={self.system_state.frame_count}, "
-              f"error={control_error:.3f}, steady_torque={steady_state_torque:.2f}Nm, "
-              f"control_output={control_torque_nm:.2f}Nm")
+              f"error={control_error:.3f}, control_output={control_torque_nm:.2f}Nm")
 
         # 保存当前扭矩，供绘图使用
         self.system_state.acc.incremental_torque_nm = control_torque_nm

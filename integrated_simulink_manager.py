@@ -3,12 +3,14 @@
 替代原来的双UDP架构（acc_decision_simulink_manager + sppvt_manager_simulink）
 使用单一UDP接口与acc_integrated_model.slx通信
 
-设计理念（更新版 - 基于 SIMULINK_SPPVT_UPDATE_PLAN.md）：
-- Python 传入 steady_state_torque（维持当前速度所需的稳态扭矩）和 reset_flag
-- Simulink Y0_Latch 在启控瞬间锁存 steady_state_torque 作为 Y0
-- Simulink 维护 SPPVT 状态（stage, stage_offset, cooldown, error_sign）
-- 控制方程：Y(k) = Kp * (error + stage_offset) + Y0
-- control_output 直接输出 N·m，Python 不再做缩放
+简化架构：
+- Python 只传入 5 个值：command_type, ego_speed_ms, vehicle_distance, target_speed_ms, current_engine_torque
+- Simulink 内部维护 Decision 状态（通过 Unit Delay 自回环）
+- Simulink 内部管理 G2_s 参数（G2_Manager 子系统）
+- Simulink 内部检测 reset_flag（Reset_Flag_Detector 子系统）
+- Simulink 内部完成扭矩仲裁（Torque_Arbitration 子系统，R7时取max）
+- Simulink 返回 2 个值：control_enabled, final_output（已含仲裁结果）
+- Python 端并行维护 G2_s 副本用于 HUD 显示
 """
 from __future__ import annotations
 
@@ -26,78 +28,37 @@ class IntegratedSimulinkManager:
     """
     统一的Simulink集成管理器
 
-    与acc_integrated_model.slx通信（新接口）：
-    - 输入：10个double (Decision 4 + 原始感知 4 + steady_state_torque + reset_flag)
-    - 输出：6个double (Decision 5个 + control_output)
+    与acc_integrated_model.slx通信（简化接口）：
+    - 输入：5个double (command_type, ego_speed_ms, vehicle_distance, target_speed_ms, current_engine_torque)
+    - 输出：2个double (control_enabled, final_output)
 
     UDP配置：
     - Python发送 → 27000 (Simulink接收), 源端口: 9090
     - Python接收 ← 27001 (Simulink发送)
     """
 
-    # ACC状态定义（与原Decision模块保持一致）
+    # ACC状态定义（保留用于兼容显示）
     STATES = {
-        'ACTIVE_CONTROL': 0,           # S0: 在控状态
-        'ADAPTIVE_HISTORY_STANDBY': 1, # S1: 适速有史待命
-        'ADAPTIVE_NO_HISTORY_STANDBY': 2, # S2: 适速无史待命
-        'LOW_SPEED': 3                 # S3: 低速状态
-    }
-
-    # 决策定义（与原Decision模块保持一致）
-    DECISIONS = {
-        'DECREASE_SPEED': 1,           # R1: 速度降低
-        'INCREASE_SPEED': 2,           # R2: 速度增加
-        'DECREASE_DISTANCE': 3,        # R3: 时距降低
-        'INCREASE_DISTANCE': 4,        # R4: 时距增加
-        'ACTIVATE_CURRENT_SPEED': 5,   # R5: 无继控制
-        'ACTIVATE_INHERITED_SPEED': 6, # R6: 继承控制
-        'TORQUE_ARBITRATION': 7,       # R7: 扭矩仲裁
-        'SYSTEM_STANDBY': 8            # R8: 系统待命
+        'ACTIVE_CONTROL': 0,
+        'ADAPTIVE_HISTORY_STANDBY': 1,
+        'ADAPTIVE_NO_HISTORY_STANDBY': 2,
+        'LOW_SPEED': 3
     }
 
     def __init__(self, debug: bool = False, max_target_speed_kmh: Optional[float] = None, config: Optional[ACCConfig] = None):
-        """
-        初始化统一管理器
-
-        Args:
-            debug: 是否打印调试信息
-            max_target_speed_kmh: 最大目标速度（None 时使用配置）
-            config: ACC配置对象（未提供时使用默认配置）
-        """
         self.debug = debug
         self.config = config or ACCConfig()
         self.max_target_speed_kmh = max_target_speed_kmh if max_target_speed_kmh is not None else self.config.max_target_speed_kmh
 
-        # ============ Decision状态（Python端维护） ============
-        self.decision_state = {
-            'current_state': self.STATES['ADAPTIVE_NO_HISTORY_STANDBY'],
-            'has_history': False,
-            'last_active_decision': self.DECISIONS['SYSTEM_STANDBY']
-        }
-
-        # ============ ACC参数（Python端管理，传递给Simulink） ============
+        # ============ ACC参数（Python端本地副本，用于显示和V_target管理） ============
         self.params = {
             'V_target_kmh': 50.0,
             'V_min_kmh': 30.0,
-            'G2_s': 2.0
+            'G2_s': 4.0  # 与 Simulink G2_Manager 初始值一致
         }
 
         # ============ 控制状态 ============
-        self._last_control_enabled = False  # 上一帧的control_enabled（用于reset_flag计算）
-        self.torque_arbitration_active = False
-
-        # ============ reset_flag 检测状态 ============
-        self._prev_G2_s = self.params['G2_s']  # 上一帧G2（用于突变检测）
-        self._reset_pending = False             # 待发送的重置标志（边沿检测触发后设置）
-
-        # ============ 稳态扭矩计算物理参数 ============
-        self._vehicle_mass = 2370.0  # kg (CARLA Audi e-tron)
-        self._wheel_radius = 0.37    # m
-        self._gear_ratio = 9.204     # 总传动比
-        self._rolling_resistance_coeff = getattr(self.config, 'rolling_resistance_coeff', 0.012)
-        self._aero_cdA = getattr(self.config, 'aero_cdA', 0.74)
-        self._air_density = getattr(self.config, 'air_density_kg_m3', 1.225)
-        self._gravity = 9.81  # m/s²
+        self._last_control_enabled = False  # 用于 V_target 的 E/Q 键门控
 
         # ============ 性能统计 ============
         self.call_count = 0
@@ -124,98 +85,34 @@ class IntegratedSimulinkManager:
         self._instance_id = id(self)
 
         # ============ 创建UDP客户端 ============
-        # 注意：send_initial_packet=False 是关键！
-        # 如果设为 True，初始包的响应不会被消费，导致后续所有响应错位一帧，引发状态振荡
         self.udp_client = SimulinkUDPClient(
             send_port=self.config.integrated_udp_send_port,
             recv_port=self.config.integrated_udp_recv_port,
-            num_inputs=10,  # Decision 4 + 原始感知 4 (speed,dist,G2,Vtarget) + steady_state_torque + reset_flag
-            num_outputs=6,  # Decision 5个 + control_output
+            num_inputs=5,   # command_type, ego_speed_ms, vehicle_distance, target_speed_ms, current_engine_torque
+            num_outputs=2,  # control_enabled, final_output
             timeout=self.config.integrated_udp_timeout,
             debug=debug,
             local_send_port=self.config.integrated_udp_local_send_port,
-            send_initial_packet=False,  # 修复振荡问题：不发送初始包
+            send_initial_packet=False,
         )
 
         if self.debug:
-            print("✅ 统一Simulink管理器已初始化（新架构）")
+            print("✅ 统一Simulink管理器已初始化（简化架构）")
             print(f"   UDP: 发送→{self.config.integrated_udp_send_port}(源端口{self.config.integrated_udp_local_send_port}), 接收←{self.config.integrated_udp_recv_port}")
-            print(f"   输入: 10个double (Decision 4 + 原始感知 4 + steady_state_torque + reset)")
-            print(f"   输出: 6个double (Decision 5 + control_output)")
+            print(f"   输入: 5个double (cmd, speed, dist, target_spd, engine_torque)")
+            print(f"   输出: 2个double (control_enabled, final_output)")
         if self._trace_enabled:
             self._init_trace()
 
     def _get_initial_inputs(self) -> list:
         """获取初始输入值（用于首次UDP握手）"""
         return [
-            # Decision输入 (1-4)
-            float(self.decision_state['current_state']),        # 2.0 (S2无史待命)
-            0.0,                                                 # command_type = NONE
-            float(1 if self.decision_state['has_history'] else 0),  # 0.0
-            float(self.decision_state['last_active_decision']), # 8.0 (R8待命)
-
-            # 原始感知输入 (5-8)
+            0.0,     # command_type = NONE
             0.0,     # ego_speed_ms
             9999.0,  # vehicle_distance (无目标)
-            float(self.params['G2_s']),  # G2_s
-            0.0,     # target_speed_ms (前车速度，仅显示用)
-
-            # 控制参数 (9-10)
-            0.0,  # steady_state_torque (稳态扭矩，速度为0时为0)
-            1.0   # reset_flag = 1 (初始化时复位)
+            0.0,     # target_speed_ms
+            0.0,     # current_engine_torque
         ]
-
-    def _calculate_steady_state_torque(self, speed_ms: float) -> float:
-        """
-        计算维持当前速度所需的稳态扭矩（阻力平衡）
-
-        Y0_Latch 会在启控瞬间锁存此值作为 Y0，
-        使得 error=0 时输出恰好维持当前速度。
-
-        Returns:
-            维持速度所需的发动机扭矩 (N·m)
-        """
-        F_roll = self._rolling_resistance_coeff * self._vehicle_mass * self._gravity
-        F_aero = 0.5 * self._air_density * self._aero_cdA * (speed_ms ** 2)
-        F_total = F_roll + F_aero
-        return F_total * self._wheel_radius / self._gear_ratio
-
-    def _calculate_reset_flag(self, control_enabled: bool) -> bool:
-        """
-        计算 reset_flag
-
-        触发条件：
-        1. control_enabled 从 True 变为 False（边沿检测，通过 _reset_pending 标志实现）
-        2. G2 参数突变（变化超过阈值）
-
-        注意：条件1 的边沿检测在 _process_simulink_outputs 中完成，
-             这里只检查 _reset_pending 标志。
-             原条件3（误差突变）已移除，因为误差现在由 Simulink 内部计算。
-
-        Args:
-            control_enabled: 上一帧的 control_enabled（来自 _last_control_enabled）
-
-        Returns:
-            是否需要复位 SPPVT 状态
-        """
-        # 条件1: control_enabled 从 True 变为 False（边沿检测）
-        if self._reset_pending:
-            if self.debug:
-                print(f"🔄 [reset_flag] 控制失效边沿触发重置")
-            self._reset_pending = False  # 清除标志，只触发一次
-            return True
-
-        # 条件2: G2 参数突变
-        current_G2_s = self.params['G2_s']
-        G2_change = abs(current_G2_s - self._prev_G2_s)
-        G2_CHANGE_THRESHOLD = 0.3  # 时距变化阈值：0.3秒
-
-        if G2_change > G2_CHANGE_THRESHOLD:
-            if self.debug:
-                print(f"🔄 [reset_flag] G2突变: {self._prev_G2_s:.1f}s → {current_G2_s:.1f}s")
-            return True
-
-        return False
 
     # ================================================================
     # 公共API：与ACCControlFacade接口兼容
@@ -225,17 +122,8 @@ class IntegratedSimulinkManager:
         """
         处理一个控制周期（主入口）
 
-        替代原来的并发调用decision和sppvt，现在统一调用一次Simulink
-
         Args:
-            input_data: 输入数据字典，包含：
-                - ego_speed_kmh: 自车速度
-                - command_type: 键盘指令
-                - control_error: 控制误差
-                - control_mode_flag: 控制模式
-                - V_target_kmh, V_min_kmh, G2_s: ACC参数
-                - manual_throttle_active: 手动油门激活
-                - 等
+            input_data: 输入数据字典
 
         Returns:
             统一输出字典，与原ACCControlFacade输出格式兼容
@@ -246,17 +134,16 @@ class IntegratedSimulinkManager:
         # 1. 数据清洗和验证
         sanitized_input = self._sanitize_input(input_data)
 
-        # 2. Python端参数调整和低速检测
+        # 2. Python端参数调整（V_target 的 E/Q 键，G2 的 T/R 键本地副本）
         self._update_parameters(sanitized_input)
-        self._handle_low_speed_transition(sanitized_input['ego_speed_kmh'])
 
-        # 3. 准备Simulink输入
+        # 3. 准备Simulink输入（5个值）
         simulink_inputs = self._prepare_simulink_inputs(sanitized_input)
 
         # 4. 调用Simulink（单次UDP通信）
         simulink_outputs = self._call_simulink(simulink_inputs)
 
-        # 5. 解析Simulink输出并更新Python端状态
+        # 5. 解析Simulink输出
         integrated_output = self._process_simulink_outputs(
             simulink_outputs,
             sanitized_input
@@ -269,8 +156,7 @@ class IntegratedSimulinkManager:
 
         if self.debug and self.call_count % 20 == 0:
             print(f"[IntegratedManager] call={self.call_count}, time={duration*1000:.2f}ms, "
-                  f"state=S{self.decision_state['current_state']}, "
-                  f"decision=R{integrated_output['current_decision']}")
+                  f"ctrl={'ON' if self._last_control_enabled else 'OFF'}")
 
         return integrated_output
 
@@ -292,12 +178,10 @@ class IntegratedSimulinkManager:
             else:
                 sanitized[key] = value
 
-        # 默认值
         defaults = {
             'ego_speed_kmh': 0.0,
             'ego_speed_ms': 0.0,
             'control_error': 0.0,
-            'control_mode_flag': 1,
             'command_type': 0,
             'command_active': False,
             'manual_throttle_active': False,
@@ -313,139 +197,90 @@ class IntegratedSimulinkManager:
 
     def _update_parameters(self, input_data: Dict[str, Any]):
         """
-        Python端参数调整（E/Q/R/T键的参数修改）
+        Python端参数调整
 
-        与原acc_decision_simulink_manager的逻辑保持一致
+        E/Q键：调整 V_target（仅在 control_enabled=True 即在控时生效）
+        T/R键：调整 G2_s 本地副本（Simulink 端独立维护自己的 G2_s）
         """
         command_type = input_data.get('command_type', 0)
-        ego_speed_kmh = input_data.get('ego_speed_kmh', 0.0)
 
-        if command_type in [1, 2, 3, 4]:  # 参数调整指令
+        if command_type in [1, 2, 3, 4]:
             speed_step = 5.0
             time_gap_step = 0.2
-            in_active_control = (self.decision_state['current_state'] == self.STATES['ACTIVE_CONTROL'])
+            # 用 control_enabled 代替 current_state == S0 判断是否在控
+            in_active_control = self._last_control_enabled
 
-            if command_type == 1:  # E键: 降速 or 当速启控
+            if command_type == 1:  # E键: 降速
                 if in_active_control:
                     new_target = max(self.params['V_min_kmh'], self.params['V_target_kmh'] - speed_step)
                     self.params['V_target_kmh'] = new_target
                     if self.debug:
                         print(f"⌨️ E键降速: → {new_target:.1f} km/h")
 
-            elif command_type == 2:  # Q键: 增速 or 继承启控
+            elif command_type == 2:  # Q键: 增速
                 if in_active_control:
                     new_target = min(self.max_target_speed_kmh, self.params['V_target_kmh'] + speed_step)
                     self.params['V_target_kmh'] = new_target
                     if self.debug:
                         print(f"⌨️ Q键增速: → {new_target:.1f} km/h")
 
-            elif command_type == 3:  # T键: 降距
+            elif command_type == 3:  # T键: 降距（本地副本，Simulink独立处理）
                 new_gap = max(1.0, self.params['G2_s'] - time_gap_step)
                 self.params['G2_s'] = new_gap
                 if self.debug:
                     print(f"⌨️ T键降距: → {new_gap:.1f} s")
 
-            elif command_type == 4:  # R键: 增距
+            elif command_type == 4:  # R键: 增距（本地副本，Simulink独立处理）
                 new_gap = min(5.0, self.params['G2_s'] + time_gap_step)
                 self.params['G2_s'] = new_gap
                 if self.debug:
                     print(f"⌨️ R键增距: → {new_gap:.1f} s")
 
-    def _handle_low_speed_transition(self, ego_speed_kmh: float):
-        """
-        Python端低速检测（安全相关，保留在Python）
-        """
-        if ego_speed_kmh < self.params['V_min_kmh']:
-            if self.decision_state['current_state'] != self.STATES['LOW_SPEED']:
-                self.decision_state['current_state'] = self.STATES['LOW_SPEED']
-                if self.debug:
-                    print(f"🚗 低速状态: {ego_speed_kmh:.1f} < {self.params['V_min_kmh']:.1f} km/h")
-        else:
-            # 从S3恢复
-            if self.decision_state['current_state'] == self.STATES['LOW_SPEED']:
-                if self.decision_state['has_history']:
-                    self.decision_state['current_state'] = self.STATES['ADAPTIVE_HISTORY_STANDBY']
-                    if self.debug:
-                        print("🚗 恢复到S1有史待命")
-                else:
-                    self.decision_state['current_state'] = self.STATES['ADAPTIVE_NO_HISTORY_STANDBY']
-                    if self.debug:
-                        print("🚗 恢复到S2无史待命")
-
     def _prepare_simulink_inputs(self, input_data: Dict[str, Any]) -> list:
         """
-        准备Simulink输入（7个double）
+        准备Simulink输入（5个double）
 
-        新接口：
-        1-4: Decision 输入 (current_state, command_type, has_history, last_active_decision)
-        5-8: 原始感知输入 (ego_speed_ms, vehicle_distance, G2_s, target_speed_ms)
-        9:   steady_state_torque（维持当前速度所需的稳态扭矩，Python根据阻力公式计算）
-             Simulink 端 Y0_Latch 子系统在启控瞬间锁存此值作为 Y0
-        10:  reset_flag（是否需要复位SPPVT状态，Python计算）
-
-        误差计算已迁移到 Simulink 内部的 Error_Calculation 子系统（固定时距模式）。
-        target_speed_ms 为前车速度，不参与计算，仅在 Simulink 中做显示用。
+        1: command_type     - 键盘指令（0=无, 1=E, 2=Q, 3=T, 4=R, 5=W, 6=S, 7=取消）
+        2: ego_speed_ms     - 自车速度 (m/s)
+        3: vehicle_distance - 两车距离 (m)，无目标时 9999
+        4: target_speed_ms  - 前车速度 (m/s)，显示用
+        5: current_engine_torque - 当前油门对应的发动机扭矩 (N·m)
+                                   Simulink Y0_Latch 在启控瞬间锁存为 Y0
+                                   Simulink Torque_Arbitration 在 R7 时与 control_output 取 max
         """
-        # 获取原始感知数据
+        command_type = float(input_data.get('command_type', 0))
         speed_ms = input_data.get('ego_speed_ms', input_data.get('ego_speed_kmh', 0.0) / 3.6)
         vehicle_distance = input_data.get('vehicle_distance', 9999.0)
-        G2_s = float(self.params['G2_s'])
         target_speed_ms = float(input_data.get('target_speed_ms', 0.0))
+        current_engine_torque = float(input_data.get('current_engine_torque_nm', 0.0))
 
-        # 稳态扭矩（维持当前速度所需的发动机扭矩，Simulink Y0_Latch 在启控时锁存为 Y0）
-        current_engine_torque = self._calculate_steady_state_torque(speed_ms)
-
-        # 计算 reset_flag（保留在 Python 端）
-        reset_flag = self._calculate_reset_flag(self._last_control_enabled)
-
-        # 更新历史记录（用于下一帧的reset_flag计算）
-        self._prev_G2_s = self.params['G2_s']
-
-        # Save for trace (actual values sent to Simulink)
+        # Save for trace
         self._last_trace_inputs = {
-            'current_state': float(self.decision_state['current_state']),
-            'command_type': float(input_data['command_type']),
-            'has_history': float(1 if self.decision_state['has_history'] else 0),
-            'last_active_decision': float(self.decision_state['last_active_decision']),
+            'command_type': command_type,
             'ego_speed_ms': speed_ms,
             'vehicle_distance': vehicle_distance,
-            'G2_s': G2_s,
             'target_speed_ms': target_speed_ms,
             'current_engine_torque': current_engine_torque,
-            'reset_flag': float(1 if reset_flag else 0),
         }
 
-        inputs = [
-            # Decision输入 (1-4)
-            float(self.decision_state['current_state']),
-            float(input_data['command_type']),
-            float(1 if self.decision_state['has_history'] else 0),
-            float(self.decision_state['last_active_decision']),
-
-            # 原始感知输入 (5-8)，误差由 Simulink Error_Calculation 子系统计算（固定时距模式）
+        return [
+            command_type,
             speed_ms,
             vehicle_distance,
-            G2_s,
-            target_speed_ms,  # 前车速度，仅 Simulink 显示用
-
-            # 控制参数 (9-10)
-            current_engine_torque,  # 稳态扭矩，Simulink Y0_Latch 启控时锁存为 Y0
-            float(1 if reset_flag else 0)
+            target_speed_ms,
+            current_engine_torque,
         ]
-
-        return inputs
 
     def _call_simulink(self, inputs: list) -> list:
         """
         调用Simulink模型（单次UDP通信）
 
         Returns:
-            6个double的输出 (Decision 5个 + control_output)
+            2个double: [control_enabled, final_output]
         """
         start_time = time.time()
 
         try:
-            # 单次调用（移除了导致缓冲区错位的双调用策略）
             outputs = self.udp_client.call(inputs)
 
             elapsed_ms = (time.time() - start_time) * 1000.0
@@ -460,90 +295,51 @@ class IntegratedSimulinkManager:
             if self.debug:
                 print(f"❌ Simulink UDP失败: {e}")
 
-            # 返回安全的默认输出（6个值）
-            return [
-                float(self.decision_state['current_state']),  # next_state
-                float(self.DECISIONS['SYSTEM_STANDBY']),      # decision
-                0.0,  # control_enabled
-                float(1 if self.decision_state['has_history'] else 0),  # next_has_history
-                float(self.decision_state['last_active_decision']),     # next_last_decision
-                0.0   # control_output (N·m)
-            ]
+            # 安全默认输出
+            return [0.0, 0.0]  # control_enabled=False, final_output=0
 
     def _process_simulink_outputs(self, outputs: list, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        解析Simulink输出并更新Python端状态
+        解析Simulink输出
 
-        新架构（6个输出）：
-        1. next_state
-        2. decision
-        3. control_enabled
-        4. next_has_history
-        5. next_last_decision
-        6. control_output (N·m，直接使用，无需缩放)
-
-        Args:
-            outputs: Simulink的6个输出
-            input_data: 原始输入数据（用于构建完整输出）
-
-        Returns:
-            与ACCControlFacade兼容的输出字典
+        简化架构（2个输出）：
+        1. control_enabled  - ACC是否在控 (0/1)
+        2. final_output     - 最终控制扭矩 (N·m，已含R7仲裁)
         """
-        # 解析Decision输出 (1-5)
-        next_state = int(round(outputs[0]))
-        current_decision = int(round(outputs[1]))
-        control_enabled = bool(int(round(outputs[2])))
-        next_has_history = bool(int(round(outputs[3])))
-        next_last_decision = int(round(outputs[4]))
+        control_enabled = bool(int(round(outputs[0])))
+        control_output_nm = outputs[1]
 
-        # 解析SPPVT输出 (6) - 现在只有一个：control_output (N·m)
-        control_output_nm = outputs[5]
-
-        # 更新Decision状态
-        self.decision_state['current_state'] = next_state
-        self.decision_state['has_history'] = next_has_history
-        self.decision_state['last_active_decision'] = next_last_decision
-
-        # 边沿检测：control_enabled 从 True 变为 False 时，设置 _reset_pending
-        if self._last_control_enabled and not control_enabled:
-            self._reset_pending = True
-            if self.debug:
-                print(f"🔄 [边沿检测] control_enabled 下降沿: True → False, 设置 _reset_pending")
-
-        # 更新control_enabled（供下一帧边沿检测使用）
+        # 更新 control_enabled（供 V_target E/Q 键门控使用）
         self._last_control_enabled = control_enabled
 
-        # 更新扭矩仲裁标志
-        self.torque_arbitration_active = (current_decision == self.DECISIONS['TORQUE_ARBITRATION'])
+        # 当前帧输入信息（用于输出显示）
+        current_error = input_data.get('control_error', 0.0)
+        current_engine_torque = float(input_data.get('current_engine_torque_nm', 0.0))
 
-        # 当前帧输入信息（用于输出和调试）
-        current_error = input_data['control_error']
-        speed_ms = input_data.get('ego_speed_ms', input_data.get('ego_speed_kmh', 0.0) / 3.6)
-        steady_state_torque = self._last_trace_inputs.get('current_engine_torque', 0.0)
-
-        # 构建输出字典（与ACCControlFacade格式兼容）
+        # 构建输出字典（保持与旧接口兼容，缺失字段给安全默认值）
         integrated_output = {
-            # Decision输出
+            # 核心输出（来自 Simulink）
             'control_enabled': control_enabled,
-            'current_state': next_state,
-            'current_decision': current_decision,
-            'torque_arbitration_active': self.torque_arbitration_active,
+            'control_output': control_output_nm,
+
+            # 兼容旧接口（Simulink不再输出这些，给默认值供 output_formatter 安全访问）
+            'current_state': 0 if control_enabled else 2,  # S0 在控 / S2 待命（近似）
+            'current_decision': 0,          # 不再可知
+            'torque_arbitration_active': False,  # 已在 Simulink 内完成
+            'next_has_history': False,
+            'next_last_active_decision': 0,
+
+            # Python端参数
             'updated_V_target_kmh': self.params['V_target_kmh'],
             'updated_G2_s': self.params['G2_s'],
-            'next_state': next_state,
-            'next_has_history': next_has_history,
-            'next_last_active_decision': next_last_decision,
 
-            # SPPVT输出（简化版）
-            'control_output': control_output_nm,  # 直接扭矩输出 (N·m)
-            'steady_state_torque': steady_state_torque,  # 稳态扭矩（供调试）
-
-            # 兼容旧接口（部分字段保留，值可能为0）
-            'sppvt_control_output': control_output_nm,  # 兼容旧字段名
-            'target_torque': control_output_nm,         # 兼容旧字段名
+            # 兼容旧字段名
+            'sppvt_control_output': control_output_nm,
+            'target_torque': control_output_nm,
             'new_control_error': current_error,
+            'current_engine_torque': current_engine_torque,
 
-            # 调试信息
+            # 调试
             'debug_message': 0,
             'simulation_time_ms': self.last_processing_time * 1000,
         }
@@ -555,47 +351,33 @@ class IntegratedSimulinkManager:
         return integrated_output
 
     # ================================================================
-    # 兼容性接口：与原管理器接口保持一致
+    # 兼容性接口
     # ================================================================
 
     def reset(self):
         """重置所有状态"""
-        self.decision_state = {
-            'current_state': self.STATES['ADAPTIVE_NO_HISTORY_STANDBY'],
-            'has_history': False,
-            'last_active_decision': self.DECISIONS['SYSTEM_STANDBY']
-        }
-
-        # reset_flag 检测状态
-        self._prev_G2_s = self.params['G2_s']
-        self._reset_pending = False
-
         self._last_control_enabled = False
-        self.torque_arbitration_active = False
         self.call_count = 0
         self.total_processing_time = 0.0
         self.last_processing_time = 0.0
         self._last_cycle_ts = None
 
         if self.debug:
-            print("🔄 统一管理器已重置（新架构）")
+            print("🔄 统一管理器已重置（简化架构）")
 
     def reset_sppvt_state(self, reason: str = ""):
         """
         重置SPPVT相关状态
 
-        新架构下，SPPVT 状态由 Simulink 维护。
-        这个方法现在只重置 Python 端的 reset_flag 检测状态，
-        并在下一帧通过 reset_flag=1 通知 Simulink 重置。
+        简化架构下，reset_flag 由 Simulink Reset_Flag_Detector 自行检测
+        （control_enabled下降沿 + G2突变），Python 端不再主动发送 reset_flag。
+        此方法保留接口兼容性。
+
+        # [保留] 未来如需恢复 Python 端 reset 触发（如目标丢失、模式切换），
+        # 可在此添加逻辑，并在输入向量中增加 reset_flag 位。
         """
-        # 重置 reset_flag 检测状态
-        self._prev_G2_s = self.params['G2_s']
-
-        # 强制下一帧发送 reset_flag=1（通过设置 _reset_pending 标志）
-        self._reset_pending = True
-
         if self.debug:
-            msg = f"🔄 SPPVT重置请求（将通过reset_flag通知Simulink）"
+            msg = f"🔄 SPPVT重置请求（简化架构下由Simulink自行检测）"
             if reason:
                 msg += f" | {reason}"
             print(msg)
@@ -614,7 +396,7 @@ class IntegratedSimulinkManager:
                 print(f"⚠️ 清理失败: {e}")
 
     # ================================================================
-    # IO Trace helpers
+    # IO Trace
     # ================================================================
 
     def _init_trace(self):
@@ -631,22 +413,15 @@ class IntegratedSimulinkManager:
                     'cycle_dt_ms',
                     'udp_ms',
                     'acc_system_enabled',
-                    'current_state_in',
+                    # 输入 (5)
                     'command_type_in',
-                    'has_history_in',
-                    'last_active_decision_in',
                     'ego_speed_ms_in',
                     'vehicle_distance_in',
-                    'G2_s_in',
                     'target_speed_ms_in',
                     'current_engine_torque_in',
-                    'reset_flag_in',
-                    'next_state_out',
-                    'decision_out',
+                    # 输出 (2)
                     'control_enabled_out',
-                    'next_has_history_out',
-                    'next_last_decision_out',
-                    'control_output_out'
+                    'final_output_out',
                 ])
         except Exception as e:
             if self.debug:
@@ -673,21 +448,14 @@ class IntegratedSimulinkManager:
                 f"{cycle_dt_ms:.3f}",
                 f"{self._last_udp_ms:.3f}",
                 int(bool(input_data.get('acc_system_enabled', False))),
-                ti.get('current_state', self.decision_state['current_state']),
-                ti.get('command_type', input_data.get('command_type', 0)),
-                ti.get('has_history', 0),
-                ti.get('last_active_decision', self.decision_state['last_active_decision']),
+                # 输入
+                ti.get('command_type', 0),
                 f"{ti.get('ego_speed_ms', 0.0):.6f}",
                 f"{ti.get('vehicle_distance', 9999.0):.6f}",
-                f"{ti.get('G2_s', 0.0):.6f}",
                 f"{ti.get('target_speed_ms', 0.0):.6f}",
                 f"{ti.get('current_engine_torque', 0.0):.6f}",
-                ti.get('reset_flag', 0.0),
-                output_data.get('current_state', -1),
-                output_data.get('current_decision', -1),
+                # 输出
                 int(bool(output_data.get('control_enabled', False))),
-                int(bool(output_data.get('next_has_history', False))),
-                output_data.get('next_last_active_decision', -1),
                 f"{output_data.get('control_output', 0.0):.6f}",
             ]
             self._trace_writer.writerow(row)
@@ -705,12 +473,9 @@ class IntegratedSimulinkManager:
 
     @property
     def current_state(self):
-        """兼容属性：返回当前状态（枚举类型）"""
+        """兼容属性：根据 control_enabled 近似返回状态"""
         from acc_controller import ACCState
-        mapping = {
-            0: ACCState.ACTIVE_CONTROL,
-            1: ACCState.ADAPTIVE_HISTORY_STANDBY,
-            2: ACCState.ADAPTIVE_NO_HISTORY_STANDBY,
-            3: ACCState.LOW_SPEED,
-        }
-        return mapping.get(self.decision_state['current_state'], ACCState.ADAPTIVE_NO_HISTORY_STANDBY)
+        if self._last_control_enabled:
+            return ACCState.ACTIVE_CONTROL
+        else:
+            return ACCState.ADAPTIVE_NO_HISTORY_STANDBY

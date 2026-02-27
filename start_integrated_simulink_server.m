@@ -1,14 +1,20 @@
 %% 启动统一Simulink模型服务器
 % 用于acc_integrated_model.slx的UDP通信
 %
-% UDP输入 (10个double):
-%   [current_state, command_type, has_history, last_active_decision,
-%    ego_speed_ms, vehicle_distance, G2_s, target_speed_ms,
-%    steady_state_torque, reset_flag]
+% UDP输入 (5个double):
+%   [command_type, ego_speed_ms, vehicle_distance,
+%    target_speed_ms, current_engine_torque]
 %
-% UDP输出 (6个double):
-%   [next_state, decision, control_enabled, next_has_history,
-%    next_last_decision, control_output]
+% UDP输出 (2个double):
+%   [control_enabled, final_output]
+%
+% Simulink内部维护:
+%   - 状态自循环 (current_state, has_history, last_active_decision) via Unit Delay
+%   - G2_Manager (根据command_type T/R键调整G2_s)
+%   - Reset_Flag_Detector (control_enabled下降沿 + G2突变)
+%   - Y0_Latch (control_enabled上升沿锁存current_engine_torque)
+%   - Torque_Arbitration (R7时max(control_output, current_engine_torque))
+%   - Low_Speed_Detection (ego_speed < V_min时强制S3)
 
 fprintf('=== 启动统一Simulink模型服务器 ===\n\n');
 
@@ -93,8 +99,8 @@ try
         fprintf('   UDP Receive:\n');
         fprintf('      - LocalPort: %s (Python发送目标)\n', local_port);
         fprintf('      - DataSize: %s\n', data_size);
-        if ~strcmp(data_size, '[10 1]')
-            fprintf('   ⚠️  DataSize 应为 [10 1] (10个double输入)，当前为 %s\n', data_size);
+        if ~strcmp(data_size, '[5 1]')
+            fprintf('   ⚠️  DataSize 应为 [5 1] (5个double输入)，当前为 %s\n', data_size);
         end
     end
     % UDP Send
@@ -114,8 +120,8 @@ try
     fprintf('=== Simulink服务器就绪 ===\n');
     fprintf('\n');
     fprintf('UDP服务器监听中...\n');
-    fprintf('   Python发送 → 端口27000 (10个double)\n');
-    fprintf('   Python接收 ← 端口27001 (6个double)\n');
+    fprintf('   Python发送 → 端口27000 (5个double)\n');
+    fprintf('   Python接收 ← 端口27001 (2个double)\n');
     fprintf('\n');
     fprintf('现在可以运行Python测试脚本:\n');
     fprintf('   python test_integrated_model_decision.py\n');
