@@ -62,6 +62,8 @@ function create_stage_manager(modelName)
         'Position', [1000, 367, 1030, 383], 'Port', '3');
     add_block('simulink/Sinks/Out1', [subsysPath '/cooldown_out'], ...
         'Position', [1000, 427, 1030, 443], 'Port', '4');
+    add_block('simulink/Sinks/Out1', [subsysPath '/sign_changed_out'], ...
+        'Position', [1000, 487, 1030, 503], 'Port', '5');
 
     %% 常量块
     add_block('simulink/Sources/Constant', [subsysPath '/Const_rho'], ...
@@ -322,6 +324,9 @@ function create_stage_manager(modelName)
 
     add_line(subsysPath, 'Switch_stage_reset/1', 'UnitDelay_stage/1');
     add_line(subsysPath, 'Switch_stage_reset/1', 'stage_out/1');
+
+    % sign_changed 输出
+    add_line(subsysPath, 'AND_sign_changed/1', 'sign_changed_out/1');
 
     %% ========== 设置子系统外观 ==========
     set_param(subsysPath, 'Position', [400, 200, 550, 320]);

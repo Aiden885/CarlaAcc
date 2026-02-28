@@ -463,15 +463,17 @@ function create_y0_latch_v2(modelName)
 
     sys = subsysPath;
 
-    %% 输入端口 (2个)
+    %% 输入端口 (3个)
     add_block('simulink/Sources/In1', [sys '/control_enabled'], ...
         'Position', [30, 55, 60, 69], 'Port', '1');
     add_block('simulink/Sources/In1', [sys '/current_engine_torque'], ...
         'Position', [30, 185, 60, 199], 'Port', '2');
+    add_block('simulink/Sources/In1', [sys '/sign_changed'], ...
+        'Position', [30, 265, 60, 279], 'Port', '3');
 
     %% 输出端口 (1个)
     add_block('simulink/Sinks/Out1', [sys '/Y0'], ...
-        'Position', [550, 142, 580, 158], 'Port', '1');
+        'Position', [600, 142, 630, 158], 'Port', '1');
 
     %% 上升沿检测: control_enabled > prev_ce
     add_block('simulink/Discrete/Unit Delay', [sys '/UD_ce'], ...
@@ -481,14 +483,27 @@ function create_y0_latch_v2(modelName)
         [sys '/Rising_Edge'], ...
         'Position', [220, 53, 260, 87], 'Operator', '>');
 
+    %% 误差变号触发: sign_changed AND control_enabled
+    % 防止 ACC 未激活时误触发
+    add_block('simulink/Logic and Bit Operations/Logical Operator', ...
+        [sys '/AND_sc_ce'], ...
+        'Position', [220, 240, 260, 290], ...
+        'Operator', 'AND', 'Inputs', '2');
+
+    %% 合并触发条件: Rising_Edge OR (sign_changed AND control_enabled)
+    add_block('simulink/Logic and Bit Operations/Logical Operator', ...
+        [sys '/OR_latch'], ...
+        'Position', [310, 60, 350, 110], ...
+        'Operator', 'OR', 'Inputs', '2');
+
     %% Y0 锁存
-    % Switch: 上升沿 → 锁存 current_engine_torque，否则保持
+    % Switch: 任一触发条件 → 锁存 current_engine_torque，否则保持
     add_block('simulink/Signal Routing/Switch', [sys '/Sw_latch'], ...
-        'Position', [380, 120, 420, 170], ...
+        'Position', [420, 120, 460, 170], ...
         'Criteria', 'u2 > Threshold', 'Threshold', '0.5');
     % Unit Delay: 保持锁存值 (反馈)
     add_block('simulink/Discrete/Unit Delay', [sys '/UD_Y0'], ...
-        'Position', [380, 220, 420, 250], ...
+        'Position', [420, 220, 460, 250], ...
         'InitialCondition', '0', 'SampleTime', '-1');
 
     %% 连线
@@ -497,9 +512,17 @@ function create_y0_latch_v2(modelName)
     add_line(sys, 'control_enabled/1', 'UD_ce/1');
     add_line(sys, 'UD_ce/1', 'Rising_Edge/2');
 
-    % Switch: 上升沿 ? engine_torque : 保持
+    % sign_changed AND control_enabled
+    add_line(sys, 'sign_changed/1', 'AND_sc_ce/1');
+    add_line(sys, 'control_enabled/1', 'AND_sc_ce/2');
+
+    % OR: Rising_Edge OR AND_sc_ce
+    add_line(sys, 'Rising_Edge/1', 'OR_latch/1');
+    add_line(sys, 'AND_sc_ce/1', 'OR_latch/2');
+
+    % Switch: 触发 ? engine_torque : 保持
     add_line(sys, 'current_engine_torque/1', 'Sw_latch/1');
-    add_line(sys, 'Rising_Edge/1', 'Sw_latch/2');
+    add_line(sys, 'OR_latch/1', 'Sw_latch/2');
     add_line(sys, 'UD_Y0/1', 'Sw_latch/3');
 
     % 输出 + 反馈
@@ -507,5 +530,5 @@ function create_y0_latch_v2(modelName)
     add_line(sys, 'Sw_latch/1', 'UD_Y0/1');
 
     set_param(subsysPath, 'Position', [100, 500, 280, 560]);
-    fprintf('   ✅ Y0_Latch (Unit Delay版)\n\n');
+    fprintf('   ✅ Y0_Latch (Unit Delay版，含变号重锁存)\n\n');
 end
