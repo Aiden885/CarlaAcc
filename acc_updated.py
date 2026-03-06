@@ -281,7 +281,6 @@ class acc:
                 system_info = self._get_system_info(step_result, manual_input_state)
                 self.display_manager.render_display(system_info)
                 perf_times["8_render"].append(time.time() - t0)
-
                 # 10. 输出Simulink I/O信息
                 self._print_simulink_io(step_result, manual_input_state)
 

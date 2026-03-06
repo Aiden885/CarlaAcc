@@ -134,13 +134,14 @@ function plot_simulink_trace(mat_path)
     c_text     = [0 0 0];
     c_grid     = [0.85 0.85 0.85];
 
-    %% 布局：9个子图
-    num_plots   = 9;
-    plot_left   = 0.08;
-    plot_width  = 0.74;
-    plot_h      = 0.083;
-    gap         = 0.018;
-    bottom_start = 0.03;
+    %% 布局：5个子图（子图6-9已注释，需要时解开）
+    % 恢复9个子图时改为: num_plots=9, plot_h=0.083, gap=0.018, bottom_start=0.03, fig_h=1100
+    num_plots    = 5;
+    plot_left    = 0.08;
+    plot_width   = 0.74;
+    plot_h       = 0.172;
+    gap          = 0.018;
+    bottom_start = 0.04;
 
     pos = zeros(num_plots, 4);
     for k = 1:num_plots
@@ -148,7 +149,7 @@ function plot_simulink_trace(mat_path)
     end
 
     figure('Name', 'ACC Simulink Results', ...
-           'Position', [50, 30, 1440, 1100], 'Color', 'w');
+           'Position', [50, 30, 1440, 900], 'Color', 'w');
 
     %% ===== 子图1: 时距跟踪 =====
     ax1 = axes('Position', pos(1,:));
@@ -205,60 +206,64 @@ function plot_simulink_trace(mat_path)
     plot(time_s, drive_torque, '-',  'Color', c_drive, 'LineWidth', 1.8); hold on;
     plot(time_s, -brake_torque, '-', 'Color', c_brake, 'LineWidth', 1.8);
     yline(0, '--k', 'LineWidth', 1.0, 'Alpha', 0.6);
+    xlabel('Time (s)', 'FontSize', 10, 'FontWeight', 'bold');
     ylabel('Torque (Nm)', 'FontSize', 10, 'FontWeight', 'bold');
     title('Final Output Torque (Drive / Brake)', 'FontSize', 12, 'FontWeight', 'bold');
     lg = legend('Drive', 'Brake (neg)', 'FontSize', 9);
     set(lg, 'Position', [plot_left+plot_width+0.01, pos(5,2)+pos(5,4)*0.2, 0.14, 0.055]);
     grid on; set(ax5, 'GridColor', c_grid, 'GridAlpha', 0.8);
 
-    %% ===== 子图6: Y0 与 current_engine_torque =====
-    ax6 = axes('Position', pos(6,:));
-    plot(time_s, Y0,                    '-',  'Color', c_Y0,    'LineWidth', 1.8); hold on;
-    plot(time_s, current_engine_torque, '--', 'Color', [0.5 0.5 0.5], 'LineWidth', 1.2);
-    ylabel('Torque (Nm)', 'FontSize', 10, 'FontWeight', 'bold');
-    title('Y0 vs Current Engine Torque', 'FontSize', 12, 'FontWeight', 'bold');
-    lg = legend('Y0', 'Eng Torque', 'FontSize', 9);
-    set(lg, 'Position', [plot_left+plot_width+0.01, pos(6,2)+pos(6,4)*0.2, 0.14, 0.055]);
-    grid on; set(ax6, 'GridColor', c_grid, 'GridAlpha', 0.8);
+    % ===== 子图6-9: 将下方整块取消注释，并恢复 linkaxes 第二行 =====
+    % % --- 子图6: Y0 与 current_engine_torque ---
+    % ax6 = axes('Position', pos(6,:));
+    % plot(time_s, Y0,                    '-',  'Color', c_Y0,    'LineWidth', 1.8); hold on;
+    % plot(time_s, current_engine_torque, '--', 'Color', [0.5 0.5 0.5], 'LineWidth', 1.2);
+    % ylabel('Torque (Nm)', 'FontSize', 10, 'FontWeight', 'bold');
+    % title('Y0 vs Current Engine Torque', 'FontSize', 12, 'FontWeight', 'bold');
+    % lg = legend('Y0', 'Eng Torque', 'FontSize', 9);
+    % set(lg, 'Position', [plot_left+plot_width+0.01, pos(6,2)+pos(6,4)*0.2, 0.14, 0.055]);
+    % grid on; set(ax6, 'GridColor', c_grid, 'GridAlpha', 0.8);
+    %
+    % % --- 子图7: stage_offset 与 stage ---
+    % ax7 = axes('Position', pos(7,:));
+    % yyaxis left;
+    % plot(time_s, stage_offset, '-', 'Color', c_soffset, 'LineWidth', 1.8);
+    % ylabel('Stage Offset', 'FontSize', 10, 'FontWeight', 'bold');
+    % yyaxis right;
+    % stairs(time_s, stage, '-', 'Color', [0.93 0.69 0.13], 'LineWidth', 1.5);
+    % ylabel('Stage', 'FontSize', 10, 'FontWeight', 'bold');
+    % title('SPPVT Stage Offset & Stage', 'FontSize', 12, 'FontWeight', 'bold');
+    % lg = legend('stage\_offset', 'stage', 'FontSize', 9);
+    % set(lg, 'Position', [plot_left+plot_width+0.01, pos(7,2)+pos(7,4)*0.2, 0.14, 0.055]);
+    % grid on; set(ax7, 'GridColor', c_grid, 'GridAlpha', 0.8);
+    %
+    % % --- 子图8: control_enabled & reset_flag ---
+    % ax8 = axes('Position', pos(8,:));
+    % stairs(time_s, control_enabled, '-', 'Color', c_ce,    'LineWidth', 1.8); hold on;
+    % stairs(time_s, reset_flag,      '-', 'Color', c_reset, 'LineWidth', 1.5);
+    % ylim([-0.2, 1.5]);
+    % yticks([0 1]); yticklabels({'OFF','ON'});
+    % ylabel('Flag', 'FontSize', 10, 'FontWeight', 'bold');
+    % title('Control Enabled & Reset Flag', 'FontSize', 12, 'FontWeight', 'bold');
+    % lg = legend('ctrl\_enabled', 'reset\_flag', 'FontSize', 9);
+    % set(lg, 'Position', [plot_left+plot_width+0.01, pos(8,2)+pos(8,4)*0.2, 0.14, 0.055]);
+    % grid on; set(ax8, 'GridColor', c_grid, 'GridAlpha', 0.8);
+    %
+    % % --- 子图9: 决策状态 ---
+    % ax9 = axes('Position', pos(9,:));
+    % stairs(time_s, current_state, '-',  'Color', [0.49 0.18 0.56], 'LineWidth', 1.8); hold on;
+    % stairs(time_s, decision_out,  '--', 'Color', [0.17 0.63 0.17], 'LineWidth', 1.5);
+    % xlabel('Time (s)', 'FontSize', 10, 'FontWeight', 'bold');
+    % ylabel('State / Decision', 'FontSize', 10, 'FontWeight', 'bold');
+    % title('State Machine: Current State & Decision', 'FontSize', 12, 'FontWeight', 'bold');
+    % lg = legend('current\_state', 'decision', 'FontSize', 9);
+    % set(lg, 'Position', [plot_left+plot_width+0.01, pos(9,2)+pos(9,4)*0.2, 0.14, 0.055]);
+    % grid on; set(ax9, 'GridColor', c_grid, 'GridAlpha', 0.8);
+    % =========================================================================
 
-    %% ===== 子图7: stage_offset 与 stage =====
-    ax7 = axes('Position', pos(7,:));
-    yyaxis left;
-    plot(time_s, stage_offset, '-', 'Color', c_soffset, 'LineWidth', 1.8);
-    ylabel('Stage Offset', 'FontSize', 10, 'FontWeight', 'bold');
-    yyaxis right;
-    stairs(time_s, stage, '-', 'Color', [0.93 0.69 0.13], 'LineWidth', 1.5);
-    ylabel('Stage', 'FontSize', 10, 'FontWeight', 'bold');
-    title('SPPVT Stage Offset & Stage', 'FontSize', 12, 'FontWeight', 'bold');
-    lg = legend('stage\_offset', 'stage', 'FontSize', 9);
-    set(lg, 'Position', [plot_left+plot_width+0.01, pos(7,2)+pos(7,4)*0.2, 0.14, 0.055]);
-    grid on; set(ax7, 'GridColor', c_grid, 'GridAlpha', 0.8);
-
-    %% ===== 子图8: control_enabled & reset_flag =====
-    ax8 = axes('Position', pos(8,:));
-    stairs(time_s, control_enabled, '-', 'Color', c_ce,    'LineWidth', 1.8); hold on;
-    stairs(time_s, reset_flag,      '-', 'Color', c_reset, 'LineWidth', 1.5);
-    ylim([-0.2, 1.5]);
-    yticks([0 1]); yticklabels({'OFF','ON'});
-    ylabel('Flag', 'FontSize', 10, 'FontWeight', 'bold');
-    title('Control Enabled & Reset Flag', 'FontSize', 12, 'FontWeight', 'bold');
-    lg = legend('ctrl\_enabled', 'reset\_flag', 'FontSize', 9);
-    set(lg, 'Position', [plot_left+plot_width+0.01, pos(8,2)+pos(8,4)*0.2, 0.14, 0.055]);
-    grid on; set(ax8, 'GridColor', c_grid, 'GridAlpha', 0.8);
-
-    %% ===== 子图9: 决策状态 =====
-    ax9 = axes('Position', pos(9,:));
-    stairs(time_s, current_state, '-',  'Color', [0.49 0.18 0.56], 'LineWidth', 1.8); hold on;
-    stairs(time_s, decision_out,  '--', 'Color', [0.17 0.63 0.17], 'LineWidth', 1.5);
-    xlabel('Time (s)', 'FontSize', 10, 'FontWeight', 'bold');
-    ylabel('State / Decision', 'FontSize', 10, 'FontWeight', 'bold');
-    title('State Machine: Current State & Decision', 'FontSize', 12, 'FontWeight', 'bold');
-    lg = legend('current\_state', 'decision', 'FontSize', 9);
-    set(lg, 'Position', [plot_left+plot_width+0.01, pos(9,2)+pos(9,4)*0.2, 0.14, 0.055]);
-    grid on; set(ax9, 'GridColor', c_grid, 'GridAlpha', 0.8);
-
-    %% 联动 x 轴
-    linkaxes([ax1 ax2 ax3 ax4 ax5 ax6 ax7 ax8 ax9], 'x');
+    %% 联动 x 轴（子图6-9激活时改用下一行并注释掉当前行）
+    linkaxes([ax1 ax2 ax3 ax4 ax5], 'x');
+    % linkaxes([ax1 ax2 ax3 ax4 ax5 ax6 ax7 ax8 ax9], 'x');
 
     %% 统计输出
     ctrl_on = control_enabled > 0.5;
