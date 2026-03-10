@@ -421,15 +421,9 @@ class ControlLoopManager:
         # 纵向控制 (Simulink final_output 已包含 R7 扭矩仲裁)
         throttle, brake = self._compute_longitudinal_control(unified_output, perception_data)
 
-        # 驾驶员油门/刹车覆盖
-        # 扭矩仲裁(R7)已由 Simulink 内部的 Torque_Arbitration 子系统完成
-        if manual_input_state.has_throttle_input():
-            throttle = manual_input_state.throttle
-            brake = 0.0
-
-        if manual_input_state.has_brake_input():
-            throttle = 0.0
-            brake = manual_input_state.brake
+        # 驾驶员油门/刹车覆盖已由 Simulink Torque_Arbitration 子系统完成
+        # W键(cmd=5)/S键(cmd=6) 通过 command_type 传入 Simulink，final_output 已含仲裁结果
+        # Python 端不再覆盖，否则 W键刚按下时 manual throttle 从0累加会导致速度突降
 
         # 控制模式标识
         mode = "DIRECT_SPPVT"
