@@ -625,7 +625,7 @@ class acc:
 def main():
     """主函数"""
     # 手动切换工况 "none" / "cut-in" / "cut-out"
-    SCENARIO_MODE = "none"  # None=按配置文件，"none"=普通，"cut-in"=切入，"cut-out"=切出
+    SCENARIO_MODE = "cut-in"  # None=按配置文件，"none"=普通，"cut-in"=切入，"cut-out"=切出
 
     # 创建ACC实例（画图模式在 acc_config.py 中配置）
     acc_actor = acc(scenario_mode=SCENARIO_MODE)

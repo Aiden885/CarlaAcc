@@ -105,6 +105,35 @@ function plot_simulink_trace(mat_path)
     stage                 = data(:,15);
     sign_changed          = data(:,18);
 
+    %% 从 ACC 首次激活时刻开始截取数据
+    idx_start = find(control_enabled > 0.5, 1, 'first');
+    if isempty(idx_start)
+        warning('数据中没有检测到 control_enabled=1 的帧，将显示全部数据');
+        idx_start = 1;
+    else
+        fprintf('ACC 首次激活于第 %d 帧 (t=%.2f s)，截取后续数据\n', idx_start, time_s(idx_start));
+    end
+
+    time_s                = time_s(idx_start:end);
+    ego_speed_ms          = ego_speed_ms(idx_start:end);
+    vehicle_distance      = vehicle_distance(idx_start:end);
+    target_speed_ms       = target_speed_ms(idx_start:end);
+    current_engine_torque = current_engine_torque(idx_start:end);
+    G2_s                  = G2_s(idx_start:end);
+    control_error_signed  = control_error_signed(idx_start:end);
+    reset_flag            = reset_flag(idx_start:end);
+    Y0                    = Y0(idx_start:end);
+    final_output          = final_output(idx_start:end);
+    control_enabled       = control_enabled(idx_start:end);
+    current_state         = current_state(idx_start:end);
+    decision_out          = decision_out(idx_start:end);
+    stage_offset          = stage_offset(idx_start:end);
+    stage                 = stage(idx_start:end);
+    sign_changed          = sign_changed(idx_start:end);
+
+    % 时间归零（以激活时刻为 t=0）
+    time_s = time_s - time_s(1);
+
     %% 派生量
     ego_speed_kmh    = ego_speed_ms    * 3.6;
     target_speed_kmh = target_speed_ms * 3.6;

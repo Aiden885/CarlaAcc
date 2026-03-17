@@ -350,7 +350,7 @@ class ControlLoopManager:
             'V_target_kmh': sanitize(self.acc_params['V_target_kmh'], 50.0),
             'V_min_kmh': sanitize(self.acc_params['V_min_kmh'], 30.0),
             'G2_s': sanitize(self.acc_params['G2_s'], 2.0),
-            'current_engine_torque_nm': self._get_current_engine_torque(),
+            'current_engine_torque_nm': self._get_driver_or_engine_torque(manual_input_state),
             'timestamp': time.time(),
         }
 
@@ -421,9 +421,9 @@ class ControlLoopManager:
         # 纵向控制 (Simulink final_output 已包含 R7 扭矩仲裁)
         throttle, brake = self._compute_longitudinal_control(unified_output, perception_data)
 
-        # 驾驶员油门/刹车覆盖已由 Simulink Torque_Arbitration 子系统完成
-        # W键(cmd=5)/S键(cmd=6) 通过 command_type 传入 Simulink，final_output 已含仲裁结果
-        # Python 端不再覆盖，否则 W键刚按下时 manual throttle 从0累加会导致速度突降
+        # 驾驶员介入仲裁由 Simulink R7 完成：
+        # W按下时 current_engine_torque 传入司机期望扭矩（从0累加），
+        # Simulink 执行 max(acc_output, driver_torque)，Python 直接使用 final_output
 
         # 控制模式标识
         mode = "DIRECT_SPPVT"
@@ -469,6 +469,18 @@ class ControlLoopManager:
             return engine_torque
         except Exception:
             return 0.0
+
+    def _get_driver_or_engine_torque(self, manual_input_state) -> float:
+        """
+        W按下时返回司机期望扭矩（供 Simulink R7 做 max 仲裁）
+        W未按下时返回实际发动机扭矩（供 Y0_Latch 使用）
+        """
+        if manual_input_state.w_pressed:
+            return self.resources.torque_converter.throttle_to_engine_torque(
+                manual_input_state.throttle,
+                self.system_state.ego.speed_kmh
+            )
+        return self._get_current_engine_torque()
 
     def _reset_control_state(self):
         """复位控制状态（新架构下仅重置绘图用的扭矩记录）"""
