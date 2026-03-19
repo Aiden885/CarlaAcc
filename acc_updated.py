@@ -441,14 +441,13 @@ class acc:
             # TIME模式下SPPVT输出需要取负（符号转换）
             sppvt_torque_demand = -control_output_val
 
+            # final_output 已是 N·m，直接使用，不再乘缩放系数
             if sppvt_torque_demand >= 0:
-                # 加速：显示加速扭矩
-                req_torque = sppvt_torque_demand * self.config.sppvt_accel_scale
+                req_torque = sppvt_torque_demand
                 req_brake_torque = 0.0
             else:
-                # 制动：显示制动扭矩（绝对值）
                 req_torque = 0.0
-                req_brake_torque = abs(sppvt_torque_demand * self.config.sppvt_decel_scale)
+                req_brake_torque = abs(sppvt_torque_demand)
 
             # 增量控制扭矩（Y_current）
             inc_engine_torque = env_data.get("incremental_torque_nm", 0.0)

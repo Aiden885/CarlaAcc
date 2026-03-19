@@ -5,7 +5,7 @@ function embed_data_to_model()
 
 fprintf('🔨 开始将数据固化到模型工作区...\n');
 
-model_name = 'acc_decision_core';
+model_name = 'acc_integrated_model';
 data_file = 'decision_lookup_data.mat';
 
 %% 1. 检查文件

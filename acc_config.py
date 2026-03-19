@@ -121,12 +121,6 @@ class ACCConfig:
         # ========== 扭矩转换器配置 ==========
         self.use_torque_converter = True  # 是否使用物理模型转换器
 
-        # SPPVT 输出缩放系数（调试用的KP增益）
-        # 注意：SPPVT输出的是扭矩（无量纲），这些系数用于缩放到实际发动机扭矩
-
-        self.sppvt_accel_scale = 220.0   # 加速缩放增益：SPPVT扭矩 → 发动机扭矩 (N·m)
-        self.sppvt_decel_scale = 220.0   # 减速缩放增益：SPPVT扭矩 → 发动机扭矩 (N·m)
-
         # ========== 纵向约束（国标平均限值） ==========
         self.enable_longitudinal_constraints = False
         self.longitudinal_a_max_ms2 = 2.0
